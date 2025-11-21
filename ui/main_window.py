@@ -35,9 +35,8 @@ class MainWindow:
         nb = ttk.Notebook(self.root)
         nb.pack(fill=tk.BOTH, expand=True, padx=15)
 
-        # Characters Module — IMPORTANT: saved as both names for compatibility
+        # Characters Module
         self.characters_module = CharactersModule(nb, self.db, self)
-        self.char_module = self.characters_module  # legacy alias (some code still uses this)
         nb.add(self.characters_module.frame, text="Characters")
 
         self.settings_module = SettingsModule(nb, self.db, self)
@@ -65,10 +64,7 @@ class MainWindow:
 
     def open_character_editor(self, char_id=None):
         """Called by importer — opens the character editor"""
-        if hasattr(self, "characters_module"):
-            self.characters_module.open_editor(char_id)
-        elif hasattr(self, "char_module"):
-            self.char_module.open_editor(char_id)
+        self.characters_module.open_editor(char_id)
 
     def copy_prompt(self):
         action = self.action_entry.get().strip()

@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import json
 import random
-from character_db import create_character, update_character, get_all_characters, delete_character
+from ...character_db import create_character, update_character, get_all_characters, delete_character
 
 
 class CharactersModule:
@@ -160,6 +160,9 @@ class CharactersModule:
         nb.add(att_tab, text="Attuned (●)")
         att_list = tk.Listbox(att_tab, height=8, bg="#fff8d9", font=("Segoe UI", 10))
         att_list.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        entry_att = ttk.Entry(att_tab)
+        entry_att.pack(fill=tk.X, pady=5, padx=10)
+        ttk.Button(att_tab, text="Add Attuned", command=lambda: att_list.insert(tk.END, f"● {entry_att.get()}") or entry_att.delete(0, tk.END)).pack(pady=5)
 
         def populate_attuned():
             att_list.delete(0, tk.END)
@@ -187,21 +190,6 @@ class CharactersModule:
                 inv_list.insert(tk.END, f"● {item} (attuned)")
         editor.after(200, populate_inventory)
 
-        entry = ttk.Entry(inv_tab)
-        entry.pack(fill=tk.X, pady=5, padx=10)
-        ttk.Button(inv_tab, text="Add", command=lambda: inv_list.insert(tk.END, entry.get()) or entry.delete(0, tk.END)).pack(pady=5)
-
-        # Populate inventory AFTER everything is built
-        def populate_inventory():
-            fresh_row = self.db.execute("SELECT data FROM characters WHERE id=?", (char_id,)).fetchone()
-            if fresh_row:
-                fresh_data = json.loads(fresh_row["data"])
-                inv_list.delete(0, tk.END)
-                for item in fresh_data.get("inventory", []):
-                    inv_list.insert(tk.END, item)
-
-        editor.after(200, populate_inventory)
-
         # Save function
         def save():
             saved = {
@@ -215,7 +203,9 @@ class CharactersModule:
                 "ac": self.vars["ac"].get(),
                 "speed": self.vars["speed"].get(),
                 "proficiency_bonus": self.vars["proficiency_bonus"].get(),
-                "inventory": list(inv_list.get(0, tk.END)),
+                                "inventory": [inv_list.get(i) for i in range(inv_list.size())],
+                "attuned": [att_list.get(i).lstrip("● ").strip() for i in range(att_list.size())],  # Strip markers
+                "notes": notes_text.get(1.0, tk.END).strip(),
                 **{stat: var.get() for stat, var in self.ability_vars.items()}
             }
             json_data = json.dumps(saved, ensure_ascii=False)
@@ -228,11 +218,24 @@ class CharactersModule:
             messagebox.showinfo("Saved", f"{saved['name']} saved!")
             editor.destroy()
 
-        ttk.Button(editor, text="Save Character", command=save).pack(pady=15)
+            ttk.Button(editor, text="Save Character", command=save).pack(pady=15)
 
     def fill_5e_defaults(self):
-        # ... (your existing stat generation code) ...
-        pass
+        # Generate standard 5e ability scores (4d6 drop lowest, assign to STR-CHA)
+        import random
+        def roll_stat():
+            rolls = sorted([random.randint(1, 6) for _ in range(4)])
+            return sum(rolls[1:])  # Drop lowest
+        
+        stats = [roll_stat() for _ in range(6)]
+        # Assign to ability_vars if available
+        for i, stat in enumerate(["str", "dex", "con", "int", "wis", "cha"]):
+            if stat in self.ability_vars:
+                self.ability_vars[stat].set(stats[i])
+        # Update modifiers
+        for stat in self.ability_vars:
+            mod = (self.ability_vars[stat].get() - 10) // 2
+            self.mod_labels[stat].config(text=f"({mod:+})")
 
     def open_importer(self):
         toplevel = tk.Toplevel(self.main_app.root)
