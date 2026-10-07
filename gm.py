@@ -23,13 +23,28 @@ DEFAULT_INSTRUCTIONS = (
 )
 
 
-def campaign_instructions(db) -> str:
+def stored_system_prompt(db) -> str:
+    row = db.execute(
+        "SELECT value FROM campaign_settings WHERE key='system_prompt'"
+    ).fetchone()
+    if row is None or not isinstance(row["value"], str):
+        return ""
+    return row["value"].strip()
+
+
+def bootstrap_instructions(db) -> str:
+    """Imported instruction note, or the built-in GM line when the campaign has none."""
     rows = db.execute("SELECT title, content FROM notes").fetchall()
     for row in rows:
         title = (row["title"] or "").lower()
         if "instruction" in title and row["content"]:
             return row["content"].strip()
     return DEFAULT_INSTRUCTIONS
+
+
+def campaign_instructions(db) -> str:
+    """Campaign text wins. An empty setting leaves the bootstrap in place."""
+    return stored_system_prompt(db) or bootstrap_instructions(db)
 
 
 def world_value(db, key, default):
@@ -73,6 +88,15 @@ def build_messages(db, action: str):
     if not played.startswith("[Play]"):
         played = "[Play]\n" + played
 
+    prompt = world_value(db, "prompt", "")
+    if not isinstance(prompt, str):
+        prompt = ""
+    prompt = prompt.strip()
+    system_parts = [campaign_instructions(db).rstrip()]
+    if prompt:
+        system_parts.append("WORLD\n" + prompt)
+    system_parts.append(JSON_CONTRACT.strip())
+
     user = "\n".join([
         "CURRENT STATE",
         "Characters:",
@@ -88,7 +112,7 @@ def build_messages(db, action: str):
         "PLAYER ACTION",
         played,
     ])
-    system = campaign_instructions(db).rstrip() + "\n\n" + JSON_CONTRACT
+    system = "\n\n".join(system_parts)
     return system, user
 
 

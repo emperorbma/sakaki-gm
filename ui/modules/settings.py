@@ -2,6 +2,7 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from gm import DEFAULT_INSTRUCTIONS, bootstrap_instructions, stored_system_prompt
 from llm_config import PRESETS, load_config, resolve_api_key, save_config
 from llm_client import test_connection
 
@@ -11,6 +12,23 @@ class SettingsModule:
         self.db = db
         self.main_app = main_app
         self.frame = ttk.Frame(notebook)
+
+        prompt = ttk.LabelFrame(self.frame, text="System prompt")
+        prompt.pack(fill=tk.BOTH, expand=True, padx=16, pady=12)
+        ttk.Label(
+            prompt,
+            text="Leave this empty to keep the built-in instructions, or an imported Instructions note. Text here replaces them.",
+        ).pack(anchor="w", padx=10, pady=(8, 4))
+        self.prompt_text = tk.Text(prompt, wrap=tk.WORD, font=("Georgia", 11), height=8)
+        self.prompt_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        prompt_buttons = ttk.Frame(prompt)
+        prompt_buttons.pack(fill=tk.X, padx=10, pady=(0, 4))
+        ttk.Button(prompt_buttons, text="Save", command=self.save_system_prompt).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(prompt_buttons, text="Fill default", command=self.fill_default).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(prompt_buttons, text="Start from current", command=self.fill_from_bootstrap).pack(side=tk.LEFT)
+        self.prompt_source = ttk.Label(prompt, text="")
+        self.prompt_source.pack(anchor="w", padx=10, pady=(0, 8))
+        self.reload_system_prompt()
 
         rules = ttk.LabelFrame(self.frame, text="Campaign rules")
         rules.pack(fill=tk.X, padx=16, pady=12)
@@ -54,6 +72,53 @@ class SettingsModule:
     def set_db(self, db):
         self.db = db
         self.system_label.config(text=self._system_text())
+        self.reload_system_prompt()
+
+    def reload_system_prompt(self):
+        self.prompt_text.delete("1.0", tk.END)
+        stored = stored_system_prompt(self.db)
+        if stored:
+            self.prompt_text.insert("1.0", stored)
+        self.prompt_source.config(text=self._prompt_source_text())
+
+    def _prompt_source_text(self) -> str:
+        if stored_system_prompt(self.db):
+            return "Using this campaign prompt."
+        note = self.db.execute(
+            "SELECT title FROM notes WHERE lower(title) LIKE '%instruction%' AND content != '' LIMIT 1"
+        ).fetchone()
+        if note:
+            return f"Empty, so the note “{note['title']}” is used."
+        return "Empty, so the built-in GM instructions are used."
+
+    def save_system_prompt(self, quiet=False):
+        text = self.prompt_text.get("1.0", "end").strip()
+        self.db.execute(
+            "INSERT OR REPLACE INTO campaign_settings (key, value) VALUES ('system_prompt', ?)",
+            (text,),
+        )
+        self.db.commit()
+        self.prompt_source.config(text=self._prompt_source_text())
+        if not quiet:
+            messagebox.showinfo("Saved", "System prompt saved.")
+
+    def fill_default(self):
+        if not self._confirm_replace("Replace the text in the box with the built-in instructions?"):
+            return
+        self.prompt_text.delete("1.0", tk.END)
+        self.prompt_text.insert("1.0", DEFAULT_INSTRUCTIONS.strip())
+
+    def fill_from_bootstrap(self):
+        if not self._confirm_replace("Replace the text in the box with the instructions this campaign is using now?"):
+            return
+        self.prompt_text.delete("1.0", tk.END)
+        self.prompt_text.insert("1.0", bootstrap_instructions(self.db))
+
+    def _confirm_replace(self, question: str) -> bool:
+        current = self.prompt_text.get("1.0", "end").strip()
+        if not current:
+            return True
+        return messagebox.askyesno("System prompt", question)
 
     def _system_text(self) -> str:
         current = self.db.execute(

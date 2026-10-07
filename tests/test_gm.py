@@ -155,9 +155,35 @@ def test_prompt_includes_sheet_and_play_tag(tmp_path):
     system, user = build_messages(db, "I look around.")
     assert "Eldenweave" in system
     assert "hp_current" in system
+    assert "\nWORLD\n" not in system
+    db.execute(
+        "INSERT INTO world (key, value) VALUES ('prompt', 'The Silver Veil Forest lies north of Eldenport.')"
+    )
+    db.commit()
+    system, _user = build_messages(db, "I look around.")
+    assert "WORLD\nThe Silver Veil Forest lies north of Eldenport." in system
     assert "[Play]" in user
     assert "Serina" in user
     assert "11" in user
+    db.close()
+
+
+def test_saved_system_prompt_replaces_the_instruction_note(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("Instructions for Grok", "You are GM for the world of Eldenweave."),
+    )
+    db.commit()
+    system, _user = build_messages(db, "I wait.")
+    assert system.startswith("You are GM for the world of Eldenweave.")
+    db.execute(
+        "INSERT INTO campaign_settings (key, value) VALUES ('system_prompt', 'Speak only in questions.')"
+    )
+    db.commit()
+    system, _user = build_messages(db, "I wait.")
+    assert system.startswith("Speak only in questions.")
+    assert "Eldenweave" not in system
     db.close()
 
 
