@@ -1,16 +1,17 @@
-# db.py — Now with campaign-level stat system config
+# db.py — campaign SQLite files and schema migrations
 import sqlite3
-import os
-import json
+from pathlib import Path
 
-DB_FILE = "pygm_campaign.db"
-CURRENT_VERSION = 3  # Bumped for new table
+APP_DIR = Path(__file__).resolve().parent
+LEGACY_DB = APP_DIR / "pygm_campaign.db"
 
-def get_db():
-    db = sqlite3.connect(DB_FILE)
+
+def get_db(path):
+    db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
     migrate(db)
     return db
+
 
 def migrate(db):
     cur = db.cursor()
@@ -43,7 +44,6 @@ def migrate(db):
             key TEXT PRIMARY KEY,
             value TEXT
         );
-        -- Default to Standard 5e
         INSERT OR REPLACE INTO campaign_settings (key, value) VALUES
         ('stat_system', '5e'),
         ('ability_scores', '["str","dex","con","int","wis","cha"]'),

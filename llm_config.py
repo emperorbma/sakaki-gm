@@ -1,0 +1,78 @@
+# llm_config.py — app config shared by the LLM settings and the campaign registry
+import json
+import os
+from copy import deepcopy
+from pathlib import Path
+
+CONFIG_PATH = Path.home() / ".config" / "pygm" / "config.json"
+CAMPAIGNS_DIR = Path.home() / ".local" / "share" / "pygm" / "campaigns"
+
+PRESETS = {
+    "spacexai": {
+        "base_url": "https://api.x.ai/v1",
+        "model": "grok-4.7",
+    },
+    "openai_compatible": {
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "",
+    },
+}
+
+DEFAULT_CONFIG = {
+    "active_campaign": None,
+    "campaigns": [],
+    "llm": {
+        "provider": "spacexai",
+        "base_url": PRESETS["spacexai"]["base_url"],
+        "model": PRESETS["spacexai"]["model"],
+        "api_key": "",
+    },
+}
+
+
+def load_config(path=None) -> dict:
+    path = Path(path) if path else CONFIG_PATH
+    cfg = deepcopy(DEFAULT_CONFIG)
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded = {}
+        if isinstance(loaded, dict):
+            if "active_campaign" in loaded:
+                cfg["active_campaign"] = loaded.get("active_campaign")
+            campaigns = loaded.get("campaigns")
+            if isinstance(campaigns, list):
+                cfg["campaigns"] = [
+                    {"id": str(item["id"]), "path": str(item["path"])}
+                    for item in campaigns
+                    if isinstance(item, dict) and item.get("id") and item.get("path")
+                ]
+            llm = loaded.get("llm")
+            if isinstance(llm, dict):
+                for key in cfg["llm"]:
+                    if key in llm and llm[key] is not None:
+                        cfg["llm"][key] = llm[key]
+    return cfg
+
+
+def save_config(cfg: dict, path=None) -> None:
+    path = Path(path) if path else CONFIG_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+    os.chmod(path, 0o600)
+
+
+def resolve_api_key(llm: dict) -> str:
+    key = str(llm.get("api_key") or "").strip()
+    if key:
+        return key
+    env = os.environ.get("XAI_API_KEY", "").strip()
+    if env:
+        return env
+    if llm.get("provider") == "openai_compatible":
+        return "local"
+    raise RuntimeError("Set XAI_API_KEY or enter an API key in Settings.")

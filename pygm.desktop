@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=PyGM Core
+Comment=Local Game Master desk
+Exec=/home/emperorbma/python-gm-alpha/start-pygm.sh
+Path=/home/emperorbma/python-gm-alpha
+Terminal=false
+Categories=Game;
