@@ -145,6 +145,26 @@ def looks_like_character(path: Path, text: str) -> bool:
     return any(token in lowered for token in ("**race**", "**class**", "**hp**", "ability scores", "**str**"))
 
 
+def import_documents(db, folder) -> str:
+    """Store reference files in this campaign's notes. Character sheets are skipped."""
+    folder = Path(folder)
+    stored = 0
+    skipped = 0
+    for path in sorted(folder.iterdir()):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in {".md", ".txt", ".csv"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if looks_like_character(path, text):
+            skipped += 1
+            continue
+        _upsert_note(db, path.stem, text)
+        stored += 1
+    return f"Stored {stored} documents in this campaign. Skipped {skipped} character sheets."
+
+
 def import_campaign_folder(db, folder) -> str:
     folder = Path(folder)
     characters = 0

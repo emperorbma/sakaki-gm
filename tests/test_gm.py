@@ -16,7 +16,7 @@ from db import LEGACY_DB, get_db
 from gm import apply_updates, build_messages, parse_reply
 from llm_client import complete
 from llm_config import load_config
-from ui.modules.importer import import_campaign_folder, parse_markdown_character
+from ui.modules.importer import import_campaign_folder, import_documents, parse_markdown_character
 
 LIVE_DB = LEGACY_DB
 FIXTURE = Path(__file__).parent / "fixtures" / "serina_headings.md"
@@ -101,6 +101,48 @@ def test_folder_import_keeps_player_flag_and_location(tmp_path):
     assert "outskirts" in titles
     location = db.execute("SELECT value FROM world WHERE key='location'").fetchone()["value"]
     assert location == "A quiet tavern"
+    db.close()
+
+
+def test_import_documents_stores_reference_files_only(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    folder = tmp_path / "binder"
+    folder.mkdir()
+    (folder / "Serina - Character Sheet.md").write_text(
+        FIXTURE.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (folder / "Geography of the Eldenweave.md").write_text(
+        "# Geography\n\nStarfall's End.\n", encoding="utf-8"
+    )
+    (folder / "Instructions for Grok.txt").write_text(
+        "You are GM for the world of Eldenweave.\n", encoding="utf-8"
+    )
+    (folder / "Voryn's Cultists - Generic Stat Blocks.md").write_text(
+        "# Voryn's Cultists\n\nHP 33, AC 13\n", encoding="utf-8"
+    )
+    (folder / "outskirts.csv").write_text("Roll,Encounter\n1,Traveler\n", encoding="utf-8")
+
+    summary = import_documents(db, folder)
+    assert summary.startswith("Stored 4 documents")
+    assert "Skipped 1 character" in summary
+    assert db.execute("SELECT count(*) FROM characters").fetchone()[0] == 0
+    titles = {row["title"] for row in db.execute("SELECT title FROM notes")}
+    assert titles == {
+        "Geography of the Eldenweave",
+        "Instructions for Grok",
+        "Voryn's Cultists - Generic Stat Blocks",
+        "outskirts",
+    }
+
+    (folder / "Geography of the Eldenweave.md").write_text(
+        "# Geography\n\nEldenport.\n", encoding="utf-8"
+    )
+    import_documents(db, folder)
+    rows = db.execute(
+        "SELECT content FROM notes WHERE title='Geography of the Eldenweave'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert "Eldenport" in rows[0]["content"]
     db.close()
 
 

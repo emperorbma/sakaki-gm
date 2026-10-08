@@ -22,6 +22,7 @@ from llm_client import complete
 from llm_config import CONFIG_PATH, load_config
 from ui.log_panel import LogPanel
 from ui.modules.characters import CharactersModule
+from ui.modules.documents import DocumentsModule
 from ui.modules.settings import SettingsModule
 from ui.modules.world import WorldModule
 
@@ -73,6 +74,8 @@ class MainWindow:
         notebook.add(self.characters_module.frame, text="Characters")
         self.world_module = WorldModule(notebook, self.db)
         notebook.add(self.world_module.frame, text="World")
+        self.documents_module = DocumentsModule(notebook, self.db)
+        notebook.add(self.documents_module.frame, text="Documents")
         self.settings_module = SettingsModule(notebook, self.db, self)
         notebook.add(self.settings_module.frame, text="Settings")
         self.log_panel = LogPanel(self.root, self.db)
@@ -136,6 +139,7 @@ class MainWindow:
             return
         self.save_location()
         self.world_module.save_prompt(quiet=True)
+        self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
         path = set_active(self.config_path, cid)
         self._swap_db(path)
@@ -146,6 +150,7 @@ class MainWindow:
         self.db = new_db
         self.characters_module.set_db(new_db)
         self.world_module.set_db(new_db)
+        self.documents_module.set_db(new_db)
         self.settings_module.set_db(new_db)
         self.log_panel.set_db(new_db)
         self.refresh_campaign_chrome()
@@ -156,6 +161,7 @@ class MainWindow:
             return
         self.save_location()
         self.world_module.save_prompt(quiet=True)
+        self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
         create_campaign(self.config_path, name.strip(), self.campaigns_dir)
         self._swap_db(active_path(load_config(self.config_path)))
@@ -177,6 +183,7 @@ class MainWindow:
             return
         self.save_location()
         self.world_module.save_prompt(quiet=True)
+        self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
         register_file(self.config_path, chosen)
         self._swap_db(active_path(load_config(self.config_path)))
@@ -188,12 +195,14 @@ class MainWindow:
         if not messagebox.askyesno("Remove campaign", f"Remove {label} from the campaign list?"):
             return
         self.world_module.save_prompt(quiet=True)
+        self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
         self.db.close()
         path = remove_campaign(self.config_path, cid, self.campaigns_dir)
         self.db = get_db(path)
         self.characters_module.set_db(self.db)
         self.world_module.set_db(self.db)
+        self.documents_module.set_db(self.db)
         self.settings_module.set_db(self.db)
         self.log_panel.set_db(self.db)
         self.refresh_campaign_chrome()
@@ -207,6 +216,7 @@ class MainWindow:
             return
         self.save_location()
         self.world_module.save_prompt(quiet=True)
+        self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
         system, user = build_messages(self.db, action)
         pyperclip.copy(format_clipboard(system, user))
@@ -222,6 +232,7 @@ class MainWindow:
             return
         self.save_location()
         self.world_module.save_prompt(quiet=True)
+        self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
         system, user = build_messages(self.db, action)
         settings = load_config(self.config_path)["llm"]
@@ -258,6 +269,7 @@ class MainWindow:
         if not reply:
             return
         self.world_module.save_prompt(quiet=True)
+        self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
         self.reply_box.delete("1.0", tk.END)
         self._apply_reply_text(reply)
