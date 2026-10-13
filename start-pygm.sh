@@ -21,7 +21,7 @@ if ! .venv/bin/python -c "import tkinter" >/dev/null 2>&1; then
   exit 1
 fi
 
-DESKTOP="$ROOT/pygm.desktop"
+DESKTOP="$ROOT/sakaki-gm.desktop"
 if [[ -f "$DESKTOP" ]]; then
   sed -i "s|^Exec=.*|Exec=$ROOT/start-pygm.sh|" "$DESKTOP"
   sed -i "s|^Path=.*|Path=$ROOT|" "$DESKTOP"

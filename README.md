@@ -14,7 +14,7 @@ The script creates `.venv`, installs the Python packages, and opens the window. 
 sudo apt install python3-venv python3-tk
 ```
 
-`pygm.desktop` starts the same script without a terminal.
+`sakaki-gm.desktop` starts the same script without a terminal.
 
 ## Windows
 
