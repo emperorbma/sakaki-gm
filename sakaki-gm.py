@@ -1,4 +1,4 @@
-# pygm.py
+# sakaki-gm.py
 import tkinter as tk
 from ui.main_window import MainWindow
 

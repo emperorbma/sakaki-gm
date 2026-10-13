@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start PyGM Core from this directory, with its own virtualenv.
+# Start Sakaki GM from this directory, with its own virtualenv.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -23,8 +23,8 @@ fi
 
 DESKTOP="$ROOT/sakaki-gm.desktop"
 if [[ -f "$DESKTOP" ]]; then
-  sed -i "s|^Exec=.*|Exec=$ROOT/start-pygm.sh|" "$DESKTOP"
+  sed -i "s|^Exec=.*|Exec=$ROOT/start-sakaki-gm.sh|" "$DESKTOP"
   sed -i "s|^Path=.*|Path=$ROOT|" "$DESKTOP"
 fi
 
-exec .venv/bin/python pygm.py
+exec .venv/bin/python sakaki-gm.py

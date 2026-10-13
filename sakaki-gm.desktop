@@ -2,7 +2,7 @@
 Type=Application
 Name=PyGM Core
 Comment=Local Game Master desk
-Exec=/home/emperorbma/sakaki-gm/start-pygm.sh
+Exec=/home/emperorbma/sakaki-gm/start-sakaki-gm.sh
 Path=/home/emperorbma/sakaki-gm
 Terminal=false
 Categories=Game;

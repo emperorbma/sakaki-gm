@@ -5,7 +5,7 @@ PyGM Core is a local Game Master desk. Each campaign is its own SQLite file, one
 ## Linux
 
 ```bash
-./start-pygm.sh
+./start-sakaki-gm.sh
 ```
 
 The script creates `.venv`, installs the Python packages, and opens the window. If it stops early on Debian, install the missing package and run it again:
@@ -18,7 +18,7 @@ sudo apt install python3-venv python3-tk
 
 ## Windows
 
-Double-click `start-pygm.bat`. Python 3 must be on `PATH` as `py` or `python`. The batch file creates `.venv` next to itself and installs the packages.
+Double-click `start-sakaki-gm.bat`. Python 3 must be on `PATH` as `py` or `python`. The batch file creates `.venv` next to itself and installs the packages.
 
 ## Campaigns
 

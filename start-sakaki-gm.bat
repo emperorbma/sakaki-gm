@@ -35,5 +35,5 @@ if errorlevel 1 (
   exit /b 1
 )
 
-.venv\Scripts\python.exe pygm.py
+.venv\Scripts\python.exe sakaki-gm.py
 exit /b %errorlevel%
