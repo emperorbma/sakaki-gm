@@ -7,6 +7,7 @@ from skill_db import get_character_skills, skill_bonus
 
 HP_CURRENT = "hp_current"
 HP_MAX = "hp_max"
+OBSOLETE_REFERENCE_PREFIX = "[OBSOLETE REFERENCE]"
 
 JSON_CONTRACT = """Reply with one JSON object and no other text:
 {
@@ -41,7 +42,11 @@ def bootstrap_instructions(db) -> str:
     rows = db.execute("SELECT title, content FROM notes").fetchall()
     for row in rows:
         title = (row["title"] or "").lower()
-        if "instruction" in title and row["content"]:
+        if (
+            not title.startswith(OBSOLETE_REFERENCE_PREFIX.lower())
+            and "instruction" in title
+            and row["content"]
+        ):
             return row["content"].strip()
     return DEFAULT_INSTRUCTIONS
 
@@ -124,6 +129,7 @@ def build_messages(db, action: str):
     notes = [
         {"title": row["title"], "content": row["content"]}
         for row in db.execute("SELECT title, content FROM notes ORDER BY title")
+        if not (row["title"] or "").startswith(OBSOLETE_REFERENCE_PREFIX)
     ]
     item_catalog = [
         {"name": item["name"], "description": item["description"]}

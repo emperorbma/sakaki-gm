@@ -403,6 +403,28 @@ def test_prompt_includes_sheet_and_play_tag(tmp_path):
     db.close()
 
 
+def test_prompt_excludes_obsolete_reference_notes(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    create_character(db, "Serina", {"name": "Serina"})
+    db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("[OBSOLETE REFERENCE] Instructions for Grok", "Old contradictory rules."),
+    )
+    db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("CANONICAL: Serina", "Current rules."),
+    )
+    db.commit()
+
+    system, user = build_messages(db, "Continue.")
+
+    assert "Old contradictory rules." not in system
+    assert "Old contradictory rules." not in user
+    assert "Current rules." in user
+    assert "You are an expert Game Master." in system
+    db.close()
+
+
 def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
     db = get_db(tmp_path / "campaign.db")
     character_id = create_character(
