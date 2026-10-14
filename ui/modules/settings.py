@@ -5,6 +5,7 @@ from tkinter import messagebox, ttk
 from gm import DEFAULT_INSTRUCTIONS, bootstrap_instructions, stored_system_prompt
 from llm_config import PRESETS, load_config, resolve_api_key, save_config
 from llm_client import list_models, test_connection
+from skill_db import DEFAULT_5E_SKILLS, replace_campaign_skills
 
 
 class SettingsModule:
@@ -148,9 +149,10 @@ class SettingsModule:
         INSERT OR REPLACE INTO campaign_settings (key, value) VALUES
         ('stat_system', '5e'),
         ('ability_scores', '["str","dex","con","int","wis","cha"]'),
-        ('proficiency_bonus', '2'),
-        ('skills_list', '["Acrobatics","Animal Handling","Arcana","Athletics","Deception","History","Insight","Intimidation","Investigation","Medicine","Nature","Perception","Performance","Persuasion","Religion","Sleight of Hand","Stealth","Survival"]');
+        ('proficiency_bonus', '2');
         """)
+        replace_campaign_skills(self.db, DEFAULT_5E_SKILLS)
+        self.db.execute("DELETE FROM campaign_settings WHERE key='skills_list'")
         self.db.commit()
         self.system_label.config(text=self._system_text())
         messagebox.showinfo("Success", "Standard 5e rules loaded.")

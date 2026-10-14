@@ -2,24 +2,37 @@
 import json
 from typing import List, Dict, Any, Optional
 
-def create_character(db, name: str, data: dict, is_player: bool = True) -> int:
+def create_character(db, name: str, data: dict, campaign_role: str = "") -> int:
     """Insert a new character and return its ID"""
     cur = db.cursor()
     cur.execute(
-        "INSERT INTO characters (name, data, is_player) VALUES (?, ?, ?)",
-        (name, json.dumps(data, ensure_ascii=False), int(is_player))
+        "INSERT INTO characters (name, data, campaign_role) VALUES (?, ?, ?)",
+        (name, json.dumps(data, ensure_ascii=False), campaign_role.strip())
     )
     db.commit()
     return cur.lastrowid
 
 
-def update_character(db, char_id: int, name: str, data: dict) -> None:
+def update_character(
+    db,
+    char_id: int,
+    name: str,
+    data: dict,
+    campaign_role: Optional[str] = None,
+) -> None:
     """Update existing character"""
     cur = db.cursor()
-    cur.execute(
-        "UPDATE characters SET name = ?, data = ? WHERE id = ?",
-        (name, json.dumps(data, ensure_ascii=False), char_id)
-    )
+    serialized = json.dumps(data, ensure_ascii=False)
+    if campaign_role is None:
+        cur.execute(
+            "UPDATE characters SET name = ?, data = ? WHERE id = ?",
+            (name, serialized, char_id),
+        )
+    else:
+        cur.execute(
+            "UPDATE characters SET name = ?, data = ?, campaign_role = ? WHERE id = ?",
+            (name, serialized, campaign_role.strip(), char_id),
+        )
     db.commit()
 
 
@@ -30,18 +43,21 @@ def get_character(db, char_id: int) -> Optional[Dict[str, Any]]:
     data = json.loads(row["data"])
     data["id"] = row["id"]
     data["name"] = row["name"]
-    data["is_player"] = bool(row["is_player"])
+    data["campaign_role"] = row["campaign_role"]
     return data
 
 
 def get_all_characters(db) -> List[Dict[str, Any]]:
-    rows = db.execute("SELECT id, name, data FROM characters ORDER BY name").fetchall()
+    rows = db.execute(
+        "SELECT id, name, data, campaign_role FROM characters ORDER BY name"
+    ).fetchall()
     characters = []
     for row in rows:
         try:
             data = json.loads(row["data"])
             data["id"] = row["id"]
             data["name"] = row["name"]
+            data["campaign_role"] = row["campaign_role"]
             characters.append(data)
         except:
             characters.append({"id": row["id"], "name": row["name"], "error": True})

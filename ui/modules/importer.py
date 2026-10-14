@@ -5,6 +5,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from character_db import create_character, update_character
+from skill_db import move_legacy_skills_to_notes
 
 ABILITIES = ("str", "dex", "con", "int", "wis", "cha")
 ABILITY_RE = re.compile(
@@ -50,6 +51,22 @@ def parse_markdown_character(text: str) -> dict:
                 return
             if section == "notes":
                 data["notes"] = (data["notes"] + "\n" + block).strip() if data["notes"] else block
+            elif section == "proficiencies":
+                proficiencies = []
+                skills = []
+                for line in section_lines:
+                    if re.match(r"(?i)^\s*[-*]?\s*skills?\s*:", line):
+                        skills.append(re.sub(r"(?i)^\s*[-*]?\s*skills?\s*:\s*", "", line))
+                    else:
+                        proficiencies.append(line)
+                if proficiencies:
+                    previous = data.get(section, "")
+                    remaining = "\n".join(proficiencies).strip()
+                    data[section] = (previous + "\n" + remaining).strip() if previous else remaining
+                if skills:
+                    previous = data.get("skills", "")
+                    extracted = "\n".join(skills).strip()
+                    data["skills"] = (previous + "\n" + extracted).strip() if previous else extracted
             else:
                 previous = data.get(section, "")
                 data[section] = (previous + "\n" + block).strip() if previous else block
@@ -192,7 +209,7 @@ def import_campaign_files(db, files) -> str:
         text = path.read_text(encoding="utf-8")
         if looks_like_character(path, text):
             data = parse_markdown_character(text)
-            _upsert_character(db, data, is_player_for_new=False)
+            _upsert_character(db, data)
             characters += 1
         else:
             _upsert_note(db, path.stem, text)
@@ -200,13 +217,14 @@ def import_campaign_files(db, files) -> str:
     return f"Imported {characters} characters and {notes} notes."
 
 
-def _upsert_character(db, data: dict, *, is_player_for_new: bool):
+def _upsert_character(db, data: dict):
+    move_legacy_skills_to_notes(data)
     name = data.get("name") or "Unnamed"
-    row = db.execute("SELECT id, is_player FROM characters WHERE name=?", (name,)).fetchone()
+    row = db.execute("SELECT id FROM characters WHERE name=?", (name,)).fetchone()
     if row:
         update_character(db, row["id"], name, data)
         return row["id"]
-    return create_character(db, name, data, is_player=is_player_for_new)
+    return create_character(db, name, data)
 
 
 def _upsert_note(db, title: str, content: str) -> None:
@@ -353,7 +371,7 @@ class ImporterModule(ttk.Frame):
             data = parse_markdown_character(text)
             name = data.get("name") or Path(path).stem.replace("_", " ").title()
             data["name"] = name
-            char_id = _upsert_character(self.app.db, data, is_player_for_new=True)
+            char_id = _upsert_character(self.app.db, data)
             messagebox.showinfo("Success", f"Imported '{name}' successfully!")
             self.app.characters_module.refresh()
             self.master.after(100, lambda cid=char_id: self.app.open_character_editor(cid))

@@ -13,7 +13,7 @@ from campaigns import (
     remove_campaign,
 )
 from character_db import create_character
-from db import LEGACY_DB, get_db
+from db import LEGACY_DB, get_db, migrate
 from gm import apply_updates, build_messages, parse_reply
 from llm_client import complete, list_models
 from llm_config import load_config
@@ -23,6 +23,13 @@ from item_db import (
     get_character_items,
     get_items,
     set_character_items,
+)
+from skill_db import (
+    DEFAULT_5E_SKILLS,
+    get_character_skills,
+    get_skills,
+    set_character_skills,
+    skill_bonus,
 )
 from quest_db import (
     delete_quest,
@@ -98,9 +105,14 @@ def test_stat_block_and_labeled_strength():
     assert labeled["str"] == 14
 
 
-def test_folder_import_keeps_player_flag_and_location(tmp_path):
+def test_folder_import_preserves_manual_campaign_role(tmp_path):
     db = get_db(tmp_path / "campaign.db")
-    create_character(db, "Serina", {"name": "Serina", "class": "broken", "hp_current": 1}, is_player=True)
+    create_character(
+        db,
+        "Serina",
+        {"name": "Serina", "class": "broken", "hp_current": 1},
+        campaign_role="Party member",
+    )
     folder = tmp_path / "binder"
     folder.mkdir()
     (folder / "Serina - Character Sheet.md").write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
@@ -111,9 +123,14 @@ def test_folder_import_keeps_player_flag_and_location(tmp_path):
 
     summary = import_campaign_folder(db, folder)
     assert "characters" in summary
-    row = db.execute("SELECT is_player, data FROM characters WHERE name='Serina'").fetchone()
-    assert row["is_player"] == 1
-    assert "Wizard" in json.loads(row["data"])["class"]
+    row = db.execute(
+        "SELECT campaign_role, data FROM characters WHERE name='Serina'"
+    ).fetchone()
+    assert row["campaign_role"] == "Party member"
+    imported = json.loads(row["data"])
+    assert "Wizard" in imported["class"]
+    assert "skills" not in imported
+    assert "Arcana +5" in imported["notes"]
     titles = {row["title"] for row in db.execute("SELECT title FROM notes")}
     assert "Serina - Quest Log" in titles
     assert "Geography of the Eldenweave" in titles
@@ -122,6 +139,30 @@ def test_folder_import_keeps_player_flag_and_location(tmp_path):
     location = db.execute("SELECT value FROM world WHERE key='location'").fetchone()["value"]
     assert location == "A quiet tavern"
     db.close()
+
+
+def test_v8_migration_replaces_player_flag_with_blank_campaign_role(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    try:
+        create_character(db, "Serina", {"name": "Serina"})
+        db.execute("ALTER TABLE characters DROP COLUMN campaign_role")
+        db.execute("ALTER TABLE characters ADD COLUMN is_player BOOLEAN DEFAULT 0")
+        db.execute("UPDATE characters SET is_player = 1")
+        db.execute("PRAGMA user_version = 8")
+
+        migrate(db)
+
+        columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(characters)")
+        }
+        assert "is_player" not in columns
+        assert "campaign_role" in columns
+        assert db.execute(
+            "SELECT campaign_role FROM characters WHERE name='Serina'"
+        ).fetchone()["campaign_role"] == ""
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+    finally:
+        db.close()
 
 
 def test_import_documents_stores_reference_files_only(tmp_path):
@@ -372,6 +413,7 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
             "inventory": ["Obsolete free-form item"],
             "attuned": ["Obsolete attunement"],
         },
+        campaign_role="Party member",
     )
     item_id = create_item(db, "Lunar Scepter", "A silver arcane focus.")
     set_character_items(db, character_id, [(item_id, 2, True, "right hand")])
@@ -396,6 +438,7 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
     assert '"equipment_location": "right hand"' in user
     assert "Obsolete free-form item" not in user
     assert "Obsolete attunement" not in user
+    assert '"campaign_role": "Party member"' in user
     with pytest.raises(sqlite3.IntegrityError):
         delete_item(db, item_id)
     db.rollback()
@@ -408,19 +451,30 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
     character_id = create_character(
         db,
         "Legacy",
-        {"name": "Legacy", "inventory": ["Old free-form item"], "attuned": []},
+        {
+            "name": "Legacy",
+            "inventory": ["Old free-form item"],
+            "attuned": [],
+            "skills": "Dual wielding",
+        },
     )
+    db.execute("DROP TABLE character_skills")
+    db.execute("DROP TABLE campaign_skills")
     db.execute("DROP TABLE character_items")
     db.execute("DROP TABLE items")
     db.execute("DROP TABLE quest_characters")
     db.execute("DROP TABLE quests")
+    db.execute(
+        "INSERT INTO campaign_settings (key, value) VALUES ('skills_list', ?)",
+        (json.dumps([name for name, _ability in DEFAULT_5E_SKILLS]),),
+    )
     db.execute("PRAGMA user_version = 3")
     db.commit()
     db.close()
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
         assert get_items(db) == []
         assert get_quests(db) == []
         data = json.loads(
@@ -431,6 +485,16 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
         )
         assert data["inventory"] == ["Old free-form item"]
         assert data["attuned"] == []
+        assert "skills" not in data
+        assert "Dual wielding" in data["notes"]
+        character_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(characters)")
+        }
+        assert "is_player" not in character_columns
+        assert "campaign_role" in character_columns
+        assert [skill["name"] for skill in get_skills(db)] == [
+            name for name, _ability in DEFAULT_5E_SKILLS
+        ]
     finally:
         db.close()
 
@@ -494,6 +558,8 @@ def test_quest_assignments_support_multiple_characters_and_multiple_quests(tmp_p
 def test_schema_v4_campaign_migrates_to_quests(tmp_path):
     path = tmp_path / "campaign.db"
     db = get_db(path)
+    db.execute("DROP TABLE character_skills")
+    db.execute("DROP TABLE campaign_skills")
     db.execute("DROP TABLE quest_characters")
     db.execute("DROP TABLE quests")
     db.execute("ALTER TABLE character_items DROP COLUMN equipment_location")
@@ -503,7 +569,7 @@ def test_schema_v4_campaign_migrates_to_quests(tmp_path):
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
         assert get_quests(db) == []
     finally:
         db.close()
@@ -513,6 +579,8 @@ def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     path = tmp_path / "campaign.db"
     db = get_db(path)
     quest_id = save_quest(db, None, "Legacy quest", "Existing objective.", [])
+    db.execute("DROP TABLE character_skills")
+    db.execute("DROP TABLE campaign_skills")
     db.execute("ALTER TABLE quests DROP COLUMN status")
     db.execute("ALTER TABLE character_items DROP COLUMN equipment_location")
     db.execute("PRAGMA user_version = 5")
@@ -522,7 +590,7 @@ def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     db = get_db(path)
     try:
         quest = get_quests(db)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
         assert quest["id"] == quest_id
         assert quest["name"] == "Legacy quest"
         assert quest["description"] == "Existing objective."
@@ -537,6 +605,8 @@ def test_schema_v6_campaign_adds_equipment_location(tmp_path):
     character_id = create_character(db, "Serina", {"name": "Serina"})
     item_id = create_item(db, "Lunar Scepter")
     set_character_items(db, character_id, [(item_id, 1, True, "right hand")])
+    db.execute("DROP TABLE character_skills")
+    db.execute("DROP TABLE campaign_skills")
     db.execute("ALTER TABLE character_items DROP COLUMN equipment_location")
     db.execute("PRAGMA user_version = 6")
     db.commit()
@@ -545,11 +615,42 @@ def test_schema_v6_campaign_adds_equipment_location(tmp_path):
     db = get_db(path)
     try:
         assignment = get_character_items(db, character_id)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
         assert assignment["equipment_location"] == ""
         assert assignment["attuned"] == 1
     finally:
         db.close()
+
+
+def test_character_skill_assignments_calculate_and_appear_in_gm_prompt(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    character_id = create_character(
+        db,
+        "Serina",
+        {
+            "name": "Serina",
+            "dex": 14,
+            "proficiency_bonus": 2,
+        },
+    )
+    stealth = next(skill for skill in get_skills(db) if skill["name"] == "Stealth")
+    set_character_skills(db, character_id, [(stealth["id"], False, True)])
+
+    assigned = next(
+        skill for skill in get_character_skills(db, character_id)
+        if skill["id"] == stealth["id"]
+    )
+    assert assigned["proficient"] == 1
+    assert assigned["expertise"] == 1
+    assert skill_bonus(14, 2, assigned["proficient"], assigned["expertise"]) == 6
+
+    _system, user = build_messages(db, "Sneak past the guard.")
+    assert '"name": "Stealth"' in user
+    assert '"ability": "dex"' in user
+    assert '"expertise": true' in user
+    assert '"bonus": 6' in user
+    assert '"skills": []' not in user
+    db.close()
 
 
 def test_saved_system_prompt_replaces_the_instruction_note(tmp_path):

@@ -7,11 +7,11 @@ from tkinter import filedialog, messagebox, ttk
 
 from character_db import create_character, delete_character, get_all_characters, update_character
 from item_db import get_character_items, get_items, set_character_items
+from skill_db import get_character_skills, get_skills, set_character_skills
 
 TEXT_FIELDS = (
     ("spells", "Spells"),
     ("features", "Features"),
-    ("skills", "Skills"),
     ("saving_throws", "Saves"),
     ("actions", "Actions"),
     ("proficiencies", "Proficiencies"),
@@ -56,7 +56,8 @@ class CharactersModule:
             else:
                 hp = char.get("hp_current", char.get("hp", 0))
                 max_hp = char.get("hp_max", char.get("max_hp", hp))
-                summary = f"{char['name']} — {char.get('class') or '?'} — HP: {hp}/{max_hp}"
+                role = f" — {char['campaign_role']}" if char.get("campaign_role") else ""
+                summary = f"{char['name']} — {char.get('class') or '?'} — HP: {hp}/{max_hp}{role}"
             self.tree.insert("", "end", iid=str(char["id"]), text=char["name"], values=(summary,))
 
     def new_character(self):
@@ -86,7 +87,7 @@ class CharactersModule:
             "background": "", "alignment": "", "experience": 0,
             "hp_current": 10, "hp_max": 10, "ac": 10, "ac_note": "",
             "speed": 30, "initiative": 0, "proficiency_bonus": default_prof,
-            "notes": "",
+            "campaign_role": row["campaign_role"] if row else "", "notes": "",
         }
         for stat in ability_scores:
             defaults.setdefault(stat, 10)
@@ -140,6 +141,7 @@ class CharactersModule:
         right.grid(row=0, column=1, padx=15, pady=15, sticky="n")
         spec = (
             ("Name", "name", "str"),
+            ("Campaign role", "campaign_role", "str"),
             ("Class", "class", "str"),
             ("Level", "level", "int"),
             ("Experience", "experience", "int"),
@@ -350,6 +352,108 @@ class CharactersModule:
             ],
         ).pack(side=tk.LEFT, padx=4)
 
+        skills_tab = ttk.Frame(notebook)
+        notebook.add(skills_tab, text="Skills")
+        ttk.Label(
+            skills_tab,
+            text="Choose proficiency and expertise. Bonuses use the character's ability scores and proficiency bonus.",
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(10, 6))
+        for column, title in enumerate(("Skill", "Ability", "Proficient", "Expertise", "Bonus")):
+            ttk.Label(skills_tab, text=title, font=("TkDefaultFont", 9, "bold")).grid(
+                row=1, column=column, sticky="w", padx=10, pady=3,
+            )
+        saved_skill_rows = (
+            get_character_skills(self.db, existing_id)
+            if existing_id is not None else []
+        )
+        saved_skills = {
+            skill["id"]: skill for skill in saved_skill_rows
+            if skill["proficient"] or skill["expertise"]
+        }
+        skill_vars = {}
+        skill_bonus_labels = {}
+
+        def refresh_skill_bonus(skill, proficient_var, expertise_var, label):
+            ability_var = ability_vars.get(skill["ability"])
+            if ability_var is None:
+                label.config(text="—")
+                return
+            try:
+                ability_score = ability_var.get()
+                proficiency_bonus = fields["proficiency_bonus"].get()
+            except tk.TclError:
+                label.config(text="—")
+                return
+            modifier = (ability_score - 10) // 2
+            bonus = modifier + proficiency_bonus * (
+                2 if expertise_var.get() else 1 if proficient_var.get() else 0
+            )
+            label.config(text=f"{bonus:+d}")
+
+        for index, skill in enumerate(get_skills(self.db), start=2):
+            previous = saved_skills.get(skill["id"])
+            proficient_var = tk.BooleanVar(
+                value=bool(previous["proficient"]) if previous else False,
+            )
+            expertise_var = tk.BooleanVar(
+                value=bool(previous["expertise"]) if previous else False,
+            )
+            bonus_label = ttk.Label(skills_tab, width=8, anchor="center")
+            skill_vars[skill["id"]] = (proficient_var, expertise_var)
+            skill_bonus_labels[skill["id"]] = bonus_label
+            ttk.Label(skills_tab, text=skill["name"]).grid(
+                row=index, column=0, sticky="w", padx=10, pady=2,
+            )
+            ttk.Label(skills_tab, text=skill["ability"].upper() or "—").grid(
+                row=index, column=1, sticky="w", padx=10, pady=2,
+            )
+
+            def proficiency_changed(
+                proficient_var=proficient_var,
+                expertise_var=expertise_var,
+                skill=skill,
+                bonus_label=bonus_label,
+            ):
+                if not proficient_var.get():
+                    expertise_var.set(False)
+                refresh_skill_bonus(skill, proficient_var, expertise_var, bonus_label)
+
+            def expertise_changed(
+                proficient_var=proficient_var,
+                expertise_var=expertise_var,
+                skill=skill,
+                bonus_label=bonus_label,
+            ):
+                if expertise_var.get():
+                    proficient_var.set(True)
+                refresh_skill_bonus(skill, proficient_var, expertise_var, bonus_label)
+
+            ttk.Checkbutton(
+                skills_tab,
+                variable=proficient_var,
+                command=proficiency_changed,
+            ).grid(row=index, column=2, padx=10)
+            ttk.Checkbutton(
+                skills_tab,
+                variable=expertise_var,
+                command=expertise_changed,
+            ).grid(row=index, column=3, padx=10)
+            bonus_label.grid(row=index, column=4, sticky="w", padx=10)
+            refresh_skill_bonus(skill, proficient_var, expertise_var, bonus_label)
+
+        def refresh_all_skill_bonuses(*_args):
+            for skill in get_skills(self.db):
+                vars_for_skill = skill_vars[skill["id"]]
+                refresh_skill_bonus(
+                    skill,
+                    vars_for_skill[0],
+                    vars_for_skill[1],
+                    skill_bonus_labels[skill["id"]],
+                )
+
+        for variable in (*ability_vars.values(), fields["proficiency_bonus"]):
+            variable.trace_add("write", refresh_all_skill_bonuses)
+
         for key, label in TEXT_FIELDS:
             tab = ttk.Frame(notebook)
             notebook.add(tab, text=label)
@@ -367,6 +471,8 @@ class CharactersModule:
                     payload[stat] = var.get()
                 payload.pop("inventory", None)
                 payload.pop("attuned", None)
+                payload.pop("skills", None)
+                campaign_role = str(payload.pop("campaign_role", "") or "").strip()
                 for key, _label in TEXT_FIELDS:
                     payload[key] = texts[key].get("1.0", "end").strip()
                 payload.pop("hp", None)
@@ -376,9 +482,20 @@ class CharactersModule:
                 return
             name = str(payload.get("name") or "Unnamed")
             if existing_id is None:
-                character_id = create_character(self.db, name, payload)
+                character_id = create_character(
+                    self.db,
+                    name,
+                    payload,
+                    campaign_role=campaign_role,
+                )
             else:
-                update_character(self.db, existing_id, name, payload)
+                update_character(
+                    self.db,
+                    existing_id,
+                    name,
+                    payload,
+                    campaign_role=campaign_role,
+                )
                 character_id = existing_id
             assignments = [
                 (
@@ -393,6 +510,15 @@ class CharactersModule:
                 set_character_items(self.db, character_id, assignments)
             except sqlite3.Error as exc:
                 messagebox.showerror("Save", f"Could not save catalog inventory: {exc}", parent=editor)
+                return
+            skill_assignments = [
+                (skill_id, values[0].get(), values[1].get())
+                for skill_id, values in skill_vars.items()
+            ]
+            try:
+                set_character_skills(self.db, character_id, skill_assignments)
+            except sqlite3.Error as exc:
+                messagebox.showerror("Save", f"Could not save character skills: {exc}", parent=editor)
                 return
             self.refresh()
             messagebox.showinfo("Saved", f"{name} saved!", parent=editor)

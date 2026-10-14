@@ -28,6 +28,10 @@ On the Characters tab, **Import Files** lets you select individual Markdown, tex
 
 The **Items** tab is the campaign-wide catalog of reusable item names and descriptions. Add catalog items there, then assign them to characters in the character editor's **Inventory** tab with a quantity, attuned flag, and optional equipment location. Character inventories use this catalog as their standard item list; the old free-form Inventory and Attuned fields are no longer shown or included in the GM prompt.
 
+The character editor's **Skills** tab uses campaign skill definitions loaded with the selected ruleset. Mark proficiency or expertise per character; bonuses are calculated from the governing ability score and proficiency bonus. Existing free-form skill text is preserved in character Notes during schema upgrade and can be manually reassigned.
+
+Characters have a manually editable **Campaign role** field for labels such as party member, ally, antagonist, or other. It is not inferred from how the character was created or imported.
+
 The **Quests** tab stores campaign quests by name, free-text status, and description. Add or remove participating characters for each quest; a character can participate in multiple quests. Quest details and linked character names are included in the GM prompt.
 
 ## Model

@@ -3,6 +3,7 @@ import json
 
 from item_db import get_character_items, get_items
 from quest_db import get_quest_characters, get_quests
+from skill_db import get_character_skills, skill_bonus
 
 HP_CURRENT = "hp_current"
 HP_MAX = "hp_max"
@@ -69,7 +70,9 @@ def world_value(db, key, default):
 def build_messages(db, action: str):
     """Return (system, user) for one GM turn. The user text is prefixed with [Play]."""
     characters = []
-    for row in db.execute("SELECT id, name, data FROM characters ORDER BY name"):
+    for row in db.execute(
+        "SELECT id, name, data, campaign_role FROM characters ORDER BY name"
+    ):
         try:
             data = json.loads(row["data"])
         except json.JSONDecodeError:
@@ -77,10 +80,35 @@ def build_messages(db, action: str):
         if isinstance(data, dict):
             data.pop("inventory", None)
             data.pop("attuned", None)
+            data.pop("skills", None)
         assignments = get_character_items(db, row["id"])
+        skills = []
+        if isinstance(data, dict):
+            proficiency_bonus = data.get("proficiency_bonus", 2)
+            for skill in get_character_skills(db, row["id"]):
+                proficient = bool(skill["proficient"])
+                expertise = bool(skill["expertise"])
+                if not proficient and not expertise:
+                    continue
+                ability = skill["ability"]
+                skills.append({
+                    "id": skill["id"],
+                    "name": skill["name"],
+                    "ability": ability,
+                    "proficient": proficient,
+                    "expertise": expertise,
+                    "bonus": skill_bonus(
+                        data.get(ability) if ability else None,
+                        proficiency_bonus,
+                        proficient,
+                        expertise,
+                    ),
+                })
         characters.append({
             "name": row["name"],
+            "campaign_role": row["campaign_role"],
             "data": data,
+            "skills": skills,
             "items": [
                 {
                     "name": item["name"],
