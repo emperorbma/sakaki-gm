@@ -86,7 +86,7 @@ class CharactersModule:
             "background": "", "alignment": "", "experience": 0,
             "hp_current": 10, "hp_max": 10, "ac": 10, "ac_note": "",
             "speed": 30, "initiative": 0, "proficiency_bonus": default_prof,
-            "inventory": [], "attuned": [], "notes": "",
+            "notes": "",
         }
         for stat in ability_scores:
             defaults.setdefault(stat, 10)
@@ -165,15 +165,13 @@ class CharactersModule:
             fields[key] = var
             widget.grid(row=index, column=1, pady=3, padx=5, sticky="w")
 
-        inv_list = _list_tab(notebook, "Inventory", data.get("inventory") or [])
-        att_list = _list_tab(notebook, "Attuned", data.get("attuned") or [])
         catalog_items = get_items(self.db)
         item_ids = {item["name"]: item["id"] for item in catalog_items}
         catalog_tab = ttk.Frame(notebook)
-        notebook.add(catalog_tab, text="Catalog Items")
+        notebook.add(catalog_tab, text="Inventory")
         ttk.Label(
             catalog_tab,
-            text="Structured inventory uses the campaign Items catalog. Existing Inventory and Attuned text above is unchanged.",
+            text="Assign items from the campaign catalog and track quantity and attunement here.",
             wraplength=760,
         ).pack(anchor="w", padx=10, pady=(10, 4))
         inventory_tree = ttk.Treeview(
@@ -348,8 +346,8 @@ class CharactersModule:
                     payload[key] = var.get()
                 for stat, var in ability_vars.items():
                     payload[stat] = var.get()
-                payload["inventory"] = _list_values(inv_list)
-                payload["attuned"] = [_strip_marker(item) for item in _list_values(att_list)]
+                payload.pop("inventory", None)
+                payload.pop("attuned", None)
                 for key, _label in TEXT_FIELDS:
                     payload[key] = texts[key].get("1.0", "end").strip()
                 payload.pop("hp", None)
@@ -439,84 +437,6 @@ class CharactersModule:
             for iid in selected:
                 delete_character(self.db, int(iid))
                 self.tree.delete(iid)
-
-
-def _list_tab(notebook, title, items):
-    tab = ttk.Frame(notebook)
-    notebook.add(tab, text=title)
-    listing = tk.Listbox(tab, height=18, selectmode=tk.EXTENDED, exportselection=False)
-    scroll = ttk.Scrollbar(tab, orient="vertical", command=listing.yview)
-    listing.configure(yscrollcommand=scroll.set)
-    listing.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=10)
-    scroll.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=10)
-    tab.rowconfigure(0, weight=1)
-    tab.columnconfigure(0, weight=1)
-    for item in items:
-        listing.insert(tk.END, _strip_marker(str(item)))
-
-    context_menu = tk.Menu(listing, tearoff=False)
-    context_menu.add_command(
-        label="Copy",
-        command=lambda: _copy_list_selection(listing),
-    )
-
-    def show_context_menu(event):
-        index = listing.nearest(event.y)
-        if index < 0 or index >= listing.size():
-            return "break"
-        bounds = listing.bbox(index)
-        if bounds is None or not bounds[1] <= event.y < bounds[1] + bounds[3]:
-            return "break"
-        if index not in listing.curselection():
-            listing.selection_clear(0, tk.END)
-            listing.selection_set(index)
-        try:
-            context_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            context_menu.grab_release()
-        return "break"
-
-    listing.bind("<Button-3>", show_context_menu)
-
-    entry = ttk.Entry(tab)
-    entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
-
-    def add():
-        text = entry.get().strip()
-        if text:
-            listing.insert(tk.END, _strip_marker(text))
-            entry.delete(0, tk.END)
-
-    def remove():
-        for index in reversed(listing.curselection()):
-            listing.delete(index)
-
-    buttons = ttk.Frame(tab)
-    buttons.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=4)
-    ttk.Button(buttons, text="Add", command=add).pack(side=tk.LEFT, padx=4)
-    ttk.Button(buttons, text="Remove", command=remove).pack(side=tk.LEFT, padx=4)
-    entry.bind("<Return>", lambda _event: add())
-    return listing
-
-
-def _copy_list_selection(listing):
-    selected = listing.curselection()
-    if not selected:
-        return
-    text = "\n".join(listing.get(index) for index in selected)
-    listing.clipboard_clear()
-    listing.clipboard_append(text)
-
-
-def _list_values(listing):
-    return [listing.get(index) for index in range(listing.size()) if listing.get(index).strip()]
-
-
-def _strip_marker(item: str) -> str:
-    text = item.strip()
-    if text.startswith("●"):
-        text = text[1:].strip()
-    return text
 
 
 def _as_text(value) -> str:

@@ -74,6 +74,9 @@ def build_messages(db, action: str):
             data = json.loads(row["data"])
         except json.JSONDecodeError:
             data = {"error": "unreadable"}
+        if isinstance(data, dict):
+            data.pop("inventory", None)
+            data.pop("attuned", None)
         assignments = get_character_items(db, row["id"])
         characters.append({
             "name": row["name"],

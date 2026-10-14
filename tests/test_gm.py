@@ -364,14 +364,13 @@ def test_prompt_includes_sheet_and_play_tag(tmp_path):
 
 def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
     db = get_db(tmp_path / "campaign.db")
-    original_inventory = ["Traveler's pack", "10 gp"]
     character_id = create_character(
         db,
         "Serina",
         {
             "name": "Serina",
-            "inventory": original_inventory,
-            "attuned": ["Lunar Scepter"],
+            "inventory": ["Obsolete free-form item"],
+            "attuned": ["Obsolete attunement"],
         },
     )
     item_id = create_item(db, "Lunar Scepter", "A silver arcane focus.")
@@ -386,13 +385,15 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
     data = json.loads(
         db.execute("SELECT data FROM characters WHERE id=?", (character_id,)).fetchone()["data"]
     )
-    assert data["inventory"] == original_inventory
-    assert data["attuned"] == ["Lunar Scepter"]
+    assert data["inventory"] == ["Obsolete free-form item"]
+    assert data["attuned"] == ["Obsolete attunement"]
 
     system, user = build_messages(db, "Check the pack.")
     assert "A silver arcane focus." in user
     assert '"quantity": 2' in user
     assert '"attuned": true' in user
+    assert "Obsolete free-form item" not in user
+    assert "Obsolete attunement" not in user
     with pytest.raises(sqlite3.IntegrityError):
         delete_item(db, item_id)
     db.rollback()
