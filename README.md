@@ -1,6 +1,6 @@
-# PyGM Core
+# Sakaki GM
 
-PyGM Core is a local Game Master desk. Each campaign is its own SQLite file, one bottle per campaign. The model that answers player actions is chosen in Settings.
+Sakaki GM is a local Game Master desk. Each campaign is its own SQLite file, one bottle per campaign. The model that answers player actions is chosen in Settings.
 
 ## Linux
 
@@ -22,7 +22,7 @@ Double-click `start-sakaki-gm.bat`. Python 3 must be on `PATH` as `py` or `pytho
 
 ## Campaigns
 
-The first window opens `pygm_campaign.db` in this folder when the campaign list is still empty. **New** adds another campaign file and leaves the current one in place. The campaign list, **Open**, **Rename**, and **Remove** are in the header. **Remove** deletes a file only when PyGM created it under `~/.local/share/pygm/campaigns/`.
+The first window opens `pygm_campaign.db` in this folder when the campaign list is still empty. **New** adds another campaign file and leaves the current one in place. The campaign list, **Open**, **Rename**, and **Remove** are in the header. **Remove** deletes a file only when Sakaki GM created it under `~/.local/share/pygm/campaigns/`.
 
 **Import Folder** reads a binder of markdown sheets and notes into the campaign that is open. The Eldenweave binder for the database already in this folder is `/home/emperorbma/Grok Adventure A1`.
 
