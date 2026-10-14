@@ -26,6 +26,8 @@ The first window opens `pygm_campaign.db` in this folder when the campaign list 
 
 On the Characters tab, **Import Files** lets you select individual Markdown, text, and CSV files to import as character sheets or reference notes. The Documents tab's **Add Files** imports selected reference files only; detected character sheets are skipped. Select multiple files in either dialog to import them together. Documents can be renamed from the Documents tab.
 
+The **Items** tab is the campaign-wide catalog of reusable item names and descriptions. Add catalog items there, then assign them to characters in the character editor's **Catalog Items** tab with a quantity and attuned flag. Existing free-form Inventory and Attuned text is preserved and is not automatically converted; re-enter catalog items manually before removing legacy entries.
+
 ## Model
 
 Settings has two presets:

@@ -1,6 +1,8 @@
 # gm.py — prompt, reply parsing, and campaign updates
 import json
 
+from item_db import get_character_items, get_items
+
 HP_CURRENT = "hp_current"
 HP_MAX = "hp_max"
 
@@ -66,16 +68,33 @@ def world_value(db, key, default):
 def build_messages(db, action: str):
     """Return (system, user) for one GM turn. The user text is prefixed with [Play]."""
     characters = []
-    for row in db.execute("SELECT name, data FROM characters ORDER BY name"):
+    for row in db.execute("SELECT id, name, data FROM characters ORDER BY name"):
         try:
             data = json.loads(row["data"])
         except json.JSONDecodeError:
             data = {"error": "unreadable"}
-        characters.append({"name": row["name"], "data": data})
+        assignments = get_character_items(db, row["id"])
+        characters.append({
+            "name": row["name"],
+            "data": data,
+            "items": [
+                {
+                    "name": item["name"],
+                    "description": item["description"],
+                    "quantity": item["quantity"],
+                    "attuned": bool(item["attuned"]),
+                }
+                for item in assignments
+            ],
+        })
 
     notes = [
         {"title": row["title"], "content": row["content"]}
         for row in db.execute("SELECT title, content FROM notes ORDER BY title")
+    ]
+    item_catalog = [
+        {"name": item["name"], "description": item["description"]}
+        for item in get_items(db)
     ]
     log_rows = db.execute(
         "SELECT speaker, message FROM log ORDER BY id DESC LIMIT 12"
@@ -106,6 +125,8 @@ def build_messages(db, action: str):
         json.dumps(world_value(db, "events", []), ensure_ascii=False),
         "Notes:",
         json.dumps(notes, ensure_ascii=False),
+        "Item catalog:",
+        json.dumps(item_catalog, ensure_ascii=False),
         "Recent log:",
         json.dumps(recent, ensure_ascii=False),
         "",

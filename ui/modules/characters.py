@@ -1,10 +1,12 @@
 # ui/modules/characters.py
 import json
 import random
+import sqlite3
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from character_db import create_character, delete_character, get_all_characters, update_character
+from item_db import get_character_items, get_items, set_character_items
 
 TEXT_FIELDS = (
     ("spells", "Spells"),
@@ -165,6 +167,171 @@ class CharactersModule:
 
         inv_list = _list_tab(notebook, "Inventory", data.get("inventory") or [])
         att_list = _list_tab(notebook, "Attuned", data.get("attuned") or [])
+        catalog_items = get_items(self.db)
+        item_ids = {item["name"]: item["id"] for item in catalog_items}
+        catalog_tab = ttk.Frame(notebook)
+        notebook.add(catalog_tab, text="Catalog Items")
+        ttk.Label(
+            catalog_tab,
+            text="Structured inventory uses the campaign Items catalog. Existing Inventory and Attuned text above is unchanged.",
+            wraplength=760,
+        ).pack(anchor="w", padx=10, pady=(10, 4))
+        inventory_tree = ttk.Treeview(
+            catalog_tab,
+            columns=("quantity", "attuned"),
+            show="tree headings",
+            height=12,
+            selectmode="browse",
+        )
+        inventory_tree.heading("#0", text="Item")
+        inventory_tree.heading("quantity", text="Quantity")
+        inventory_tree.heading("attuned", text="Attuned")
+        inventory_tree.column("#0", width=440)
+        inventory_tree.column("quantity", width=100, anchor="center")
+        inventory_tree.column("attuned", width=100, anchor="center")
+        inventory_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+        for assignment in (
+            get_character_items(self.db, existing_id) if existing_id is not None else []
+        ):
+            inventory_tree.insert(
+                "",
+                tk.END,
+                iid=str(assignment["id"]),
+                text=assignment["name"],
+                values=(
+                    assignment["quantity"],
+                    "Yes" if assignment["attuned"] else "No",
+                ),
+            )
+
+        inventory_controls = ttk.Frame(catalog_tab)
+        inventory_controls.pack(fill=tk.X, padx=10, pady=(0, 10))
+        item_name = tk.StringVar()
+        item_combo = ttk.Combobox(
+            inventory_controls,
+            textvariable=item_name,
+            values=list(item_ids),
+            state="readonly",
+            width=34,
+        )
+        item_combo.pack(side=tk.LEFT, padx=(0, 6))
+        quantity = tk.IntVar(value=1)
+        ttk.Spinbox(
+            inventory_controls,
+            from_=1,
+            to=9999,
+            textvariable=quantity,
+            width=7,
+        ).pack(side=tk.LEFT)
+        attuned = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            inventory_controls,
+            text="Attuned",
+            variable=attuned,
+        ).pack(side=tk.LEFT, padx=8)
+
+        def selected_catalog_id():
+            item_id = item_ids.get(item_name.get())
+            if item_id is None:
+                messagebox.showerror(
+                    "Inventory",
+                    "Choose an item from the campaign Items catalog first.",
+                    parent=editor,
+                )
+                return None
+            try:
+                count = quantity.get()
+                if count < 1:
+                    raise ValueError
+            except (tk.TclError, ValueError):
+                messagebox.showerror(
+                    "Inventory",
+                    "Quantity must be a positive whole number.",
+                    parent=editor,
+                )
+                return None
+            return item_id, count
+
+        def add_catalog_item():
+            selection = selected_catalog_id()
+            if selection is None:
+                return
+            item_id, count = selection
+            row_id = str(item_id)
+            if inventory_tree.exists(row_id):
+                messagebox.showerror(
+                    "Inventory",
+                    "This character already has that catalog item. Update its quantity instead.",
+                    parent=editor,
+                )
+                return
+            inventory_tree.insert(
+                "",
+                tk.END,
+                iid=row_id,
+                text=item_name.get(),
+                values=(count, "Yes" if attuned.get() else "No"),
+            )
+
+        def update_catalog_item():
+            selected = inventory_tree.selection()
+            if not selected:
+                messagebox.showerror(
+                    "Inventory",
+                    "Select an inventory item to update.",
+                    parent=editor,
+                )
+                return
+            selection = selected_catalog_id()
+            if selection is None:
+                return
+            item_id, count = selection
+            old_row_id = selected[0]
+            row_id = str(item_id)
+            if row_id != old_row_id and inventory_tree.exists(row_id):
+                messagebox.showerror(
+                    "Inventory",
+                    "This character already has that catalog item.",
+                    parent=editor,
+                )
+                return
+            inventory_tree.delete(old_row_id)
+            inventory_tree.insert(
+                "",
+                tk.END,
+                iid=row_id,
+                text=item_name.get(),
+                values=(count, "Yes" if attuned.get() else "No"),
+            )
+
+        def load_inventory_selection(_event=None):
+            selected = inventory_tree.selection()
+            if not selected:
+                return
+            values = inventory_tree.item(selected[0], "values")
+            item_name.set(inventory_tree.item(selected[0], "text"))
+            quantity.set(int(values[0]))
+            attuned.set(values[1] == "Yes")
+
+        inventory_tree.bind("<<TreeviewSelect>>", load_inventory_selection)
+        ttk.Button(
+            inventory_controls,
+            text="Add",
+            command=add_catalog_item,
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            inventory_controls,
+            text="Update selected",
+            command=update_catalog_item,
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            inventory_controls,
+            text="Remove selected",
+            command=lambda: [
+                inventory_tree.delete(selected)
+                for selected in inventory_tree.selection()
+            ],
+        ).pack(side=tk.LEFT, padx=4)
 
         for key, label in TEXT_FIELDS:
             tab = ttk.Frame(notebook)
@@ -192,9 +359,23 @@ class CharactersModule:
                 return
             name = str(payload.get("name") or "Unnamed")
             if existing_id is None:
-                create_character(self.db, name, payload)
+                character_id = create_character(self.db, name, payload)
             else:
                 update_character(self.db, existing_id, name, payload)
+                character_id = existing_id
+            assignments = [
+                (
+                    int(item_id),
+                    int(inventory_tree.set(item_id, "quantity")),
+                    inventory_tree.set(item_id, "attuned") == "Yes",
+                )
+                for item_id in inventory_tree.get_children()
+            ]
+            try:
+                set_character_items(self.db, character_id, assignments)
+            except sqlite3.Error as exc:
+                messagebox.showerror("Save", f"Could not save catalog inventory: {exc}", parent=editor)
+                return
             self.refresh()
             messagebox.showinfo("Saved", f"{name} saved!", parent=editor)
             editor.destroy()

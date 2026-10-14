@@ -9,6 +9,7 @@ LEGACY_DB = APP_DIR / "pygm_campaign.db"
 def get_db(path):
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
     migrate(db)
     return db
 
@@ -50,5 +51,23 @@ def migrate(db):
         ('proficiency_bonus', '2'),
         ('skills_list', '["Acrobatics","Animal Handling","Arcana","Athletics","Deception","History","Insight","Intimidation","Investigation","Medicine","Nature","Perception","Performance","Persuasion","Religion","Sleight of Hand","Stealth","Survival"]');
         PRAGMA user_version = 3;
+        """)
+        db.commit()
+
+    if version < 4:
+        cur.executescript("""
+        CREATE TABLE items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            description TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE character_items (
+            character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+            item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE RESTRICT,
+            quantity INTEGER NOT NULL CHECK (quantity > 0),
+            attuned BOOLEAN NOT NULL DEFAULT 0,
+            PRIMARY KEY (character_id, item_id)
+        );
+        PRAGMA user_version = 4;
         """)
         db.commit()

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,13 @@ from db import LEGACY_DB, get_db
 from gm import apply_updates, build_messages, parse_reply
 from llm_client import complete
 from llm_config import load_config
+from item_db import (
+    create_item,
+    delete_item,
+    get_character_items,
+    get_items,
+    set_character_items,
+)
 from ui.modules.importer import (
     import_campaign_files,
     import_campaign_folder,
@@ -346,6 +354,73 @@ def test_prompt_includes_sheet_and_play_tag(tmp_path):
     assert "Serina" in user
     assert "11" in user
     db.close()
+
+
+def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    original_inventory = ["Traveler's pack", "10 gp"]
+    character_id = create_character(
+        db,
+        "Serina",
+        {
+            "name": "Serina",
+            "inventory": original_inventory,
+            "attuned": ["Lunar Scepter"],
+        },
+    )
+    item_id = create_item(db, "Lunar Scepter", "A silver arcane focus.")
+    set_character_items(db, character_id, [(item_id, 2, True)])
+
+    assigned = get_character_items(db, character_id)
+    assert len(assigned) == 1
+    assert assigned[0]["name"] == "Lunar Scepter"
+    assert assigned[0]["description"] == "A silver arcane focus."
+    assert assigned[0]["quantity"] == 2
+    assert assigned[0]["attuned"] == 1
+    data = json.loads(
+        db.execute("SELECT data FROM characters WHERE id=?", (character_id,)).fetchone()["data"]
+    )
+    assert data["inventory"] == original_inventory
+    assert data["attuned"] == ["Lunar Scepter"]
+
+    system, user = build_messages(db, "Check the pack.")
+    assert "A silver arcane focus." in user
+    assert '"quantity": 2' in user
+    assert '"attuned": true' in user
+    with pytest.raises(sqlite3.IntegrityError):
+        delete_item(db, item_id)
+    db.rollback()
+    db.close()
+
+
+def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_items(tmp_path):
+    path = tmp_path / "campaign.db"
+    db = get_db(path)
+    character_id = create_character(
+        db,
+        "Legacy",
+        {"name": "Legacy", "inventory": ["Old free-form item"], "attuned": []},
+    )
+    db.execute("DROP TABLE character_items")
+    db.execute("DROP TABLE items")
+    db.execute("PRAGMA user_version = 3")
+    db.commit()
+    db.close()
+
+    db = get_db(path)
+    try:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert get_items(db) == []
+        data = json.loads(
+            db.execute(
+                "SELECT data FROM characters WHERE id=?",
+                (character_id,),
+            ).fetchone()["data"]
+        )
+        assert data["inventory"] == ["Old free-form item"]
+        assert data["attuned"] == []
+    finally:
+        db.close()
 
 
 def test_saved_system_prompt_replaces_the_instruction_note(tmp_path):
