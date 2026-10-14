@@ -22,9 +22,9 @@ Double-click `start-sakaki-gm.bat`. Python 3 must be on `PATH` as `py` or `pytho
 
 ## Campaigns
 
-The first window opens `pygm_campaign.db` in this folder when the campaign list is still empty. **New** adds another campaign file and leaves the current one in place. The campaign list, **Open**, **Rename**, and **Remove** are in the header. **Remove** deletes a file only when Sakaki GM created it under `~/.local/share/pygm/campaigns/`.
+The first window opens `pygm_campaign.db` in this folder when the campaign list is still empty. **New** adds another campaign file and leaves the current one in place. The campaign list, **Open**, **Rename**, and **Remove** are in the header. **Remove** deletes a file only when Sakaki GM created it under `~/.local/share/sakaki-gm/campaigns/`.
 
-**Import Folder** reads a binder of markdown sheets and notes into the campaign that is open. The Eldenweave binder for the database already in this folder is `/home/emperorbma/Grok Adventure A1`.
+On the Characters tab, **Import Files** lets you select individual Markdown, text, and CSV files to import as character sheets or reference notes. The Documents tab's **Add Files** imports selected reference files only; detected character sheets are skipped. Select multiple files in either dialog to import them together. Documents can be renamed from the Documents tab.
 
 ## Model
 
@@ -35,4 +35,4 @@ Settings has two presets:
 
 **Test** checks the `/models` endpoint. **Ask GM** sends the action as a `[Play]` turn.
 
-The key and the campaign list are stored in `~/.config/pygm/config.json`. That file is not part of the git repository. `pygm_campaign.db` and `.venv` are gitignored.
+The key and the campaign list are stored in `~/.config/sakaki-gm/config.json`. On first launch after this rename, settings are migrated from `~/.config/pygm/config.json` if the new config does not exist; the old file is left in place. Campaigns created by the app are stored under `~/.local/share/sakaki-gm/campaigns/`. `pygm_campaign.db` and `.venv` are gitignored.

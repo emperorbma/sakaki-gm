@@ -4,7 +4,12 @@ import uuid
 from pathlib import Path
 
 from db import LEGACY_DB, get_db
-from llm_config import CAMPAIGNS_DIR, load_config, save_config
+from llm_config import (
+    CAMPAIGNS_DIR,
+    LEGACY_CAMPAIGNS_DIR,
+    load_config,
+    save_config,
+)
 
 
 def campaign_name(path) -> str:
@@ -42,6 +47,7 @@ def bootstrap(config_path=None, legacy_db=LEGACY_DB, campaigns_dir=CAMPAIGNS_DIR
     Otherwise it creates an empty bottle under campaigns_dir.
     """
     cfg = load_config(config_path)
+    changed = False
     if not cfg["campaigns"]:
         legacy = Path(legacy_db) if legacy_db else None
         if legacy is not None and legacy.is_file():
@@ -49,13 +55,29 @@ def bootstrap(config_path=None, legacy_db=LEGACY_DB, campaigns_dir=CAMPAIGNS_DIR
         else:
             cid = _create_file(cfg, "New Campaign", campaigns_dir)
         cfg["active_campaign"] = cid
-        save_config(cfg, config_path)
+        changed = True
     path = active_path(cfg)
     if path is None or not path.is_file():
-        cid = _create_file(cfg, "New Campaign", campaigns_dir)
-        cfg["active_campaign"] = cid
+        existing = next(
+            (
+                item for item in cfg["campaigns"]
+                if Path(item["path"]).is_file()
+            ),
+            None,
+        )
+        legacy = Path(legacy_db) if legacy_db else None
+        if existing is not None:
+            cfg["active_campaign"] = existing["id"]
+            path = Path(existing["path"])
+        elif legacy is not None and legacy.is_file():
+            cfg["active_campaign"] = _add(cfg, legacy)
+            path = legacy
+        else:
+            cfg["active_campaign"] = _create_file(cfg, "New Campaign", campaigns_dir)
+            path = active_path(cfg)
+        changed = True
+    if changed:
         save_config(cfg, config_path)
-        path = active_path(cfg)
     return cfg, path
 
 
@@ -124,14 +146,32 @@ def remove_campaign(config_path, campaign_id: str, campaigns_dir=CAMPAIGNS_DIR) 
         raise KeyError(campaign_id)
     cfg["campaigns"] = [item for item in cfg["campaigns"] if item["id"] != campaign_id]
     path = Path(entry["path"]).resolve()
-    root = Path(campaigns_dir).resolve()
-    if path == root or root in path.parents:
+    roots = {Path(campaigns_dir).resolve(), LEGACY_CAMPAIGNS_DIR.resolve()}
+    if any(path == root or root in path.parents for root in roots):
         path.unlink(missing_ok=True)
-    if not cfg["campaigns"]:
-        cid = _create_file(cfg, "New Campaign", campaigns_dir)
-        cfg["active_campaign"] = cid
-    elif cfg.get("active_campaign") == campaign_id:
-        cfg["active_campaign"] = cfg["campaigns"][0]["id"]
+    active = next(
+        (
+            item for item in cfg["campaigns"]
+            if item["id"] == cfg.get("active_campaign")
+            and Path(item["path"]).is_file()
+        ),
+        None,
+    )
+    existing = next(
+        (item for item in cfg["campaigns"] if Path(item["path"]).is_file()),
+        None,
+    )
+    if active is None:
+        active = existing
+    legacy = LEGACY_DB.resolve()
+    if active is None and legacy.is_file() and legacy != path:
+        cid = _add(cfg, legacy)
+        active = next(item for item in cfg["campaigns"] if item["id"] == cid)
+    if active is None:
+        cfg["campaigns"] = []
+        cfg["active_campaign"] = _create_file(cfg, "New Campaign", campaigns_dir)
+    else:
+        cfg["active_campaign"] = active["id"]
     save_config(cfg, config_path)
     return active_path(cfg)
 

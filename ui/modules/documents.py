@@ -1,8 +1,8 @@
 # ui/modules/documents.py — reference files stored in the campaign database
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from ui.modules.importer import import_documents
+from ui.modules.importer import import_document_files
 
 
 class DocumentsModule:
@@ -16,7 +16,7 @@ class DocumentsModule:
         header = ttk.Frame(self.frame)
         header.pack(fill=tk.X, padx=12, pady=(12, 4))
         ttk.Label(header, text="Documents", font=("Georgia", 14, "bold")).pack(side=tk.LEFT)
-        ttk.Button(header, text="Import Folder", command=self.import_folder).pack(side=tk.RIGHT)
+        ttk.Button(header, text="Add Files", command=self.import_files).pack(side=tk.RIGHT)
         ttk.Label(
             self.frame,
             text="Reference files stored in this campaign. Character sheets stay on the Characters tab.",
@@ -33,6 +33,7 @@ class DocumentsModule:
         buttons = ttk.Frame(self.frame)
         buttons.pack(fill=tk.X, padx=12, pady=(0, 12))
         ttk.Button(buttons, text="Save", command=self.save_current).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Rename", command=self.rename_current).pack(side=tk.LEFT, padx=6)
         ttk.Button(buttons, text="Remove", command=self.remove_current).pack(side=tk.LEFT, padx=6)
 
         self.reload()
@@ -64,13 +65,19 @@ class DocumentsModule:
         self.list.see(selected)
         self._show(selected)
 
-    def import_folder(self):
-        folder = filedialog.askdirectory(title="Import documents into this campaign")
-        if not folder:
+    def import_files(self):
+        files = filedialog.askopenfilenames(
+            title="Add documents to this campaign",
+            filetypes=[
+                ("Reference files", "*.md *.txt *.csv"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not files:
             return
         self.save_current(quiet=True)
         try:
-            summary = import_documents(self.db, folder)
+            summary = import_document_files(self.db, files)
         except Exception as exc:
             messagebox.showerror("Import", str(exc))
             return
@@ -89,6 +96,35 @@ class DocumentsModule:
         self.db.commit()
         if not quiet:
             messagebox.showinfo("Saved", "Document saved.")
+
+    def rename_current(self):
+        if self._loaded_id is None:
+            return
+        current_title = self._title_for(self._loaded_id)
+        title = simpledialog.askstring(
+            "Rename document",
+            "Document name:",
+            initialvalue=current_title,
+            parent=self.frame,
+        )
+        if title is None:
+            return
+        title = title.strip()
+        if not title:
+            messagebox.showerror("Rename document", "Document name cannot be empty.")
+            return
+        duplicate = self.db.execute(
+            "SELECT id FROM notes WHERE title=? AND id<>?",
+            (title, self._loaded_id),
+        ).fetchone()
+        if duplicate:
+            messagebox.showerror("Rename document", f"A document named {title} already exists.")
+            return
+        self.save_current(quiet=True)
+        self.db.execute("UPDATE notes SET title=? WHERE id=?", (title, self._loaded_id))
+        self.db.commit()
+        keep = self._loaded_id
+        self.reload(keep_id=keep)
 
     def remove_current(self):
         if self._loaded_id is None:

@@ -2,7 +2,6 @@
 import json
 import random
 import tkinter as tk
-from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from character_db import create_character, delete_character, get_all_characters, update_character
@@ -36,7 +35,7 @@ class CharactersModule:
         btn_frame.pack(pady=8)
         ttk.Button(btn_frame, text="+ New Character", command=self.new_character).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Import from .md", command=self.open_importer).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Import Folder", command=self.import_folder).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Import Files", command=self.import_files).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Refresh", command=self.refresh).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Delete", command=self.delete_selected).pack(side=tk.LEFT, padx=5)
 
@@ -232,13 +231,19 @@ class CharactersModule:
         importer = ImporterModule(toplevel, self.main_app)
         importer.pack(fill="both", expand=True)
 
-    def import_folder(self):
-        folder = filedialog.askdirectory(title="Import campaign folder")
-        if not folder:
+    def import_files(self):
+        files = filedialog.askopenfilenames(
+            title="Import campaign files",
+            filetypes=[
+                ("Campaign files", "*.md *.txt *.csv"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not files:
             return
-        from ui.modules.importer import import_campaign_folder
+        from ui.modules.importer import import_campaign_files
         try:
-            summary = import_campaign_folder(self.db, Path(folder))
+            summary = import_campaign_files(self.db, files)
         except Exception as exc:
             messagebox.showerror("Import", str(exc))
             return

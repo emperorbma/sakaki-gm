@@ -148,9 +148,14 @@ def looks_like_character(path: Path, text: str) -> bool:
 def import_documents(db, folder) -> str:
     """Store reference files in this campaign's notes. Character sheets are skipped."""
     folder = Path(folder)
+    return import_document_files(db, folder.iterdir())
+
+
+def import_document_files(db, files) -> str:
+    """Store selected reference files in this campaign's notes."""
     stored = 0
     skipped = 0
-    for path in sorted(folder.iterdir()):
+    for path in sorted((Path(file) for file in files), key=lambda item: str(item).lower()):
         if not path.is_file():
             continue
         suffix = path.suffix.lower()
@@ -167,9 +172,14 @@ def import_documents(db, folder) -> str:
 
 def import_campaign_folder(db, folder) -> str:
     folder = Path(folder)
+    return import_campaign_files(db, folder.iterdir())
+
+
+def import_campaign_files(db, files) -> str:
+    """Import selected character sheets and reference files into the campaign."""
     characters = 0
     notes = 0
-    for path in sorted(folder.iterdir()):
+    for path in sorted((Path(file) for file in files), key=lambda item: str(item).lower()):
         if not path.is_file():
             continue
         suffix = path.suffix.lower()

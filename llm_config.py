@@ -4,8 +4,10 @@ import os
 from copy import deepcopy
 from pathlib import Path
 
-CONFIG_PATH = Path.home() / ".config" / "pygm" / "config.json"
-CAMPAIGNS_DIR = Path.home() / ".local" / "share" / "pygm" / "campaigns"
+CONFIG_PATH = Path.home() / ".config" / "sakaki-gm" / "config.json"
+LEGACY_CONFIG_PATH = Path.home() / ".config" / "pygm" / "config.json"
+CAMPAIGNS_DIR = Path.home() / ".local" / "share" / "sakaki-gm" / "campaigns"
+LEGACY_CAMPAIGNS_DIR = Path.home() / ".local" / "share" / "pygm" / "campaigns"
 
 PRESETS = {
     "spacexai": {
@@ -31,7 +33,15 @@ DEFAULT_CONFIG = {
 
 
 def load_config(path=None) -> dict:
-    path = Path(path) if path else CONFIG_PATH
+    migrate_legacy = (
+        path is None
+        and not CONFIG_PATH.is_file()
+        and LEGACY_CONFIG_PATH.is_file()
+    )
+    if migrate_legacy:
+        path = LEGACY_CONFIG_PATH
+    else:
+        path = Path(path) if path else CONFIG_PATH
     cfg = deepcopy(DEFAULT_CONFIG)
     if path.is_file():
         try:
@@ -53,6 +63,8 @@ def load_config(path=None) -> dict:
                 for key in cfg["llm"]:
                     if key in llm and llm[key] is not None:
                         cfg["llm"][key] = llm[key]
+    if migrate_legacy:
+        save_config(cfg, CONFIG_PATH)
     return cfg
 
 

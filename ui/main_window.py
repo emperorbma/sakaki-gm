@@ -1,6 +1,7 @@
 # ui/main_window.py
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import pyperclip
@@ -38,7 +39,8 @@ class MainWindow:
         if legacy_db is None:
             from db import LEGACY_DB
             legacy = LEGACY_DB
-        _cfg, path = bootstrap(self.config_path, legacy, self.campaigns_dir)
+        cfg, path = bootstrap(self.config_path, legacy, self.campaigns_dir)
+        self._active_campaign_id = cfg["active_campaign"]
         self.db = get_db(path)
         self.root.geometry("1600x950")
         self.setup_ui()
@@ -135,7 +137,17 @@ class MainWindow:
             return
         cid = self._campaign_ids[index]
         cfg = load_config(self.config_path)
-        if cid == cfg.get("active_campaign"):
+        if cid == self._active_campaign_id:
+            return
+        selected = next(
+            (item for item in cfg["campaigns"] if item["id"] == cid),
+            None,
+        )
+        if selected is None or not Path(selected["path"]).is_file():
+            messagebox.showerror(
+                "Campaign",
+                "The selected campaign file is missing. Use Remove to drop this entry from the list.",
+            )
             return
         self.save_location()
         self.world_module.save_prompt(quiet=True)
@@ -148,6 +160,15 @@ class MainWindow:
         new_db = get_db(path)
         self.db.close()
         self.db = new_db
+        resolved_path = path.resolve()
+        cfg = load_config(self.config_path)
+        self._active_campaign_id = next(
+            (
+                item["id"] for item in cfg["campaigns"]
+                if Path(item["path"]).resolve() == resolved_path
+            ),
+            None,
+        )
         self.characters_module.set_db(new_db)
         self.world_module.set_db(new_db)
         self.documents_module.set_db(new_db)
@@ -189,23 +210,36 @@ class MainWindow:
         self._swap_db(active_path(load_config(self.config_path)))
 
     def remove_current(self):
+        index = self.campaign_combo.current()
+        selected_id = (
+            self._campaign_ids[index]
+            if 0 <= index < len(self._campaign_ids)
+            else None
+        )
         cfg = load_config(self.config_path)
-        cid = cfg.get("active_campaign")
-        label = self.get_meta("campaign_name", "this campaign")
-        if not messagebox.askyesno("Remove campaign", f"Remove {label} from the campaign list?"):
+        selected = next(
+            (item for item in cfg["campaigns"] if item["id"] == selected_id),
+            None,
+        )
+        missing_selected = (
+            selected is not None and not Path(selected["path"]).is_file()
+        )
+        cid = selected_id if missing_selected else self._active_campaign_id
+        if cid is None:
+            messagebox.showerror("Remove campaign", "The open campaign is no longer in the campaign list.")
+            return
+        label = "(missing campaign)" if missing_selected else self.get_meta("campaign_name", "this campaign")
+        if not messagebox.askyesno(
+            "Remove campaign",
+            f"Remove {label} from the campaign list?",
+        ):
             return
         self.world_module.save_prompt(quiet=True)
         self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
         self.db.close()
         path = remove_campaign(self.config_path, cid, self.campaigns_dir)
-        self.db = get_db(path)
-        self.characters_module.set_db(self.db)
-        self.world_module.set_db(self.db)
-        self.documents_module.set_db(self.db)
-        self.settings_module.set_db(self.db)
-        self.log_panel.set_db(self.db)
-        self.refresh_campaign_chrome()
+        self._swap_db(path)
 
     def open_character_editor(self, char_id=None):
         self.characters_module.open_editor(char_id)

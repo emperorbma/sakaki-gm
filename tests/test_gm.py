@@ -16,7 +16,13 @@ from db import LEGACY_DB, get_db
 from gm import apply_updates, build_messages, parse_reply
 from llm_client import complete
 from llm_config import load_config
-from ui.modules.importer import import_campaign_folder, import_documents, parse_markdown_character
+from ui.modules.importer import (
+    import_campaign_files,
+    import_campaign_folder,
+    import_document_files,
+    import_documents,
+    parse_markdown_character,
+)
 
 LIVE_DB = LEGACY_DB
 FIXTURE = Path(__file__).parent / "fixtures" / "serina_headings.md"
@@ -146,6 +152,28 @@ def test_import_documents_stores_reference_files_only(tmp_path):
     db.close()
 
 
+def test_individual_file_imports_only_selected_files(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    selected = tmp_path / "Selected.md"
+    ignored = tmp_path / "Ignored.md"
+    selected.write_text("# Selected note\n\nKeep this.\n", encoding="utf-8")
+    ignored.write_text("# Ignored note\n\nDo not import this.\n", encoding="utf-8")
+
+    summary = import_document_files(db, [selected])
+    assert summary.startswith("Stored 1 documents")
+    rows = db.execute("SELECT title, content FROM notes").fetchall()
+    assert [(row["title"], row["content"]) for row in rows] == [
+        ("Selected", "# Selected note\n\nKeep this.\n")
+    ]
+
+    character = tmp_path / "New Character Sheet.md"
+    character.write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    import_campaign_files(db, [character])
+    assert db.execute("SELECT name FROM characters").fetchone()["name"] == "Serina"
+    assert db.execute("SELECT count(*) FROM notes").fetchone()[0] == 1
+    db.close()
+
+
 def test_two_bottles_leave_the_first_file_unchanged(tmp_path):
     legacy = tmp_path / "legacy.db"
     db = get_db(legacy)
@@ -172,6 +200,37 @@ def test_two_bottles_leave_the_first_file_unchanged(tmp_path):
     assert hashlib.sha256(legacy.read_bytes()).hexdigest() == digest
 
 
+def test_bootstrap_recovers_to_existing_campaign_when_active_path_is_missing(tmp_path):
+    config = tmp_path / "config.json"
+    campaigns = tmp_path / "campaigns"
+    legacy = tmp_path / "legacy.db"
+    db = get_db(legacy)
+    create_character(db, "Keep", {"name": "Keep", "hp_current": 11})
+    db.close()
+    config.write_text(
+        json.dumps({
+            "active_campaign": "missing",
+            "campaigns": [
+                {"id": "missing", "path": str(tmp_path / "gone.db")},
+                {"id": "available", "path": str(legacy)},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    loaded, path = bootstrap(config, legacy, campaigns)
+    assert path.resolve() == legacy.resolve()
+    assert loaded["active_campaign"] == "available"
+    assert not list(campaigns.glob("*.db"))
+    recovered = get_db(path)
+    try:
+        assert recovered.execute(
+            "SELECT 1 FROM characters WHERE name='Keep'"
+        ).fetchone() is not None
+    finally:
+        recovered.close()
+
+
 def test_remove_deletes_managed_files_only(tmp_path):
     legacy = tmp_path / "legacy.db"
     get_db(legacy).close()
@@ -187,6 +246,85 @@ def test_remove_deletes_managed_files_only(tmp_path):
     legacy_id = register_file(config, legacy)
     remove_campaign(config, legacy_id, bottles)
     assert legacy.is_file()
+
+
+def test_remove_campaign_recovers_to_valid_database_not_stale_entry(tmp_path):
+    config = tmp_path / "config.json"
+    campaigns = tmp_path / "campaigns"
+    legacy = tmp_path / "legacy.db"
+    get_db(legacy).close()
+    config.write_text(
+        json.dumps({
+            "active_campaign": "temporary",
+            "campaigns": [
+                {"id": "missing", "path": str(tmp_path / "gone.db")},
+                {"id": "legacy", "path": str(legacy)},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    temporary_id = create_campaign(config, "Temporary", campaigns)
+    temporary_path = active_path(load_config(config))
+
+    recovered = remove_campaign(config, temporary_id, campaigns)
+    assert recovered.resolve() == legacy.resolve()
+    assert not temporary_path.exists()
+    loaded = load_config(config)
+    assert loaded["active_campaign"] == "legacy"
+
+
+def test_default_config_migrates_old_name_to_sakaki_gm(monkeypatch, tmp_path):
+    import llm_config
+
+    old_config = tmp_path / "pygm" / "config.json"
+    new_config = tmp_path / "sakaki-gm" / "config.json"
+    old_config.parent.mkdir()
+    previous = {
+        "active_campaign": "campaign-id",
+        "campaigns": [{"id": "campaign-id", "path": str(tmp_path / "keep.db")}],
+        "llm": {
+            "provider": "openai_compatible",
+            "base_url": "http://localhost:1234/v1",
+            "model": "local-model",
+            "api_key": "preserve-this-setting",
+        },
+    }
+    old_config.write_text(json.dumps(previous), encoding="utf-8")
+    monkeypatch.setattr(llm_config, "CONFIG_PATH", new_config)
+    monkeypatch.setattr(llm_config, "LEGACY_CONFIG_PATH", old_config)
+
+    loaded = llm_config.load_config()
+
+    assert loaded["active_campaign"] == "campaign-id"
+    assert loaded["campaigns"] == previous["campaigns"]
+    assert loaded["llm"] == previous["llm"]
+    assert json.loads(new_config.read_text(encoding="utf-8")) == loaded
+    assert json.loads(old_config.read_text(encoding="utf-8")) == previous
+
+
+def test_remove_missing_campaign_keeps_active_database(tmp_path):
+    config = tmp_path / "config.json"
+    campaigns = tmp_path / "campaigns"
+    active_db = tmp_path / "active.db"
+    get_db(active_db).close()
+    config.write_text(
+        json.dumps({
+            "active_campaign": "active",
+            "campaigns": [
+                {"id": "missing", "path": str(tmp_path / "gone.db")},
+                {"id": "active", "path": str(active_db)},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    result = remove_campaign(config, "missing", campaigns)
+
+    assert result.resolve() == active_db.resolve()
+    loaded = load_config(config)
+    assert loaded["active_campaign"] == "active"
+    assert [item["id"] for item in loaded["campaigns"]] == ["active"]
+    assert active_db.is_file()
 
 
 def test_prompt_includes_sheet_and_play_tag(tmp_path):
