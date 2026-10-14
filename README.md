@@ -26,7 +26,7 @@ The first window opens `pygm_campaign.db` in this folder when the campaign list 
 
 On the Characters tab, **Import Files** lets you select individual Markdown, text, and CSV files to import as character sheets or reference notes. The Documents tab's **Add Files** imports selected reference files only; detected character sheets are skipped. Select multiple files in either dialog to import them together. Documents can be renamed from the Documents tab.
 
-The **Items** tab is the campaign-wide catalog of reusable item names and descriptions. Add catalog items there, then assign them to characters in the character editor's **Inventory** tab with a quantity and attuned flag. Character inventories use this catalog as their standard item list; the old free-form Inventory and Attuned fields are no longer shown or included in the GM prompt.
+The **Items** tab is the campaign-wide catalog of reusable item names and descriptions. Add catalog items there, then assign them to characters in the character editor's **Inventory** tab with a quantity, attuned flag, and optional equipment location. Character inventories use this catalog as their standard item list; the old free-form Inventory and Attuned fields are no longer shown or included in the GM prompt.
 
 The **Quests** tab stores campaign quests by name, free-text status, and description. Add or remove participating characters for each quest; a character can participate in multiple quests. Quest details and linked character names are included in the GM prompt.
 

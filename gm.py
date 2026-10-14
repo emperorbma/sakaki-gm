@@ -87,6 +87,7 @@ def build_messages(db, action: str):
                     "description": item["description"],
                     "quantity": item["quantity"],
                     "attuned": bool(item["attuned"]),
+                    "equipment_location": item["equipment_location"],
                 }
                 for item in assignments
             ],

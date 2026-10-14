@@ -39,7 +39,8 @@ def get_character_items(db, character_id: int):
     return db.execute(
         """
         SELECT items.id, items.name, items.description,
-               character_items.quantity, character_items.attuned
+               character_items.quantity, character_items.attuned,
+               character_items.equipment_location
         FROM character_items
         JOIN items ON items.id = character_items.item_id
         WHERE character_items.character_id = ?
@@ -57,11 +58,19 @@ def set_character_items(db, character_id: int, assignments) -> None:
         )
         db.executemany(
             """
-            INSERT INTO character_items (character_id, item_id, quantity, attuned)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO character_items (
+                character_id, item_id, quantity, attuned, equipment_location
+            )
+            VALUES (?, ?, ?, ?, ?)
             """,
             [
-                (character_id, item_id, quantity, int(attuned))
-                for item_id, quantity, attuned in assignments
+                (
+                    character_id,
+                    item_id,
+                    quantity,
+                    int(attuned),
+                    equipment_location.strip(),
+                )
+                for item_id, quantity, attuned, equipment_location in assignments
             ],
         )

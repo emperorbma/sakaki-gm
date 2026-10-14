@@ -15,7 +15,7 @@ from campaigns import (
 from character_db import create_character
 from db import LEGACY_DB, get_db
 from gm import apply_updates, build_messages, parse_reply
-from llm_client import complete
+from llm_client import complete, list_models
 from llm_config import load_config
 from item_db import (
     create_item,
@@ -374,7 +374,7 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
         },
     )
     item_id = create_item(db, "Lunar Scepter", "A silver arcane focus.")
-    set_character_items(db, character_id, [(item_id, 2, True)])
+    set_character_items(db, character_id, [(item_id, 2, True, "right hand")])
 
     assigned = get_character_items(db, character_id)
     assert len(assigned) == 1
@@ -382,6 +382,7 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
     assert assigned[0]["description"] == "A silver arcane focus."
     assert assigned[0]["quantity"] == 2
     assert assigned[0]["attuned"] == 1
+    assert assigned[0]["equipment_location"] == "right hand"
     data = json.loads(
         db.execute("SELECT data FROM characters WHERE id=?", (character_id,)).fetchone()["data"]
     )
@@ -392,6 +393,7 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
     assert "A silver arcane focus." in user
     assert '"quantity": 2' in user
     assert '"attuned": true' in user
+    assert '"equipment_location": "right hand"' in user
     assert "Obsolete free-form item" not in user
     assert "Obsolete attunement" not in user
     with pytest.raises(sqlite3.IntegrityError):
@@ -418,7 +420,7 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
         assert get_items(db) == []
         assert get_quests(db) == []
         data = json.loads(
@@ -494,13 +496,14 @@ def test_schema_v4_campaign_migrates_to_quests(tmp_path):
     db = get_db(path)
     db.execute("DROP TABLE quest_characters")
     db.execute("DROP TABLE quests")
+    db.execute("ALTER TABLE character_items DROP COLUMN equipment_location")
     db.execute("PRAGMA user_version = 4")
     db.commit()
     db.close()
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
         assert get_quests(db) == []
     finally:
         db.close()
@@ -511,6 +514,7 @@ def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     db = get_db(path)
     quest_id = save_quest(db, None, "Legacy quest", "Existing objective.", [])
     db.execute("ALTER TABLE quests DROP COLUMN status")
+    db.execute("ALTER TABLE character_items DROP COLUMN equipment_location")
     db.execute("PRAGMA user_version = 5")
     db.commit()
     db.close()
@@ -518,11 +522,32 @@ def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     db = get_db(path)
     try:
         quest = get_quests(db)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
         assert quest["id"] == quest_id
         assert quest["name"] == "Legacy quest"
         assert quest["description"] == "Existing objective."
         assert quest["status"] == ""
+    finally:
+        db.close()
+
+
+def test_schema_v6_campaign_adds_equipment_location(tmp_path):
+    path = tmp_path / "campaign.db"
+    db = get_db(path)
+    character_id = create_character(db, "Serina", {"name": "Serina"})
+    item_id = create_item(db, "Lunar Scepter")
+    set_character_items(db, character_id, [(item_id, 1, True, "right hand")])
+    db.execute("ALTER TABLE character_items DROP COLUMN equipment_location")
+    db.execute("PRAGMA user_version = 6")
+    db.commit()
+    db.close()
+
+    db = get_db(path)
+    try:
+        assignment = get_character_items(db, character_id)[0]
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert assignment["equipment_location"] == ""
+        assert assignment["attuned"] == 1
     finally:
         db.close()
 
@@ -601,3 +626,33 @@ def test_complete_retries_without_response_format():
     assert "narration" in text
     assert len(calls) == 2
     assert "response_format" not in calls[1]
+
+
+def test_list_models_reads_openai_compatible_model_ids_and_authenticates():
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"data":[{"id":"model-b"},{"id":"model-a"},{"id":"model-b"}]}'
+
+    def opener(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    settings = {
+        "provider": "spacexai",
+        "base_url": "https://models.example/v1",
+        "model": "",
+        "api_key": "test-key",
+    }
+    assert list_models(settings, opener=opener) == ["model-a", "model-b"]
+    request, timeout = requests[0]
+    assert request.full_url == "https://models.example/v1/models"
+    assert request.get_header("Authorization") == "Bearer test-key"
+    assert timeout == 20

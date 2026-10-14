@@ -95,3 +95,11 @@ def migrate(db):
         PRAGMA user_version = 6;
         """)
         db.commit()
+
+    if version < 7:
+        cur.executescript("""
+        ALTER TABLE character_items
+        ADD COLUMN equipment_location TEXT NOT NULL DEFAULT '';
+        PRAGMA user_version = 7;
+        """)
+        db.commit()

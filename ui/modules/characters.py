@@ -176,7 +176,7 @@ class CharactersModule:
         ).pack(anchor="w", padx=10, pady=(10, 4))
         inventory_tree = ttk.Treeview(
             catalog_tab,
-            columns=("quantity", "attuned"),
+            columns=("quantity", "attuned", "location"),
             show="tree headings",
             height=12,
             selectmode="browse",
@@ -184,9 +184,11 @@ class CharactersModule:
         inventory_tree.heading("#0", text="Item")
         inventory_tree.heading("quantity", text="Quantity")
         inventory_tree.heading("attuned", text="Attuned")
+        inventory_tree.heading("location", text="Equipment location")
         inventory_tree.column("#0", width=440)
         inventory_tree.column("quantity", width=100, anchor="center")
         inventory_tree.column("attuned", width=100, anchor="center")
+        inventory_tree.column("location", width=180)
         inventory_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
         for assignment in (
             get_character_items(self.db, existing_id) if existing_id is not None else []
@@ -199,6 +201,7 @@ class CharactersModule:
                 values=(
                     assignment["quantity"],
                     "Yes" if assignment["attuned"] else "No",
+                    assignment["equipment_location"],
                 ),
             )
 
@@ -220,6 +223,13 @@ class CharactersModule:
             to=9999,
             textvariable=quantity,
             width=7,
+        ).pack(side=tk.LEFT)
+        equipment_location = tk.StringVar()
+        ttk.Label(inventory_controls, text="Location").pack(side=tk.LEFT, padx=(8, 3))
+        ttk.Entry(
+            inventory_controls,
+            textvariable=equipment_location,
+            width=16,
         ).pack(side=tk.LEFT)
         attuned = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -268,7 +278,11 @@ class CharactersModule:
                 tk.END,
                 iid=row_id,
                 text=item_name.get(),
-                values=(count, "Yes" if attuned.get() else "No"),
+                values=(
+                    count,
+                    "Yes" if attuned.get() else "No",
+                    equipment_location.get().strip(),
+                ),
             )
 
         def update_catalog_item():
@@ -299,7 +313,11 @@ class CharactersModule:
                 tk.END,
                 iid=row_id,
                 text=item_name.get(),
-                values=(count, "Yes" if attuned.get() else "No"),
+                values=(
+                    count,
+                    "Yes" if attuned.get() else "No",
+                    equipment_location.get().strip(),
+                ),
             )
 
         def load_inventory_selection(_event=None):
@@ -310,6 +328,7 @@ class CharactersModule:
             item_name.set(inventory_tree.item(selected[0], "text"))
             quantity.set(int(values[0]))
             attuned.set(values[1] == "Yes")
+            equipment_location.set(values[2])
 
         inventory_tree.bind("<<TreeviewSelect>>", load_inventory_selection)
         ttk.Button(
@@ -366,6 +385,7 @@ class CharactersModule:
                     int(item_id),
                     int(inventory_tree.set(item_id, "quantity")),
                     inventory_tree.set(item_id, "attuned") == "Yes",
+                    inventory_tree.set(item_id, "location"),
                 )
                 for item_id in inventory_tree.get_children()
             ]

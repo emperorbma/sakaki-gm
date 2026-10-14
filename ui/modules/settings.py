@@ -4,7 +4,7 @@ from tkinter import messagebox, ttk
 
 from gm import DEFAULT_INSTRUCTIONS, bootstrap_instructions, stored_system_prompt
 from llm_config import PRESETS, load_config, resolve_api_key, save_config
-from llm_client import test_connection
+from llm_client import list_models, test_connection
 
 
 class SettingsModule:
@@ -56,7 +56,21 @@ class SettingsModule:
         ttk.Label(llm, text="Base URL").grid(row=1, column=0, sticky="w", padx=10, pady=6)
         ttk.Entry(llm, textvariable=self.base_url, width=48).grid(row=1, column=1, sticky="w", padx=10, pady=6)
         ttk.Label(llm, text="Model").grid(row=2, column=0, sticky="w", padx=10, pady=6)
-        ttk.Entry(llm, textvariable=self.model, width=48).grid(row=2, column=1, sticky="w", padx=10, pady=6)
+        model_frame = ttk.Frame(llm)
+        model_frame.grid(row=2, column=1, sticky="w", padx=10, pady=6)
+        self.model_combo = ttk.Combobox(
+            model_frame,
+            textvariable=self.model,
+            values=(),
+            state="readonly",
+            width=39,
+        )
+        self.model_combo.pack(side=tk.LEFT)
+        ttk.Button(
+            model_frame,
+            text="Refresh models",
+            command=self.refresh_models,
+        ).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Label(llm, text="API key").grid(row=3, column=0, sticky="w", padx=10, pady=6)
         ttk.Entry(llm, textvariable=self.api_key, width=48, show="*").grid(row=3, column=1, sticky="w", padx=10, pady=6)
         ttk.Label(
@@ -147,6 +161,7 @@ class SettingsModule:
             return
         self.base_url.set(preset["base_url"])
         self.model.set(preset["model"])
+        self.model_combo["values"] = ()
 
     def _llm_dict(self) -> dict:
         return {
@@ -171,3 +186,26 @@ class SettingsModule:
             messagebox.showerror("Model", str(exc))
             return
         messagebox.showinfo("Model", result)
+
+    def refresh_models(self):
+        settings = self._llm_dict()
+        try:
+            models = list_models(settings)
+        except Exception as exc:
+            messagebox.showerror("Models", str(exc))
+            return
+        self.model_combo["values"] = models
+        current_model = self.model.get().strip()
+        if current_model in models:
+            self.model_combo.current(models.index(current_model))
+            messagebox.showinfo("Models", f"Loaded {len(models)} models; current model is available.")
+        elif models:
+            self.model_combo.current(0)
+            messagebox.showinfo(
+                "Models",
+                f"Loaded {len(models)} models. The previously configured model "
+                "is not available; select a model from the list.",
+            )
+        else:
+            self.model.set("")
+            messagebox.showinfo("Models", "The server returned no models.")
