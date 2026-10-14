@@ -25,6 +25,7 @@ from ui.log_panel import LogPanel
 from ui.modules.characters import CharactersModule
 from ui.modules.documents import DocumentsModule
 from ui.modules.items import ItemsModule
+from ui.modules.quests import QuestsModule
 from ui.modules.settings import SettingsModule
 from ui.modules.world import WorldModule
 
@@ -81,6 +82,8 @@ class MainWindow:
         notebook.add(self.documents_module.frame, text="Documents")
         self.items_module = ItemsModule(notebook, self.db)
         notebook.add(self.items_module.frame, text="Items")
+        self.quests_module = QuestsModule(notebook, self.db)
+        notebook.add(self.quests_module.frame, text="Quests")
         self.settings_module = SettingsModule(notebook, self.db, self)
         notebook.add(self.settings_module.frame, text="Settings")
         self.log_panel = LogPanel(self.root, self.db)
@@ -176,6 +179,7 @@ class MainWindow:
         self.world_module.set_db(new_db)
         self.documents_module.set_db(new_db)
         self.items_module.set_db(new_db)
+        self.quests_module.set_db(new_db)
         self.settings_module.set_db(new_db)
         self.log_panel.set_db(new_db)
         self.refresh_campaign_chrome()

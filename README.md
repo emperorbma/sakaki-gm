@@ -28,6 +28,8 @@ On the Characters tab, **Import Files** lets you select individual Markdown, tex
 
 The **Items** tab is the campaign-wide catalog of reusable item names and descriptions. Add catalog items there, then assign them to characters in the character editor's **Catalog Items** tab with a quantity and attuned flag. Existing free-form Inventory and Attuned text is preserved and is not automatically converted; re-enter catalog items manually before removing legacy entries.
 
+The **Quests** tab stores campaign quests by name, free-text status, and description. Add or remove participating characters for each quest; a character can participate in multiple quests. Quest details and linked character names are included in the GM prompt.
+
 ## Model
 
 Settings has two presets:

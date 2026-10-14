@@ -71,3 +71,27 @@ def migrate(db):
         PRAGMA user_version = 4;
         """)
         db.commit()
+
+    if version < 5:
+        cur.executescript("""
+        CREATE TABLE quests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            description TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE quest_characters (
+            quest_id INTEGER NOT NULL REFERENCES quests(id) ON DELETE CASCADE,
+            character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+            PRIMARY KEY (quest_id, character_id)
+        );
+        PRAGMA user_version = 5;
+        """)
+        db.commit()
+
+    if version < 6:
+        cur.executescript("""
+        ALTER TABLE quests
+        ADD COLUMN status TEXT NOT NULL DEFAULT '';
+        PRAGMA user_version = 6;
+        """)
+        db.commit()

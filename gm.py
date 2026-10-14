@@ -2,6 +2,7 @@
 import json
 
 from item_db import get_character_items, get_items
+from quest_db import get_quest_characters, get_quests
 
 HP_CURRENT = "hp_current"
 HP_MAX = "hp_max"
@@ -96,6 +97,18 @@ def build_messages(db, action: str):
         {"name": item["name"], "description": item["description"]}
         for item in get_items(db)
     ]
+    quests = [
+        {
+            "name": quest["name"],
+            "description": quest["description"],
+            "status": quest["status"],
+            "characters": [
+                character["name"]
+                for character in get_quest_characters(db, quest["id"])
+            ],
+        }
+        for quest in get_quests(db)
+    ]
     log_rows = db.execute(
         "SELECT speaker, message FROM log ORDER BY id DESC LIMIT 12"
     ).fetchall()
@@ -127,6 +140,8 @@ def build_messages(db, action: str):
         json.dumps(notes, ensure_ascii=False),
         "Item catalog:",
         json.dumps(item_catalog, ensure_ascii=False),
+        "Quests:",
+        json.dumps(quests, ensure_ascii=False),
         "Recent log:",
         json.dumps(recent, ensure_ascii=False),
         "",

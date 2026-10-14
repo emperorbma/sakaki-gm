@@ -24,6 +24,12 @@ from item_db import (
     get_items,
     set_character_items,
 )
+from quest_db import (
+    delete_quest,
+    get_quest_characters,
+    get_quests,
+    save_quest,
+)
 from ui.modules.importer import (
     import_campaign_files,
     import_campaign_folder,
@@ -403,14 +409,17 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
     )
     db.execute("DROP TABLE character_items")
     db.execute("DROP TABLE items")
+    db.execute("DROP TABLE quest_characters")
+    db.execute("DROP TABLE quests")
     db.execute("PRAGMA user_version = 3")
     db.commit()
     db.close()
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert get_items(db) == []
+        assert get_quests(db) == []
         data = json.loads(
             db.execute(
                 "SELECT data FROM characters WHERE id=?",
@@ -419,6 +428,100 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
         )
         assert data["inventory"] == ["Old free-form item"]
         assert data["attuned"] == []
+    finally:
+        db.close()
+
+
+def test_quest_assignments_support_multiple_characters_and_multiple_quests(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    serina_id = create_character(db, "Serina", {"name": "Serina"})
+    kael_id = create_character(db, "Kael", {"name": "Kael"})
+    first_quest = save_quest(
+        db,
+        None,
+        "Find the Crown",
+        "Recover the Lunar Crown.",
+        [serina_id, kael_id, serina_id],
+        "In progress",
+    )
+    second_quest = save_quest(
+        db,
+        None,
+        "Protect Eldenport",
+        "Keep the city safe.",
+        [serina_id],
+        "Not started",
+    )
+
+    assert [quest["name"] for quest in get_quests(db)] == [
+        "Find the Crown",
+        "Protect Eldenport",
+    ]
+    first = next(quest for quest in get_quests(db) if quest["id"] == first_quest)
+    assert first["status"] == "In progress"
+    assert [row["name"] for row in get_quest_characters(db, first_quest)] == [
+        "Kael",
+        "Serina",
+    ]
+    assert [row["name"] for row in get_quest_characters(db, second_quest)] == [
+        "Serina",
+    ]
+    _system, user = build_messages(db, "What are our objectives?")
+    assert "Find the Crown" in user
+    assert "Recover the Lunar Crown." in user
+    assert '"status": "In progress"' in user
+    assert '"characters": ["Kael", "Serina"]' in user
+
+    save_quest(
+        db,
+        first_quest,
+        "Find the Crown",
+        "Updated objective.",
+        [kael_id],
+        "Completed",
+    )
+    first = next(quest for quest in get_quests(db) if quest["id"] == first_quest)
+    assert first["status"] == "Completed"
+    assert [row["name"] for row in get_quest_characters(db, first_quest)] == ["Kael"]
+    delete_quest(db, first_quest)
+    assert [quest["id"] for quest in get_quests(db)] == [second_quest]
+    db.close()
+
+
+def test_schema_v4_campaign_migrates_to_quests(tmp_path):
+    path = tmp_path / "campaign.db"
+    db = get_db(path)
+    db.execute("DROP TABLE quest_characters")
+    db.execute("DROP TABLE quests")
+    db.execute("PRAGMA user_version = 4")
+    db.commit()
+    db.close()
+
+    db = get_db(path)
+    try:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert get_quests(db) == []
+    finally:
+        db.close()
+
+
+def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
+    path = tmp_path / "campaign.db"
+    db = get_db(path)
+    quest_id = save_quest(db, None, "Legacy quest", "Existing objective.", [])
+    db.execute("ALTER TABLE quests DROP COLUMN status")
+    db.execute("PRAGMA user_version = 5")
+    db.commit()
+    db.close()
+
+    db = get_db(path)
+    try:
+        quest = get_quests(db)[0]
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert quest["id"] == quest_id
+        assert quest["name"] == "Legacy quest"
+        assert quest["description"] == "Existing objective."
+        assert quest["status"] == ""
     finally:
         db.close()
 

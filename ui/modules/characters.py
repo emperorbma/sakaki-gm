@@ -444,7 +444,7 @@ class CharactersModule:
 def _list_tab(notebook, title, items):
     tab = ttk.Frame(notebook)
     notebook.add(tab, text=title)
-    listing = tk.Listbox(tab, height=18)
+    listing = tk.Listbox(tab, height=18, selectmode=tk.EXTENDED, exportselection=False)
     scroll = ttk.Scrollbar(tab, orient="vertical", command=listing.yview)
     listing.configure(yscrollcommand=scroll.set)
     listing.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=10)
@@ -453,6 +453,31 @@ def _list_tab(notebook, title, items):
     tab.columnconfigure(0, weight=1)
     for item in items:
         listing.insert(tk.END, _strip_marker(str(item)))
+
+    context_menu = tk.Menu(listing, tearoff=False)
+    context_menu.add_command(
+        label="Copy",
+        command=lambda: _copy_list_selection(listing),
+    )
+
+    def show_context_menu(event):
+        index = listing.nearest(event.y)
+        if index < 0 or index >= listing.size():
+            return "break"
+        bounds = listing.bbox(index)
+        if bounds is None or not bounds[1] <= event.y < bounds[1] + bounds[3]:
+            return "break"
+        if index not in listing.curselection():
+            listing.selection_clear(0, tk.END)
+            listing.selection_set(index)
+        try:
+            context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            context_menu.grab_release()
+        return "break"
+
+    listing.bind("<Button-3>", show_context_menu)
+
     entry = ttk.Entry(tab)
     entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
 
@@ -472,6 +497,15 @@ def _list_tab(notebook, title, items):
     ttk.Button(buttons, text="Remove", command=remove).pack(side=tk.LEFT, padx=4)
     entry.bind("<Return>", lambda _event: add())
     return listing
+
+
+def _copy_list_selection(listing):
+    selected = listing.curselection()
+    if not selected:
+        return
+    text = "\n".join(listing.get(index) for index in selected)
+    listing.clipboard_clear()
+    listing.clipboard_append(text)
 
 
 def _list_values(listing):
