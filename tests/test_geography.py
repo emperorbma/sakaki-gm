@@ -1,7 +1,11 @@
+import json
+
 import pytest
 
 from db import get_db
 from object_graph_db import (
+    create_object,
+    create_object_link,
     find_route,
     get_encounter_entries,
     get_encounter_tables,
@@ -144,6 +148,55 @@ def test_geography_query_uses_object_classification_not_relations(tmp_path):
         db.close()
 
 
+def test_locations_and_nested_containers_can_both_contain_objects(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    try:
+        sync_geography(db, GEOGRAPHY)
+        create_object(db, "bag:travel", "Travel Bag", "container")
+        create_object(db, "item:torch", "Torch", "item")
+        create_object_link(db, "contains", "forest", "bag:travel")
+        create_object_link(
+            db,
+            "contains",
+            "forest",
+            "item:torch",
+            properties={"quantity": 1, "placement": "floor"},
+        )
+        create_object_link(
+            db,
+            "contains",
+            "bag:travel",
+            "item:torch",
+            properties={"quantity": 3, "placement": "packed"},
+        )
+
+        geography = {obj["object_id"] for obj in get_geography_objects(db)}
+        assert "forest" in geography
+        assert "bag:travel" not in geography
+        location_contents = {
+            item["target"]["object_id"]
+            for item in get_navigation_exits(db, "forest")
+            if item["relation"] == "contains"
+        }
+        assert {"bag:travel", "item:torch", "side-room"} <= location_contents
+        bag_contents = get_navigation_exits(db, "bag:travel")
+        assert [item["target"]["object_id"] for item in bag_contents] == [
+            "item:torch",
+        ]
+        loose_item_link = db.execute(
+            """
+            SELECT properties FROM object_links
+            WHERE from_object_id='forest' AND to_object_id='item:torch'
+            """
+        ).fetchone()
+        assert json.loads(loose_item_link["properties"]) == {
+            "quantity": 1,
+            "placement": "floor",
+        }
+    finally:
+        db.close()
+
+
 def test_encounter_tables_are_explicitly_room_bound_and_import_csv_rows(tmp_path):
     db = get_db(tmp_path / "campaign.db")
     try:
@@ -189,6 +242,31 @@ def test_encounter_binding_must_reference_known_room():
 def test_v10_migration_adds_geography_metadata_then_promotes_objects(tmp_path):
     db = get_db(tmp_path / "campaign.db")
     try:
+        db.execute("DROP INDEX characters_by_object")
+        db.execute("DROP INDEX item_objects_by_name")
+        db.execute("ALTER TABLE characters DROP COLUMN object_id")
+        db.execute("ALTER TABLE object_links DROP COLUMN properties")
+        db.execute(
+            """
+            CREATE TABLE items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                description TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE character_items (
+                character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+                item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE RESTRICT,
+                quantity INTEGER NOT NULL CHECK (quantity > 0),
+                attuned BOOLEAN NOT NULL DEFAULT 0,
+                equipment_location TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (character_id, item_id)
+            )
+            """
+        )
         db.execute("DROP TABLE encounter_entries")
         db.execute("DROP TABLE encounter_tables")
         db.execute("ALTER TABLE object_links RENAME TO map_links")
@@ -225,7 +303,7 @@ def test_v10_migration_adds_geography_metadata_then_promotes_objects(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='encounter_tables'"

@@ -1,7 +1,11 @@
 # gm.py — prompt, reply parsing, and campaign updates
 import json
 
-from item_db import get_character_items, get_items
+from item_db import (
+    get_character_inventory_container,
+    get_character_items,
+    get_items,
+)
 from quest_db import get_quest_characters, get_quests
 from skill_db import get_character_skills, skill_bonus
 
@@ -76,7 +80,8 @@ def build_messages(db, action: str):
     """Return (system, user) for one GM turn. The user text is prefixed with [Play]."""
     characters = []
     for row in db.execute(
-        "SELECT id, name, data, campaign_role FROM characters ORDER BY name"
+        "SELECT id, name, data, campaign_role, object_id "
+        "FROM characters ORDER BY name"
     ):
         try:
             data = json.loads(row["data"])
@@ -112,10 +117,15 @@ def build_messages(db, action: str):
         characters.append({
             "name": row["name"],
             "campaign_role": row["campaign_role"],
+            "object_id": row["object_id"],
+            "inventory_container_object_id": get_character_inventory_container(
+                db, row["id"]
+            ),
             "data": data,
             "skills": skills,
             "items": [
                 {
+                    "object_id": item["id"],
                     "name": item["name"],
                     "description": item["description"],
                     "quantity": item["quantity"],

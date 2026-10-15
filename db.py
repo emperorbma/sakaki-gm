@@ -290,3 +290,104 @@ def migrate(db):
         )
         db.execute("PRAGMA user_version = 12")
         db.commit()
+
+    if version < 13:
+        with db:
+            db.execute(
+                "ALTER TABLE object_links "
+                "ADD COLUMN properties TEXT NOT NULL DEFAULT '{}'"
+            )
+            db.execute(
+                "ALTER TABLE characters ADD COLUMN object_id TEXT "
+                "REFERENCES objects(object_id) ON DELETE RESTRICT"
+            )
+
+            for row in db.execute(
+                "SELECT id, name FROM characters ORDER BY id"
+            ).fetchall():
+                object_id = f"character:{row['id']}"
+                container_id = f"inventory:{row['id']}"
+                db.execute(
+                    """
+                    INSERT INTO objects (
+                        object_id, name, object_type, geography_kind, description
+                    ) VALUES (?, ?, 'character', 'unspecified', '')
+                    """,
+                    (object_id, row["name"]),
+                )
+                db.execute(
+                    "UPDATE characters SET object_id=? WHERE id=?",
+                    (object_id, row["id"]),
+                )
+                db.execute(
+                    """
+                    INSERT INTO objects (
+                        object_id, name, object_type, geography_kind, description
+                    ) VALUES (?, ?, 'container', 'unspecified', '')
+                    """,
+                    (container_id, f"{row['name']}'s Inventory"),
+                )
+                db.execute(
+                    """
+                    INSERT INTO object_links (
+                        relation, from_object_id, to_object_id, properties
+                    ) VALUES ('contains', ?, ?, ?)
+                    """,
+                    (
+                        object_id,
+                        container_id,
+                        json.dumps({"role": "inventory"}),
+                    ),
+                )
+
+            for row in db.execute(
+                "SELECT id, name, description FROM items ORDER BY id"
+            ).fetchall():
+                object_id = f"catalog-item:{row['id']}"
+                db.execute(
+                    """
+                    INSERT INTO objects (
+                        object_id, name, object_type, geography_kind, description
+                    ) VALUES (?, ?, 'item', 'unspecified', ?)
+                    """,
+                    (object_id, row["name"], row["description"]),
+                )
+
+            inventory_rows = db.execute(
+                """
+                SELECT character_items.character_id, character_items.item_id,
+                       character_items.quantity, character_items.attuned,
+                       character_items.equipment_location
+                FROM character_items
+                ORDER BY character_items.character_id, character_items.item_id
+                """
+            ).fetchall()
+            db.executemany(
+                """
+                INSERT INTO object_links (
+                    relation, from_object_id, to_object_id, properties
+                ) VALUES ('contains', ?, ?, ?)
+                """,
+                [
+                    (
+                        f"inventory:{row['character_id']}",
+                        f"catalog-item:{row['item_id']}",
+                        json.dumps({
+                            "quantity": row["quantity"],
+                            "attuned": bool(row["attuned"]),
+                            "equipment_location": row["equipment_location"],
+                        }, ensure_ascii=False),
+                    )
+                    for row in inventory_rows
+                ],
+            )
+            db.execute("CREATE UNIQUE INDEX characters_by_object ON characters(object_id)")
+            db.execute(
+                """
+                CREATE UNIQUE INDEX item_objects_by_name
+                ON objects(name COLLATE NOCASE) WHERE object_type='item'
+                """
+            )
+            db.execute("DROP TABLE character_items")
+            db.execute("DROP TABLE items")
+            db.execute("PRAGMA user_version = 13")

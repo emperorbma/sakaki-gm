@@ -528,7 +528,7 @@ class CharactersModule:
                 character_id = existing_id
             assignments = [
                 (
-                    int(item_id),
+                    item_id,
                     int(inventory_tree.set(item_id, "quantity")),
                     inventory_tree.set(item_id, "attuned") == "Yes",
                     inventory_tree.set(item_id, "location"),

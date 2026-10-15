@@ -50,10 +50,114 @@ FIXTURE = Path(__file__).parent / "fixtures" / "serina_headings.md"
 
 
 def drop_geography_schema_for_legacy_migration(db):
+    prepare_pre_object_graph_inventory_schema(db)
     db.execute("DROP TABLE encounter_entries")
     db.execute("DROP TABLE encounter_tables")
     db.execute("DROP TABLE object_links")
     db.execute("DROP TABLE objects")
+
+
+def prepare_pre_object_graph_inventory_schema(db):
+    character_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(characters)")
+    }
+    if "object_id" not in character_columns:
+        return
+
+    item_rows = db.execute(
+        "SELECT object_id, name, description FROM objects WHERE object_type='item'"
+    ).fetchall()
+    item_ids = {
+        row["object_id"]: index
+        for index, row in enumerate(item_rows, start=1)
+    }
+    db.execute(
+        """
+        CREATE TABLE items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            description TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    db.executemany(
+        "INSERT INTO items (id, name, description) VALUES (?, ?, ?)",
+        [
+            (item_ids[row["object_id"]], row["name"], row["description"])
+            for row in item_rows
+        ],
+    )
+    db.execute(
+        """
+        CREATE TABLE character_items (
+            character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+            item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE RESTRICT,
+            quantity INTEGER NOT NULL CHECK (quantity > 0),
+            attuned BOOLEAN NOT NULL DEFAULT 0,
+            equipment_location TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (character_id, item_id)
+        )
+        """
+    )
+
+    migrated_object_ids = {
+        row["object_id"]
+        for row in db.execute(
+            """
+            SELECT object_id FROM objects
+            WHERE object_type IN ('character', 'container', 'item')
+            """
+        )
+    }
+    for character in db.execute(
+        "SELECT id, object_id FROM characters ORDER BY id"
+    ).fetchall():
+        inventory_id = f"inventory:{character['id']}"
+        for link in db.execute(
+            """
+            SELECT to_object_id, properties FROM object_links
+            WHERE from_object_id=? AND relation='contains'
+            """,
+            (inventory_id,),
+        ).fetchall():
+            item_id = item_ids.get(link["to_object_id"])
+            if item_id is None:
+                continue
+            properties = json.loads(link["properties"])
+            db.execute(
+                """
+                INSERT INTO character_items (
+                    character_id, item_id, quantity, attuned, equipment_location
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    character["id"],
+                    item_id,
+                    properties["quantity"],
+                    int(bool(properties.get("attuned"))),
+                    properties.get("equipment_location", ""),
+                ),
+            )
+
+    if migrated_object_ids:
+        placeholders = ",".join("?" for _ in migrated_object_ids)
+        params = tuple(migrated_object_ids)
+        db.execute(
+            f"""
+            DELETE FROM object_links
+            WHERE from_object_id IN ({placeholders})
+               OR to_object_id IN ({placeholders})
+            """,
+            (*params, *params),
+        )
+    db.execute("DROP INDEX characters_by_object")
+    db.execute("DROP INDEX item_objects_by_name")
+    db.execute("ALTER TABLE characters DROP COLUMN object_id")
+    db.execute("ALTER TABLE object_links DROP COLUMN properties")
+    db.executemany(
+        "DELETE FROM objects WHERE object_id=?",
+        [(object_id,) for object_id in migrated_object_ids],
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -155,6 +259,7 @@ def test_v8_migration_replaces_player_flag_with_blank_campaign_role(tmp_path):
         db.execute("ALTER TABLE characters DROP COLUMN campaign_role")
         db.execute("ALTER TABLE characters ADD COLUMN is_player BOOLEAN DEFAULT 0")
         db.execute("UPDATE characters SET is_player = 1")
+        prepare_pre_object_graph_inventory_schema(db)
         drop_geography_schema_for_legacy_migration(db)
         db.execute("PRAGMA user_version = 8")
 
@@ -168,7 +273,7 @@ def test_v8_migration_replaces_player_flag_with_blank_campaign_role(tmp_path):
         assert db.execute(
             "SELECT campaign_role FROM characters WHERE name='Serina'"
         ).fetchone()["campaign_role"] == ""
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
     finally:
         db.close()
 
@@ -455,6 +560,41 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
     assert assigned[0]["quantity"] == 2
     assert assigned[0]["attuned"] == 1
     assert assigned[0]["equipment_location"] == "right hand"
+    character_object_id = db.execute(
+        "SELECT object_id FROM characters WHERE id=?",
+        (character_id,),
+    ).fetchone()["object_id"]
+    inventory_link = db.execute(
+        """
+        SELECT object_links.to_object_id, object_links.properties
+        FROM object_links
+        JOIN objects ON objects.object_id=object_links.to_object_id
+        WHERE object_links.from_object_id=? AND object_links.relation='contains'
+          AND objects.object_type='container'
+        """,
+        (character_object_id,),
+    ).fetchone()
+    assert json.loads(inventory_link["properties"]) == {"role": "inventory"}
+    item_link = db.execute(
+        """
+        SELECT properties FROM object_links
+        WHERE from_object_id=? AND to_object_id=? AND relation='contains'
+        """,
+        (inventory_link["to_object_id"], item_id),
+    ).fetchone()
+    assert json.loads(item_link["properties"]) == {
+        "quantity": 2,
+        "attuned": True,
+        "equipment_location": "right hand",
+    }
+    assert db.execute(
+        "SELECT COUNT(*) FROM objects WHERE object_type='item' AND object_id=?",
+        (item_id,),
+    ).fetchone()[0] == 1
+    assert db.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+        "AND name IN ('items', 'character_items')"
+    ).fetchone()[0] == 0
     data = json.loads(
         db.execute("SELECT data FROM characters WHERE id=?", (character_id,)).fetchone()["data"]
     )
@@ -462,7 +602,10 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
     assert data["attuned"] == ["Obsolete attunement"]
 
     system, user = build_messages(db, "Check the pack.")
+    assert f'"object_id": "character:{character_id}"' in user
+    assert f'"inventory_container_object_id": "inventory:{character_id}"' in user
     assert "A silver arcane focus." in user
+    assert f'"object_id": "{item_id}"' in user
     assert '"quantity": 2' in user
     assert '"attuned": true' in user
     assert '"equipment_location": "right hand"' in user
@@ -473,6 +616,34 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
         delete_item(db, item_id)
     db.rollback()
     db.close()
+
+
+def test_v12_migration_moves_catalog_inventory_to_container_links(tmp_path):
+    path = tmp_path / "campaign.db"
+    db = get_db(path)
+    character_id = create_character(db, "Serina", {"name": "Serina"})
+    item_id = create_item(db, "Lunar Scepter", "A silver arcane focus.")
+    set_character_items(db, character_id, [(item_id, 2, True, "right hand")])
+    prepare_pre_object_graph_inventory_schema(db)
+    db.execute("PRAGMA user_version = 12")
+    db.commit()
+    db.close()
+
+    db = get_db(path)
+    try:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assignment = get_character_items(db, character_id)[0]
+        assert assignment["name"] == "Lunar Scepter"
+        assert assignment["quantity"] == 2
+        assert assignment["attuned"] == 1
+        assert assignment["equipment_location"] == "right hand"
+        assert db.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+            "AND name IN ('items', 'character_items')"
+        ).fetchone()[0] == 0
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        db.close()
 
 
 def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_items(tmp_path):
@@ -488,6 +659,7 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
             "skills": "Dual wielding",
         },
     )
+    prepare_pre_object_graph_inventory_schema(db)
     db.execute("DROP TABLE character_skills")
     db.execute("DROP TABLE campaign_skills")
     db.execute("DROP TABLE character_items")
@@ -505,7 +677,7 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert get_items(db) == []
         assert get_quests(db) == []
         data = json.loads(
@@ -589,6 +761,7 @@ def test_quest_assignments_support_multiple_characters_and_multiple_quests(tmp_p
 def test_schema_v4_campaign_migrates_to_quests(tmp_path):
     path = tmp_path / "campaign.db"
     db = get_db(path)
+    prepare_pre_object_graph_inventory_schema(db)
     db.execute("DROP TABLE character_skills")
     db.execute("DROP TABLE campaign_skills")
     db.execute("DROP TABLE quest_characters")
@@ -601,7 +774,7 @@ def test_schema_v4_campaign_migrates_to_quests(tmp_path):
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert get_quests(db) == []
     finally:
         db.close()
@@ -610,6 +783,7 @@ def test_schema_v4_campaign_migrates_to_quests(tmp_path):
 def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     path = tmp_path / "campaign.db"
     db = get_db(path)
+    prepare_pre_object_graph_inventory_schema(db)
     quest_id = save_quest(db, None, "Legacy quest", "Existing objective.", [])
     db.execute("DROP TABLE character_skills")
     db.execute("DROP TABLE campaign_skills")
@@ -623,7 +797,7 @@ def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     db = get_db(path)
     try:
         quest = get_quests(db)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert quest["id"] == quest_id
         assert quest["name"] == "Legacy quest"
         assert quest["description"] == "Existing objective."
@@ -638,6 +812,7 @@ def test_schema_v6_campaign_adds_equipment_location(tmp_path):
     character_id = create_character(db, "Serina", {"name": "Serina"})
     item_id = create_item(db, "Lunar Scepter")
     set_character_items(db, character_id, [(item_id, 1, True, "right hand")])
+    prepare_pre_object_graph_inventory_schema(db)
     db.execute("DROP TABLE character_skills")
     db.execute("DROP TABLE campaign_skills")
     db.execute("ALTER TABLE character_items DROP COLUMN equipment_location")
@@ -649,7 +824,7 @@ def test_schema_v6_campaign_adds_equipment_location(tmp_path):
     db = get_db(path)
     try:
         assignment = get_character_items(db, character_id)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
         assert assignment["equipment_location"] == ""
         assert assignment["attuned"] == 1
     finally:

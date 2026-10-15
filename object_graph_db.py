@@ -2,6 +2,7 @@
 import csv
 import heapq
 import io
+import json
 import re
 
 GEOGRAPHY_SOURCE_TITLE = "Geography of the Eldenweave"
@@ -381,6 +382,82 @@ def get_objects(db) -> list[dict]:
             "SELECT * FROM objects ORDER BY name, object_id"
         ).fetchall()
     ]
+
+
+def create_object(
+    db,
+    object_id: str,
+    name: str,
+    object_type: str,
+    description: str = "",
+    geography_kind: str = "unspecified",
+) -> str:
+    object_id = object_id.strip()
+    name = name.strip()
+    object_type = object_type.strip()
+    if not object_id or not name or not object_type:
+        raise ValueError("Object ID, name, and type cannot be empty.")
+    db.execute(
+        """
+        INSERT INTO objects (
+            object_id, name, object_type, geography_kind, description
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (object_id, name, object_type, geography_kind, description.strip()),
+    )
+    db.commit()
+    return object_id
+
+
+def create_object_link(
+    db,
+    relation: str,
+    from_object_id: str,
+    to_object_id: str,
+    properties: dict | None = None,
+    notes: str = "",
+) -> int:
+    if not relation.strip():
+        raise ValueError("Object relation cannot be empty.")
+    if from_object_id == to_object_id:
+        raise ValueError("An object cannot be related to itself.")
+    if properties is not None and not isinstance(properties, dict):
+        raise TypeError("Object link properties must be a dictionary.")
+    if relation.strip() == "contains":
+        cycle = db.execute(
+            """
+            WITH RECURSIVE descendants(object_id) AS (
+                SELECT to_object_id FROM object_links
+                WHERE relation='contains' AND from_object_id=?
+                UNION
+                SELECT object_links.to_object_id
+                FROM object_links
+                JOIN descendants
+                  ON object_links.from_object_id=descendants.object_id
+                WHERE object_links.relation='contains'
+            )
+            SELECT 1 FROM descendants WHERE object_id=? LIMIT 1
+            """,
+            (to_object_id, from_object_id),
+        ).fetchone()
+        if cycle:
+            raise ValueError("Containment links cannot create a cycle.")
+    cursor = db.execute(
+        """
+        INSERT INTO object_links (
+            relation, from_object_id, to_object_id, properties, notes
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            relation.strip(),
+            from_object_id,
+            to_object_id,
+            json.dumps(properties or {}, ensure_ascii=False),
+            notes.strip(),
+        ),
+    )
+    db.commit()
+    return cursor.lastrowid
 
 
 def get_object_links(db, relation: str | None = None) -> list[dict]:
