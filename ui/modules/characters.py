@@ -82,6 +82,7 @@ class CharactersModule:
         default_prof = int(prof_row["value"]) if prof_row else 2
 
         saved = json.loads(row["data"]) if row else {}
+        stat_block_scaffold = _is_stat_block_scaffold(saved)
         defaults = {
             "name": "New Character", "class": "", "level": 1, "race": "",
             "background": "", "alignment": "", "experience": 0,
@@ -129,9 +130,14 @@ class CharactersModule:
             row_frame = ttk.Frame(left)
             row_frame.pack(fill=tk.X, pady=4)
             ttk.Label(row_frame, text=stat.upper(), width=6).pack(side=tk.LEFT)
-            var = tk.IntVar(value=_as_int(data.get(stat), 10))
+            if stat_block_scaffold:
+                var = tk.StringVar(value="" if saved.get(stat) is None else str(saved[stat]))
+                widget = ttk.Entry(row_frame, textvariable=var, width=5, justify="center")
+            else:
+                var = tk.IntVar(value=_as_int(data.get(stat), 10))
+                widget = ttk.Entry(row_frame, textvariable=var, width=5, justify="center")
             ability_vars[stat] = var
-            ttk.Entry(row_frame, textvariable=var, width=5, justify="center").pack(side=tk.LEFT, padx=8)
+            widget.pack(side=tk.LEFT, padx=8)
             mod_label = ttk.Label(row_frame, text=_mod_text(var.get()), width=6)
             mod_label.pack(side=tk.LEFT, padx=8)
             mod_labels[stat] = mod_label
@@ -161,6 +167,9 @@ class CharactersModule:
             if kind == "str":
                 var = tk.StringVar(value="" if data.get(key) is None else str(data.get(key)))
                 widget = ttk.Entry(right, textvariable=var, width=32)
+            elif stat_block_scaffold:
+                var = tk.StringVar(value="" if saved.get(key) is None else str(saved[key]))
+                widget = ttk.Entry(right, textvariable=var, width=8)
             else:
                 var = tk.IntVar(value=_as_int(data.get(key), 0))
                 widget = ttk.Spinbox(right, from_=-20, to=9999, textvariable=var, width=8)
@@ -381,7 +390,9 @@ class CharactersModule:
             try:
                 ability_score = ability_var.get()
                 proficiency_bonus = fields["proficiency_bonus"].get()
-            except tk.TclError:
+                ability_score = int(ability_score)
+                proficiency_bonus = int(proficiency_bonus)
+            except (tk.TclError, TypeError, ValueError):
                 label.config(text="—")
                 return
             modifier = (ability_score - 10) // 2
@@ -466,9 +477,27 @@ class CharactersModule:
             try:
                 payload = dict(saved)
                 for key, var in fields.items():
-                    payload[key] = var.get()
+                    value = var.get()
+                    if stat_block_scaffold and key in {
+                        "level", "experience", "hp_current", "hp_max", "ac",
+                        "speed", "initiative", "proficiency_bonus",
+                    }:
+                        parsed = _optional_int(value)
+                        if parsed is None:
+                            payload.pop(key, None)
+                        else:
+                            payload[key] = parsed
+                    else:
+                        payload[key] = value
                 for stat, var in ability_vars.items():
-                    payload[stat] = var.get()
+                    if stat_block_scaffold:
+                        parsed = _optional_int(var.get())
+                        if parsed is None:
+                            payload.pop(stat, None)
+                        else:
+                            payload[stat] = parsed
+                    else:
+                        payload[stat] = var.get()
                 payload.pop("inventory", None)
                 payload.pop("attuned", None)
                 payload.pop("skills", None)
@@ -477,7 +506,7 @@ class CharactersModule:
                     payload[key] = texts[key].get("1.0", "end").strip()
                 payload.pop("hp", None)
                 payload.pop("max_hp", None)
-            except tk.TclError:
+            except (tk.TclError, TypeError, ValueError):
                 messagebox.showerror("Save", "A number field is empty or invalid.", parent=editor)
                 return
             name = str(payload.get("name") or "Unnamed")
@@ -602,10 +631,23 @@ def _as_int(value, default):
         return default
 
 
+def _is_stat_block_scaffold(data) -> bool:
+    status = data.get("stat_block_status")
+    return isinstance(status, str) and status.lower().startswith("design scaffold")
+
+
+def _optional_int(value):
+    if value is None or not str(value).strip():
+        return None
+    return int(value)
+
+
 def _mod_text(score) -> str:
     try:
         return f"({(int(score) - 10) // 2:+})"
     except (TypeError, ValueError, tk.TclError):
+        if score is None or not str(score).strip():
+            return "(—)"
         return "(?)"
 
 
