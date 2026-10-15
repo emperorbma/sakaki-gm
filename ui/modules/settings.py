@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from gm import DEFAULT_INSTRUCTIONS, bootstrap_instructions, stored_system_prompt
-from llm_config import PRESETS, load_config, resolve_api_key, save_config
+from llm_config import RAG_MODES, PRESETS, load_config, resolve_api_key, save_config
 from llm_client import list_models, test_connection
 from skill_db import DEFAULT_5E_SKILLS, replace_campaign_skills
 
@@ -46,6 +46,8 @@ class SettingsModule:
         self.base_url = tk.StringVar(value=current.get("base_url") or "")
         self.model = tk.StringVar(value=current.get("model") or "")
         self.api_key = tk.StringVar(value=current.get("api_key") or "")
+        rag_mode = current.get("rag_mode", "tools")
+        self.rag_mode = tk.StringVar(value=RAG_MODES.get(rag_mode, RAG_MODES["tools"]))
 
         ttk.Label(llm, text="Preset").grid(row=0, column=0, sticky="w", padx=10, pady=6)
         preset = ttk.Combobox(
@@ -79,8 +81,21 @@ class SettingsModule:
             text="Leave the key blank to use XAI_API_KEY. A local server does not need a key.",
         ).grid(row=4, column=1, sticky="w", padx=10)
 
+        ttk.Label(llm, text="Campaign RAG").grid(row=5, column=0, sticky="w", padx=10, pady=6)
+        ttk.Combobox(
+            llm,
+            textvariable=self.rag_mode,
+            values=list(RAG_MODES.values()),
+            state="readonly",
+            width=28,
+        ).grid(row=5, column=1, sticky="w", padx=10, pady=6)
+        ttk.Label(
+            llm,
+            text="Choose model-driven tool calls or app-retrieved context.",
+        ).grid(row=6, column=1, sticky="w", padx=10)
+
         buttons = ttk.Frame(llm)
-        buttons.grid(row=5, column=1, sticky="w", padx=10, pady=10)
+        buttons.grid(row=7, column=1, sticky="w", padx=10, pady=10)
         ttk.Button(buttons, text="Save", command=self.save_llm).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Test", command=self.test_llm).pack(side=tk.LEFT, padx=4)
 
@@ -171,6 +186,10 @@ class SettingsModule:
             "base_url": self.base_url.get().strip(),
             "model": self.model.get().strip(),
             "api_key": self.api_key.get(),
+            "rag_mode": next(
+                mode for mode, label in RAG_MODES.items()
+                if label == self.rag_mode.get()
+            ),
         }
 
     def save_llm(self):

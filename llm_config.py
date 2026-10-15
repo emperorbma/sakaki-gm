@@ -20,6 +20,11 @@ PRESETS = {
     },
 }
 
+RAG_MODES = {
+    "tools": "Model-initiated tools",
+    "context": "App-retrieved context",
+}
+
 DEFAULT_CONFIG = {
     "active_campaign": None,
     "campaigns": [],
@@ -28,6 +33,7 @@ DEFAULT_CONFIG = {
         "base_url": PRESETS["spacexai"]["base_url"],
         "model": PRESETS["spacexai"]["model"],
         "api_key": "",
+        "rag_mode": "tools",
     },
 }
 
@@ -63,6 +69,11 @@ def load_config(path=None) -> dict:
                 for key in cfg["llm"]:
                     if key in llm and llm[key] is not None:
                         cfg["llm"][key] = llm[key]
+    if (
+        not isinstance(cfg["llm"]["rag_mode"], str)
+        or cfg["llm"]["rag_mode"] not in RAG_MODES
+    ):
+        cfg["llm"]["rag_mode"] = "tools"
     if migrate_legacy:
         save_config(cfg, CONFIG_PATH)
     return cfg

@@ -3,6 +3,19 @@ import json
 import re
 
 
+_CONTEXT_STOP_WORDS = {
+    "a", "about", "after", "all", "also", "an", "and", "answer", "answering",
+    "any", "are", "as", "at", "be", "before", "by", "can", "campaign",
+    "change", "conditions", "could", "do", "does", "exact", "for", "from",
+    "full", "four", "get", "give", "how", "in", "inspect", "is", "it",
+    "items", "lookup", "me", "must", "of", "on", "or", "play", "please",
+    "search", "separate", "show", "state", "tell", "that", "the", "their",
+    "then", "there", "these", "this", "those", "to", "tools", "use", "was",
+    "what", "when", "where", "which", "while", "who", "why", "with", "would",
+    "you", "benefit", "conditional",
+}
+
+
 CAMPAIGN_TOOLS = [
     {
         "type": "function",
@@ -80,6 +93,20 @@ CAMPAIGN_TOOLS = [
         },
     },
 ]
+
+
+def retrieve_campaign_context(db, query: str, document_limit=4, object_limit=8) -> dict:
+    terms = list(dict.fromkeys(
+        term for term in re.findall(r"[\w'-]+", query.casefold())
+        if term not in _CONTEXT_STOP_WORDS
+    ))
+    if not terms:
+        raise ValueError("The request does not contain searchable campaign terms.")
+    search_query = " ".join(terms[:12])
+    return {
+        "documents": search_documents(db, search_query, document_limit),
+        "objects": search_objects(db, search_query, object_limit),
+    }
 
 
 def execute_campaign_tool(db, name: str, arguments: dict) -> dict:
@@ -214,7 +241,7 @@ def _query_terms(query) -> list[str]:
     terms = list(dict.fromkeys(re.findall(r"[\w'-]+", query.casefold())))
     if not terms:
         raise ValueError("Search query must contain searchable terms.")
-    return terms[:12]
+    return terms[:24]
 
 
 def _score(terms: list[str], text: str) -> int:
@@ -224,12 +251,18 @@ def _score(terms: list[str], text: str) -> int:
 
 def _excerpt(content: str, terms: list[str]) -> str:
     lines = content.splitlines()
+    scored = [
+        (sum(term in line.casefold() for term in terms), index, line.strip())
+        for index, line in enumerate(lines)
+    ]
     matches = [
-        line.strip() for line in lines
-        if any(term in line.casefold() for term in terms)
+        line for score, _index, line in sorted(
+            (entry for entry in scored if entry[0]),
+            key=lambda entry: (-entry[0], entry[1]),
+        )[:3]
     ]
     if matches:
-        return "\n".join(matches[:3])[:1200]
+        return "\n".join(matches)[:1200]
     return content.strip()[:1200]
 
 

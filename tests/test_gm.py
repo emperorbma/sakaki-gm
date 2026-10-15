@@ -470,7 +470,7 @@ def test_default_config_migrates_old_name_to_sakaki_gm(monkeypatch, tmp_path):
 
     assert loaded["active_campaign"] == "campaign-id"
     assert loaded["campaigns"] == previous["campaigns"]
-    assert loaded["llm"] == previous["llm"]
+    assert loaded["llm"] == {**previous["llm"], "rag_mode": "tools"}
     assert json.loads(new_config.read_text(encoding="utf-8")) == loaded
     assert json.loads(old_config.read_text(encoding="utf-8")) == previous
 
@@ -1221,6 +1221,69 @@ def test_complete_uses_campaign_lookup_tools_during_turn(tmp_path):
         "search_objects",
         "inspect_object",
     }
+
+
+def test_complete_uses_app_retrieved_context_without_model_tools(tmp_path):
+    db_path = tmp_path / "campaign.db"
+    db = get_db(db_path)
+    db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        (
+            "Canonical rules",
+            "General campaign state and history precede the rule.\n"
+            "Full Lunara set (Tome, Reliquary, Scepter, Crown): +1 to spell save DCs "
+            "while all four are carried. The Reliquary must be active and the Crown attuned.",
+        ),
+    )
+    create_object(
+        db,
+        "tome",
+        "Tome of Eldritch Whispers",
+        "item",
+        "As a Divination or Enchantment focus, grants +1 spell save DC, stacking with set.",
+    )
+    create_object(db, "crown", "Lunar Crown", "item", "With the complete set and Lunarglow Skirt, +1 initiative under moonlight.")
+    db.commit()
+    db.close()
+    calls = []
+
+    class ResponseMessage:
+        content = '{"narration":"The complete set grants +1 DC when its conditions are met.","updates":{}}'
+
+    class Response:
+        choices = [type("Choice", (), {"message": ResponseMessage()})()]
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        assert "tools" not in kwargs
+        prompt = kwargs["messages"][1]["content"]
+        assert "Full Lunara set" in prompt
+        assert "all four are carried" in prompt
+        assert "Lunar Crown" in prompt
+        assert "Lunarglow Skirt" in prompt
+        assert "Tome of Eldritch Whispers" in prompt
+        assert "original user request" in prompt
+        return Response()
+
+    reply = complete(
+        {
+            "provider": "openai_compatible",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "local",
+            "api_key": "",
+            "rag_mode": "context",
+        },
+        "system",
+        "CURRENT STATE\nCharacters: []\nPLAYER ACTION\n"
+        "[Play] List the Tome of Eldritch Whispers and the Lunara set conditions "
+        "and Lunar Crown benefit. "
+        "Do not change campaign state.",
+        create=create,
+        tool_db_path=db_path,
+    )
+
+    assert "complete set grants" in reply
+    assert len(calls) == 1
 
 
 def test_list_models_reads_openai_compatible_model_ids_and_authenticates():
