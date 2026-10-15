@@ -44,6 +44,7 @@ class MainWindow:
             legacy = LEGACY_DB
         cfg, path = bootstrap(self.config_path, legacy, self.campaigns_dir)
         self._active_campaign_id = cfg["active_campaign"]
+        self.db_path = Path(path).resolve()
         self.db = get_db(path)
         self.root.geometry("1600x950")
         self.setup_ui()
@@ -169,6 +170,7 @@ class MainWindow:
         new_db = get_db(path)
         self.db.close()
         self.db = new_db
+        self.db_path = Path(path).resolve()
         resolved_path = path.resolve()
         cfg = load_config(self.config_path)
         self._active_campaign_id = next(
@@ -280,8 +282,13 @@ class MainWindow:
         self.world_module.save_prompt(quiet=True)
         self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
-        system, user = build_messages(self.db, action)
+        system, user = build_messages(
+            self.db,
+            action,
+            include_reference_material=False,
+        )
         settings = load_config(self.config_path)["llm"]
+        tool_db_path = self.db_path
         self.log_panel.add_entry("Player", action)
         self.action_entry.delete(0, tk.END)
         self._ask_busy = True
@@ -289,7 +296,12 @@ class MainWindow:
 
         def work():
             try:
-                reply = complete(settings, system, user)
+                reply = complete(
+                    settings,
+                    system,
+                    user,
+                    tool_db_path=tool_db_path,
+                )
             except Exception as exc:
                 self.root.after(0, lambda err=exc: self._ask_failed(err))
                 return

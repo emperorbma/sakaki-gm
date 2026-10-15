@@ -17,6 +17,8 @@ from db import LEGACY_DB, get_db, migrate
 from gm import apply_updates, build_messages, parse_reply
 from llm_client import complete, list_models
 from llm_config import load_config
+from object_graph_db import create_object, create_object_link
+from rag_tools import execute_campaign_tool
 from item_db import (
     create_item,
     delete_item,
@@ -538,6 +540,30 @@ def test_prompt_excludes_obsolete_reference_notes(tmp_path):
     assert "Old contradictory rules." not in user
     assert "Current rules." in user
     assert "You are an expert Game Master." in system
+    db.close()
+
+
+def test_tool_prompt_omits_searchable_reference_material(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("Moon Abbey", "The secret passage lies below the altar."),
+    )
+    create_item(db, "Silver Reliquary", "A relic hidden beneath the abbey.")
+    db.commit()
+
+    _system, static_user = build_messages(db, "Where is the relic?")
+    _system, tool_user = build_messages(
+        db,
+        "Where is the relic?",
+        include_reference_material=False,
+    )
+
+    assert "secret passage" in static_user
+    assert "Silver Reliquary" in static_user
+    assert "secret passage" not in tool_user
+    assert "Silver Reliquary" not in tool_user
+    assert "can be searched with the lookup tools" in tool_user
     db.close()
 
 
@@ -1071,6 +1097,114 @@ def test_complete_retries_without_response_format():
     assert "narration" in text
     assert len(calls) == 2
     assert "response_format" not in calls[1]
+
+
+def test_campaign_lookup_tools_search_documents_objects_and_relationships(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("Reliquary history", "The lunar reliquary was sealed beneath the abbey."),
+    )
+    db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("[OBSOLETE REFERENCE] old reliquary", "Discarded text."),
+    )
+    create_object(db, "abbey", "Moon Abbey", "location", "An old lunar shrine.")
+    create_object(db, "reliquary", "Lunar Reliquary", "item", "A sealed relic.")
+    create_object_link(
+        db,
+        "kept beneath",
+        "abbey",
+        "reliquary",
+        properties={"sealed": True},
+    )
+
+    documents = execute_campaign_tool(
+        db, "search_documents", {"query": "lunar reliquary"}
+    )
+    objects = execute_campaign_tool(
+        db, "search_objects", {"query": "lunar reliquary"}
+    )
+    inspected = execute_campaign_tool(
+        db, "inspect_object", {"object_id": "reliquary"}
+    )
+
+    assert [doc["title"] for doc in documents["documents"]] == [
+        "Reliquary history"
+    ]
+    assert objects["objects"][0]["object_id"] == "reliquary"
+    assert "abbey" in {
+        obj["object_id"] for obj in objects["objects"]
+    }
+    assert objects["objects"][0]["properties"] == {}
+    assert inspected["object"]["name"] == "Lunar Reliquary"
+    assert inspected["relationships"][0]["from_object_id"] == "abbey"
+    assert inspected["relationships"][0]["properties"] == {"sealed": True}
+    db.close()
+
+
+def test_complete_uses_campaign_lookup_tools_during_turn(tmp_path):
+    db_path = tmp_path / "campaign.db"
+    db = get_db(db_path)
+    db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("Abbey", "The abbey stands beneath the silver moon."),
+    )
+    db.commit()
+    db.close()
+    calls = []
+
+    class ResponseMessage:
+        def __init__(self, content=None, tool_calls=None):
+            self.content = content
+            self.tool_calls = tool_calls or []
+
+    class Response:
+        def __init__(self, message):
+            self.choices = [type("Choice", (), {"message": message})()]
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        assert "tools" in kwargs
+        assert "response_format" not in kwargs
+        if len(calls) == 1:
+            call = type("ToolCall", (), {
+                "id": "lookup-1",
+                "function": type("Function", (), {
+                    "name": "search_documents",
+                    "arguments": '{"query":"silver moon"}',
+                })(),
+            })()
+            return Response(ResponseMessage(tool_calls=[call]))
+        tool_message = next(
+            message for message in kwargs["messages"]
+            if message["role"] == "tool"
+        )
+        assert "silver moon" in tool_message["content"]
+        return Response(ResponseMessage(
+            '{"narration":"The abbey shines beneath the moon.","updates":{}}'
+        ))
+
+    reply = complete(
+        {
+            "provider": "openai_compatible",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "local",
+            "api_key": "",
+        },
+        "system",
+        "user",
+        create=create,
+        tool_db_path=db_path,
+    )
+
+    assert "abbey shines" in reply
+    assert len(calls) == 2
+    assert {tool["function"]["name"] for tool in calls[0]["tools"]} == {
+        "search_documents",
+        "search_objects",
+        "inspect_object",
+    }
 
 
 def test_list_models_reads_openai_compatible_model_ids_and_authenticates():

@@ -76,7 +76,7 @@ def world_value(db, key, default):
     return [value]
 
 
-def build_messages(db, action: str):
+def build_messages(db, action: str, *, include_reference_material: bool = True):
     """Return (system, user) for one GM turn. The user text is prefixed with [Play]."""
     characters = []
     for row in db.execute(
@@ -136,15 +136,18 @@ def build_messages(db, action: str):
             ],
         })
 
-    notes = [
-        {"title": row["title"], "content": row["content"]}
-        for row in db.execute("SELECT title, content FROM notes ORDER BY title")
-        if not (row["title"] or "").startswith(OBSOLETE_REFERENCE_PREFIX)
-    ]
-    item_catalog = [
-        {"name": item["name"], "description": item["description"]}
-        for item in get_items(db)
-    ]
+    notes = []
+    item_catalog = []
+    if include_reference_material:
+        notes = [
+            {"title": row["title"], "content": row["content"]}
+            for row in db.execute("SELECT title, content FROM notes ORDER BY title")
+            if not (row["title"] or "").startswith(OBSOLETE_REFERENCE_PREFIX)
+        ]
+        item_catalog = [
+            {"name": item["name"], "description": item["description"]}
+            for item in get_items(db)
+        ]
     quests = [
         {
             "name": quest["name"],
@@ -177,17 +180,27 @@ def build_messages(db, action: str):
         system_parts.append("WORLD\n" + prompt)
     system_parts.append(JSON_CONTRACT.strip())
 
-    user = "\n".join([
+    user_lines = [
         "CURRENT STATE",
         "Characters:",
         json.dumps(characters, ensure_ascii=False),
         f"Location: {world_value(db, 'location', 'Unknown')}",
         "Events:",
         json.dumps(world_value(db, "events", []), ensure_ascii=False),
-        "Notes:",
-        json.dumps(notes, ensure_ascii=False),
-        "Item catalog:",
-        json.dumps(item_catalog, ensure_ascii=False),
+    ]
+    if include_reference_material:
+        user_lines.extend([
+            "Notes:",
+            json.dumps(notes, ensure_ascii=False),
+            "Item catalog:",
+            json.dumps(item_catalog, ensure_ascii=False),
+        ])
+    else:
+        user_lines.append(
+            "Campaign reference documents and catalog objects can be searched "
+            "with the lookup tools."
+        )
+    user_lines.extend([
         "Quests:",
         json.dumps(quests, ensure_ascii=False),
         "Recent log:",
@@ -196,6 +209,7 @@ def build_messages(db, action: str):
         "PLAYER ACTION",
         played,
     ])
+    user = "\n".join(user_lines)
     system = "\n\n".join(system_parts)
     return system, user
 
