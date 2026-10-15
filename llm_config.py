@@ -30,6 +30,7 @@ MODEL_CAPABILITIES = {
     "query_decomposition": "Query decomposition",
     "tool_use": "Tool use",
     "structured_json": "Structured JSON",
+    "vision": "Vision",
 }
 
 DEFAULT_CONFIG = {
