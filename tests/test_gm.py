@@ -1168,6 +1168,17 @@ def test_complete_uses_campaign_lookup_tools_during_turn(tmp_path):
         assert "tools" in kwargs
         assert "response_format" not in kwargs
         if len(calls) == 1:
+            messages = kwargs["messages"]
+            assert any(
+                message["role"] == "system"
+                and "original user request in force" in message["content"]
+                and "return an empty updates object" in message["content"]
+                for message in messages
+            )
+            assert messages[-1] == {
+                "role": "user",
+                "content": "Do not change campaign state.",
+            }
             call = type("ToolCall", (), {
                 "id": "lookup-1",
                 "function": type("Function", (), {
@@ -1181,6 +1192,11 @@ def test_complete_uses_campaign_lookup_tools_during_turn(tmp_path):
             if message["role"] == "tool"
         )
         assert "silver moon" in tool_message["content"]
+        assert any(
+            message["role"] == "user"
+            and message["content"] == "Do not change campaign state."
+            for message in kwargs["messages"]
+        )
         return Response(ResponseMessage(
             '{"narration":"The abbey shines beneath the moon.","updates":{}}'
         ))
@@ -1193,7 +1209,7 @@ def test_complete_uses_campaign_lookup_tools_during_turn(tmp_path):
             "api_key": "",
         },
         "system",
-        "user",
+        "Do not change campaign state.",
         create=create,
         tool_db_path=db_path,
     )
