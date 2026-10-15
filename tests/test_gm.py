@@ -1180,6 +1180,65 @@ def test_campaign_lookup_tools_search_documents_objects_and_relationships(tmp_pa
     assert inspected["object"]["name"] == "Lunar Reliquary"
     assert inspected["relationships"][0]["from_object_id"] == "abbey"
     assert inspected["relationships"][0]["properties"] == {"sealed": True}
+    assert inspected["location_inference"]["absence_of_link_proves_absence"] is False
+    db.close()
+
+
+def test_inspect_location_distinguishes_recorded_presence_from_unknown(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    character_id = create_character(db, "Serina", {"name": "Serina"})
+    create_object(
+        db, "ritual-hall", "Ritual Hall", "ritual hall", geography_kind="room"
+    )
+    create_object(db, "empty-room", "Empty Room", "room", geography_kind="room")
+    create_object_link(
+        db,
+        "located_at",
+        f"character:{character_id}",
+        "ritual-hall",
+        properties={"position": "at the circle"},
+        notes="Present in the latest scene.",
+    )
+
+    recorded = execute_campaign_tool(
+        db, "inspect_location", {"location_object_id": "ritual-hall"}
+    )
+    unknown = execute_campaign_tool(
+        db, "inspect_location", {"location_object_id": "empty-room"}
+    )
+    character_search = execute_campaign_tool(
+        db, "search_objects", {"query": "Serina"}
+    )
+    location_search = execute_campaign_tool(
+        db, "search_objects", {"query": "Ritual Hall"}
+    )
+
+    assert recorded["presence_status"] == "recorded"
+    assert recorded["known_presences"] == [{
+        "object_id": f"character:{character_id}",
+        "name": "Serina",
+        "properties": {"position": "at the circle"},
+        "notes": "Present in the latest scene.",
+    }]
+    assert unknown["presence_status"] == "unknown"
+    assert unknown["known_presences"] == []
+    assert unknown["unlinked_presence"] == "unknown"
+    assert unknown["absence_of_link_proves_absence"] is False
+    assert unknown["encounter_likelihood"] == "gm_adjudication"
+    serina = next(
+        item for item in character_search["objects"]
+        if item["object_id"] == f"character:{character_id}"
+    )
+    assert serina["recorded_locations"][0]["object_id"] == "ritual-hall"
+    ritual_hall = next(
+        item for item in location_search["objects"]
+        if item["object_id"] == "ritual-hall"
+    )
+    assert ritual_hall["location_context"]["known_presences"][0]["name"] == "Serina"
+    assert (
+        character_search["location_inference"]["unlinked_presence"]
+        == "unknown"
+    )
     db.close()
 
 
@@ -1213,6 +1272,8 @@ def test_complete_uses_campaign_lookup_tools_during_turn(tmp_path):
                 message["role"] == "system"
                 and "original user request in force" in message["content"]
                 and "return an empty updates object" in message["content"]
+                and "missing links mean unknown" in message["content"]
+                and "Encounter likelihood is GM adjudication" in message["content"]
                 for message in messages
             )
             assert messages[-1] == {
@@ -1260,6 +1321,7 @@ def test_complete_uses_campaign_lookup_tools_during_turn(tmp_path):
         "search_documents",
         "search_objects",
         "inspect_object",
+        "inspect_location",
     }
 
 
@@ -1302,6 +1364,8 @@ def test_complete_uses_app_retrieved_context_without_model_tools(tmp_path):
         assert "Lunar Crown" in prompt
         assert "Lunarglow Skirt" in prompt
         assert "Tome of Eldritch Whispers" in prompt
+        assert '"unlinked_presence": "unknown"' in prompt
+        assert '"encounter_likelihood": "gm_adjudication"' in prompt
         assert "original user request" in prompt
         return Response()
 

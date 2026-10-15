@@ -15,6 +15,15 @@ _CONTEXT_STOP_WORDS = {
     "you", "benefit", "conditional",
 }
 
+LOCATION_INFERENCE = {
+    "recorded_presence": (
+        "A located_at relationship is evidence of recorded presence at a location."
+    ),
+    "unlinked_presence": "unknown",
+    "absence_of_link_proves_absence": False,
+    "encounter_likelihood": "gm_adjudication",
+}
+
 
 CAMPAIGN_TOOLS = [
     {
@@ -50,7 +59,8 @@ CAMPAIGN_TOOLS = [
             "name": "search_objects",
             "description": (
                 "Search named campaign objects such as characters, items, "
-                "locations, containers, and other graph entities."
+                "locations, containers, and other graph entities. A missing "
+                "search result does not establish that an object or person is absent."
             ),
             "parameters": {
                 "type": "object",
@@ -77,7 +87,8 @@ CAMPAIGN_TOOLS = [
             "description": (
                 "Get one campaign object's description and its direct incoming "
                 "and outgoing graph relationships. Use an exact object ID from "
-                "search_objects or current state."
+                "search_objects or current state. Missing relationships mean "
+                "unknown, not impossible or absent."
             ),
             "parameters": {
                 "type": "object",
@@ -88,6 +99,28 @@ CAMPAIGN_TOOLS = [
                     },
                 },
                 "required": ["object_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_location",
+            "description": (
+                "Get a location and characters with explicit located_at links "
+                "to it. Unlinked presence is unknown, not proof nobody is there; "
+                "encounter likelihood remains GM adjudication."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location_object_id": {
+                        "type": "string",
+                        "description": "The exact location object ID.",
+                    },
+                },
+                "required": ["location_object_id"],
                 "additionalProperties": False,
             },
         },
@@ -106,6 +139,7 @@ def retrieve_campaign_context(db, query: str, document_limit=4, object_limit=8) 
     return {
         "documents": search_documents(db, search_query, document_limit),
         "objects": search_objects(db, search_query, object_limit),
+        "location_inference": LOCATION_INFERENCE,
     }
 
 
@@ -117,11 +151,16 @@ def execute_campaign_tool(db, name: str, arguments: dict) -> dict:
             db, arguments.get("query"), arguments.get("limit", 5)
         )}
     if name == "search_objects":
-        return {"objects": search_objects(
-            db, arguments.get("query"), arguments.get("limit", 5)
-        )}
+        return {
+            "objects": search_objects(
+                db, arguments.get("query"), arguments.get("limit", 5)
+            ),
+            "location_inference": LOCATION_INFERENCE,
+        }
     if name == "inspect_object":
         return inspect_object(db, arguments.get("object_id"))
+    if name == "inspect_location":
+        return inspect_location(db, arguments.get("location_object_id"))
     raise ValueError(f"Unknown campaign lookup tool {name!r}.")
 
 
@@ -187,8 +226,23 @@ def search_objects(db, query, limit=5) -> list[dict]:
             item["object_id"],
         )
     )
-    return [{key: value for key, value in row.items() if key != "_score"}
-            for row in results[:limit]]
+    matched = []
+    for row in results[:limit]:
+        result = {key: value for key, value in row.items() if key != "_score"}
+        if result["object_type"] == "character":
+            result["recorded_locations"] = _recorded_locations(
+                db, result["object_id"]
+            )
+        elif (
+            (result["geography_kind"] or "").casefold()
+            not in {"", "unspecified"}
+            or (result["object_type"] or "").casefold() in {"location", "room"}
+        ):
+            result["location_context"] = inspect_location(
+                db, result["object_id"]
+            )
+        matched.append(result)
+    return matched
 
 
 def inspect_object(db, object_id) -> dict:
@@ -215,6 +269,7 @@ def inspect_object(db, object_id) -> dict:
         },
         "properties": json.loads(row["properties"]),
         "relationships": [],
+        "location_inference": LOCATION_INFERENCE,
     }
     for link in db.execute(
         """
@@ -233,6 +288,67 @@ def inspect_object(db, object_id) -> dict:
         relationship["properties"] = json.loads(relationship["properties"])
         result["relationships"].append(relationship)
     return result
+
+
+def inspect_location(db, location_object_id) -> dict:
+    if not isinstance(location_object_id, str) or not location_object_id.strip():
+        raise ValueError("location_object_id must be a non-empty string.")
+    location_object_id = location_object_id.strip()
+    row = db.execute(
+        """
+        SELECT object_id, name, object_type, geography_kind, description
+        FROM objects WHERE object_id=?
+        """,
+        (location_object_id,),
+    ).fetchone()
+    if row is None:
+        return {
+            "error": f"No campaign object found for ID {location_object_id!r}."
+        }
+    characters = []
+    for link in db.execute(
+        """
+        SELECT source.object_id, source.name, link.properties, link.notes
+        FROM object_links AS link
+        JOIN objects AS source ON source.object_id=link.from_object_id
+        WHERE link.relation='located_at'
+          AND link.to_object_id=?
+          AND source.object_type='character'
+        ORDER BY source.name COLLATE NOCASE, source.object_id
+        """,
+        (location_object_id,),
+    ):
+        presence = dict(link)
+        presence["properties"] = json.loads(presence["properties"])
+        characters.append(presence)
+    return {
+        "location": dict(row),
+        "presence_status": "recorded" if characters else "unknown",
+        "known_presences": characters,
+        "unlinked_presence": "unknown",
+        "absence_of_link_proves_absence": False,
+        "encounter_likelihood": "gm_adjudication",
+    }
+
+
+def _recorded_locations(db, character_object_id: str) -> list[dict]:
+    locations = []
+    for link in db.execute(
+        """
+        SELECT target.object_id, target.name, target.object_type,
+               target.geography_kind, link.properties, link.notes
+        FROM object_links AS link
+        JOIN objects AS target ON target.object_id=link.to_object_id
+        WHERE link.relation='located_at'
+          AND link.from_object_id=?
+        ORDER BY target.name COLLATE NOCASE, target.object_id
+        """,
+        (character_object_id,),
+    ):
+        location = dict(link)
+        location["properties"] = json.loads(location["properties"])
+        locations.append(location)
+    return locations
 
 
 def _query_terms(query) -> list[str]:
