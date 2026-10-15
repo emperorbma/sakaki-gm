@@ -685,6 +685,37 @@ def test_container_tag_creates_nested_backpack_and_cleans_orphan(tmp_path):
     db.close()
 
 
+def test_inventory_sibling_order_is_preserved_when_saved(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    character_id = create_character(db, "Serina", {"name": "Serina"})
+    first_item_id = create_item(db, "First item")
+    second_item_id = create_item(db, "Second item")
+
+    save_character_inventory(
+        db,
+        character_id,
+        [
+            {
+                "object_id": second_item_id,
+                "object_type": "item",
+                "properties": {"quantity": 1},
+            },
+            {
+                "object_id": first_item_id,
+                "object_type": "item",
+                "properties": {"quantity": 1},
+            },
+        ],
+    )
+
+    tree = get_character_inventory_tree(db, character_id)
+    assert [item["object_id"] for item in tree["children"]] == [
+        second_item_id,
+        first_item_id,
+    ]
+    db.close()
+
+
 def test_missing_character_inventory_container_is_created_on_demand(tmp_path):
     db = get_db(tmp_path / "campaign.db")
     character_id = create_character(db, "Serina", {"name": "Serina"})

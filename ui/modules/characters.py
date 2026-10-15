@@ -230,6 +230,7 @@ class CharactersModule:
         inventory_tree.column("location", width=180)
         inventory_tree.pack(fill=tk.BOTH, expand=True)
         inventory_tree.tag_configure("container", font=("TkDefaultFont", 9, "bold"))
+        inventory_tree.tag_configure("drop-target", background="#dceeff")
         inventory_node_data = {}
         root_id = "inventory-root"
         inventory_root = (
@@ -536,12 +537,19 @@ class CharactersModule:
         )
         remove_drop_target.pack(side=tk.RIGHT, padx=6)
 
-        drag = {"source": None}
+        drag = {"source": None, "target": None, "highlight": None}
+        drag_ghost = ttk.Label(editor, relief=tk.SOLID, padding=(6, 3))
+        drag_ghost.place_forget()
+        drop_indicator = tk.Frame(editor, height=2, background="#2878c8")
+        drop_indicator.place_forget()
 
         def drag_start(event, source):
             if source == "catalog":
                 index = catalog_list.nearest(event.y)
                 if 0 <= index < len(catalog_list_ids):
+                    drag_ghost.config(
+                        text=catalog_list.get(index).removesuffix(" [container]")
+                    )
                     drag["source"] = (
                         "catalog",
                         catalog_list_ids[index],
@@ -557,8 +565,9 @@ class CharactersModule:
                     event.x_root,
                     event.y_root,
                 )
+                drag_ghost.config(text=inventory_tree.item(row_id, "text"))
 
-        def parent_at_tree_position(x_root, y_root):
+        def drop_target_at(x_root, y_root):
             left = inventory_tree.winfo_rootx()
             top = inventory_tree.winfo_rooty()
             if not (
@@ -568,10 +577,76 @@ class CharactersModule:
                 return None
             target = inventory_tree.identify_row(y_root - top)
             if not target:
-                return root_id
-            if inventory_node_data[target]["object_type"] == "container":
-                return target
-            return inventory_tree.parent(target) or root_id
+                return root_id, tk.END, inventory_tree.winfo_height(), root_id
+            bbox = inventory_tree.bbox(target)
+            if not bbox:
+                return root_id, tk.END, inventory_tree.winfo_height(), root_id
+            row_y, row_height = bbox[1], bbox[3]
+            position = max(0, min(1, (y_root - top - row_y) / row_height))
+            if target == root_id:
+                return root_id, tk.END, row_y + row_height, root_id
+
+            parent_id = inventory_tree.parent(target) or root_id
+            siblings = inventory_tree.get_children(parent_id)
+            target_index = siblings.index(target)
+            is_container = (
+                inventory_node_data[target]["object_type"] == "container"
+            )
+            if is_container and 0.25 <= position <= 0.75:
+                return target, tk.END, row_y + row_height, target
+            after = position >= (0.75 if is_container else 0.5)
+            return (
+                parent_id,
+                target_index + int(after),
+                row_y + row_height if after else row_y,
+                None,
+            )
+
+        def clear_drop_highlight():
+            highlighted = drag["highlight"]
+            if highlighted and inventory_tree.exists(highlighted):
+                tags = tuple(
+                    tag for tag in inventory_tree.item(highlighted, "tags")
+                    if tag != "drop-target"
+                )
+                inventory_tree.item(highlighted, tags=tags)
+            drag["highlight"] = None
+
+        def drag_motion(event):
+            if drag["source"] is None:
+                return
+            drag_ghost.place(
+                x=event.x_root - editor.winfo_rootx() + 12,
+                y=event.y_root - editor.winfo_rooty() + 12,
+            )
+            drag_ghost.lift()
+            target = drop_target_at(event.x_root, event.y_root)
+            drag["target"] = target
+            if target is None:
+                drop_indicator.place_forget()
+                clear_drop_highlight()
+                return
+            if target[3]:
+                drop_indicator.place_forget()
+                if drag["highlight"] != target[3]:
+                    clear_drop_highlight()
+                    tags = inventory_tree.item(target[3], "tags")
+                    inventory_tree.item(
+                        target[3],
+                        tags=(*tags, "drop-target"),
+                    )
+                    drag["highlight"] = target[3]
+                return
+            clear_drop_highlight()
+            tree_left = inventory_tree.winfo_rootx() - editor.winfo_rootx()
+            tree_top = inventory_tree.winfo_rooty() - editor.winfo_rooty()
+            drop_indicator.place(
+                x=tree_left,
+                y=tree_top + target[2] - 1,
+                width=inventory_tree.winfo_width(),
+            )
+            drop_indicator.lift()
+            drag_ghost.lift()
 
         def dropped_on_remove_target(x_root, y_root):
             left = remove_drop_target.winfo_rootx()
@@ -584,6 +659,9 @@ class CharactersModule:
         def drag_end(event, source):
             drag_source = drag["source"]
             drag["source"] = None
+            drag_ghost.place_forget()
+            drop_indicator.place_forget()
+            clear_drop_highlight()
             if drag_source is None:
                 return
             if (
@@ -591,11 +669,12 @@ class CharactersModule:
                 + abs(event.y_root - drag_source[3]) < 8
             ):
                 return
-            target_parent = parent_at_tree_position(event.x_root, event.y_root)
+            target = drop_target_at(event.x_root, event.y_root)
             if drag_source[0] == "catalog":
                 item_id = drag_source[1]
-                if target_parent is None:
+                if target is None:
                     return
+                target_parent = target[0]
                 catalog_item = items_by_id[item_id]
                 if not catalog_item["is_container"] and inventory_tree.exists(item_id):
                     return
@@ -612,15 +691,26 @@ class CharactersModule:
                 inventory_tree.selection_set(dragged_id)
                 remove_selected()
                 return
-            if target_parent is None or target_parent == dragged_id:
+            if target is None:
+                return
+            target_parent, target_index, _marker_y, _highlight_id = target
+            if target_parent == dragged_id:
                 return
             ancestor = target_parent
             while ancestor:
                 if ancestor == dragged_id:
                     return
                 ancestor = inventory_tree.parent(ancestor)
-            inventory_tree.move(dragged_id, target_parent, tk.END)
-            if inventory_node_data[dragged_id]["object_type"] == "container":
+            old_parent = inventory_tree.parent(dragged_id)
+            old_siblings = inventory_tree.get_children(old_parent)
+            old_index = old_siblings.index(dragged_id)
+            if old_parent == target_parent and old_index < target_index:
+                target_index -= 1
+            inventory_tree.move(dragged_id, target_parent, target_index)
+            if (
+                inventory_node_data[dragged_id]["object_type"] == "container"
+                and target_parent != old_parent
+            ):
                 inventory_tree.item(target_parent, open=True)
 
         catalog_list.bind(
@@ -631,6 +721,7 @@ class CharactersModule:
             "<ButtonRelease-1>",
             lambda event: drag_end(event, "catalog"),
         )
+        catalog_list.bind("<B1-Motion>", drag_motion)
         inventory_tree.bind(
             "<ButtonPress-1>",
             lambda event: drag_start(event, "inventory"),
@@ -641,6 +732,7 @@ class CharactersModule:
             lambda event: drag_end(event, "inventory"),
             add="+",
         )
+        inventory_tree.bind("<B1-Motion>", drag_motion)
         inventory_tree.bind("<<TreeviewSelect>>", load_inventory_selection)
         ttk.Button(
             inventory_controls,
