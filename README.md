@@ -2,6 +2,10 @@
 
 Sakaki GM is a local Game Master desk. Each campaign is its own SQLite file, one bottle per campaign. The model that answers player actions is chosen in Settings.
 
+## License
+
+This repository is proprietary. Copyright © 2026 Brian Angeletti. All rights reserved. Repository access for review does not grant permission to reuse, modify, or redistribute its contents. See [LICENSE](LICENSE). Third-party components remain subject to their respective licenses.
+
 ## Linux
 
 ```bash
