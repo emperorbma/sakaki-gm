@@ -166,6 +166,8 @@ class GeographyModule:
         return row["name"] if row else object_id
 
     def _exit_label(self, item):
+        if item.get("inference") == "inverse_contains":
+            return "exit (inferred from containment)"
         if item["relation"] != "route":
             return item["relation"]
         link = item["link"]

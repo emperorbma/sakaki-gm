@@ -82,9 +82,18 @@ def test_navigation_exits_include_routes_and_containment_but_not_near(tmp_path):
             ("route", "forest"),
         }
         reverse_exits = get_navigation_exits(db, "side-room")
-        assert [(item["relation"], item["target"]["object_id"]) for item in reverse_exits] == [
+        assert {
+            (item["relation"], item["target"]["object_id"])
+            for item in reverse_exits
+        } == {
             ("route", "forest"),
-        ]
+            ("exit", "forest"),
+        }
+        inferred_exit = next(
+            item for item in reverse_exits if item["relation"] == "exit"
+        )
+        assert inferred_exit["inference"] == "inverse_contains"
+        assert inferred_exit["link"]["relation"] == "contains"
         assert {
             (item["relation"], item["target"]["object_id"])
             for item in get_navigation_exits(db, "forest")
@@ -180,9 +189,17 @@ def test_locations_and_nested_containers_can_both_contain_objects(tmp_path):
         }
         assert {"bag:travel", "item:torch", "side-room"} <= location_contents
         bag_contents = get_navigation_exits(db, "bag:travel")
-        assert [item["target"]["object_id"] for item in bag_contents] == [
-            "item:torch",
-        ]
+        assert {
+            (item["relation"], item["target"]["object_id"])
+            for item in bag_contents
+        } == {
+            ("contains", "item:torch"),
+            ("exit", "forest"),
+        }
+        assert [
+            item["target"]["object_id"]
+            for item in get_navigation_exits(db, "item:torch")
+        ] == []
         loose_item_link = db.execute(
             """
             SELECT properties FROM object_links

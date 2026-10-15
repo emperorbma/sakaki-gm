@@ -512,7 +512,7 @@ def get_geography_objects(
 
 
 def get_navigation_exits(db, object_id: str) -> list[dict]:
-    """Return navigation and containment interpretations of object links."""
+    """Return recorded exits and inferred exits from navigable containers."""
     nodes = {
         row["object_id"]: dict(row)
         for row in db.execute("SELECT * FROM objects")
@@ -556,6 +556,28 @@ def get_navigation_exits(db, object_id: str) -> list[dict]:
             "target": nodes[link["to_object_id"]],
             "link": link,
         })
+
+    for row in db.execute(
+        """
+        SELECT * FROM object_links
+        WHERE relation='contains' AND to_object_id=?
+        ORDER BY id
+        """,
+        (object_id,),
+    ):
+        link = dict(row)
+        parent_id = link["from_object_id"]
+        if not _is_navigable_object(nodes[object_id]):
+            continue
+        if not _is_navigable_object(nodes[parent_id]):
+            continue
+        exits.append({
+            "relation": "exit",
+            "target": nodes[parent_id],
+            "link": link,
+            "inference": "inverse_contains",
+        })
+
     exits.sort(
         key=lambda item: (
             item["relation"],
@@ -564,6 +586,17 @@ def get_navigation_exits(db, object_id: str) -> list[dict]:
         )
     )
     return exits
+
+
+def _is_navigable_object(obj: dict) -> bool:
+    geography_kind = (obj["geography_kind"] or "").casefold()
+    object_type = (obj["object_type"] or "").casefold()
+    return geography_kind not in {"", "unspecified"} or object_type in {
+        "character",
+        "container",
+        "location",
+        "room",
+    }
 
 
 def find_route(
