@@ -1,4 +1,5 @@
 # ui/modules/settings.py
+import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -12,6 +13,7 @@ from llm_config import (
     resolve_api_key,
     save_config,
 )
+from model_capability_tests import run_capability_tests
 from llm_client import list_models, test_connection
 from skill_db import DEFAULT_5E_SKILLS, replace_campaign_skills
 
@@ -142,6 +144,13 @@ class SettingsModule:
         buttons.grid(row=8, column=1, sticky="w", padx=10, pady=10)
         ttk.Button(buttons, text="Save", command=self.save_llm).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Test", command=self.test_llm).pack(side=tk.LEFT, padx=4)
+        self.capability_test_button = ttk.Button(
+            buttons,
+            text="Test capabilities",
+            command=self.test_capabilities,
+        )
+        self.capability_test_button.pack(side=tk.LEFT, padx=4)
+        self._capability_test_busy = False
 
     def set_db(self, db):
         self.db = db
@@ -269,6 +278,58 @@ class SettingsModule:
             messagebox.showerror("Model", str(exc))
             return
         messagebox.showinfo("Model", result)
+
+    def test_capabilities(self):
+        if self._capability_test_busy:
+            return
+        settings = self._llm_dict()
+        if not settings["model"]:
+            messagebox.showerror("Model", "Select a model before testing capabilities.")
+            return
+        if not settings["base_url"]:
+            messagebox.showerror("Model", "Set a base URL before testing capabilities.")
+            return
+        self._capability_test_busy = True
+        self.capability_test_button.state(["disabled"])
+
+        def work():
+            try:
+                results = run_capability_tests(settings)
+            except Exception as exc:
+                self.main_app.root.after(
+                    0,
+                    lambda error=exc: self._capability_test_failed(error),
+                )
+                return
+            self.main_app.root.after(
+                0,
+                lambda result=results: self._capability_test_finished(result),
+            )
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _capability_test_failed(self, exc):
+        self._capability_test_busy = False
+        self.capability_test_button.state(["!disabled"])
+        messagebox.showerror("Capability tests", str(exc))
+
+    def _capability_test_finished(self, results):
+        self._capability_test_busy = False
+        self.capability_test_button.state(["!disabled"])
+        lines = []
+        for result in results:
+            lines.extend([
+                f"{result['capability'].replace('_', ' ').title()}: "
+                f"{result['status']} ({result['elapsed_seconds']}s)",
+                f"  {result['detail'][:400]}",
+                "",
+            ])
+        report = "\n".join(lines).strip()
+        messagebox.showinfo(
+            "Capability test results",
+            f"Model: {self.model.get().strip()}\n\n{report}\n\n"
+            "Results are informational; capability checkboxes were not changed.",
+        )
 
     def refresh_models(self):
         settings = self._llm_dict()
