@@ -49,6 +49,13 @@ LIVE_DB = LEGACY_DB
 FIXTURE = Path(__file__).parent / "fixtures" / "serina_headings.md"
 
 
+def drop_geography_schema_for_legacy_migration(db):
+    db.execute("DROP TABLE encounter_entries")
+    db.execute("DROP TABLE encounter_tables")
+    db.execute("DROP TABLE map_links")
+    db.execute("DROP TABLE map_nodes")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def live_database_stays_put():
     before = LIVE_DB.read_bytes() if LIVE_DB.is_file() else None
@@ -148,6 +155,7 @@ def test_v8_migration_replaces_player_flag_with_blank_campaign_role(tmp_path):
         db.execute("ALTER TABLE characters DROP COLUMN campaign_role")
         db.execute("ALTER TABLE characters ADD COLUMN is_player BOOLEAN DEFAULT 0")
         db.execute("UPDATE characters SET is_player = 1")
+        drop_geography_schema_for_legacy_migration(db)
         db.execute("PRAGMA user_version = 8")
 
         migrate(db)
@@ -160,7 +168,7 @@ def test_v8_migration_replaces_player_flag_with_blank_campaign_role(tmp_path):
         assert db.execute(
             "SELECT campaign_role FROM characters WHERE name='Serina'"
         ).fetchone()["campaign_role"] == ""
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
     finally:
         db.close()
 
@@ -486,6 +494,7 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
     db.execute("DROP TABLE items")
     db.execute("DROP TABLE quest_characters")
     db.execute("DROP TABLE quests")
+    drop_geography_schema_for_legacy_migration(db)
     db.execute(
         "INSERT INTO campaign_settings (key, value) VALUES ('skills_list', ?)",
         (json.dumps([name for name, _ability in DEFAULT_5E_SKILLS]),),
@@ -496,7 +505,7 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
         assert get_items(db) == []
         assert get_quests(db) == []
         data = json.loads(
@@ -585,13 +594,14 @@ def test_schema_v4_campaign_migrates_to_quests(tmp_path):
     db.execute("DROP TABLE quest_characters")
     db.execute("DROP TABLE quests")
     db.execute("ALTER TABLE character_items DROP COLUMN equipment_location")
+    drop_geography_schema_for_legacy_migration(db)
     db.execute("PRAGMA user_version = 4")
     db.commit()
     db.close()
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
         assert get_quests(db) == []
     finally:
         db.close()
@@ -605,6 +615,7 @@ def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     db.execute("DROP TABLE campaign_skills")
     db.execute("ALTER TABLE quests DROP COLUMN status")
     db.execute("ALTER TABLE character_items DROP COLUMN equipment_location")
+    drop_geography_schema_for_legacy_migration(db)
     db.execute("PRAGMA user_version = 5")
     db.commit()
     db.close()
@@ -612,7 +623,7 @@ def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     db = get_db(path)
     try:
         quest = get_quests(db)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
         assert quest["id"] == quest_id
         assert quest["name"] == "Legacy quest"
         assert quest["description"] == "Existing objective."
@@ -630,6 +641,7 @@ def test_schema_v6_campaign_adds_equipment_location(tmp_path):
     db.execute("DROP TABLE character_skills")
     db.execute("DROP TABLE campaign_skills")
     db.execute("ALTER TABLE character_items DROP COLUMN equipment_location")
+    drop_geography_schema_for_legacy_migration(db)
     db.execute("PRAGMA user_version = 6")
     db.commit()
     db.close()
@@ -637,7 +649,7 @@ def test_schema_v6_campaign_adds_equipment_location(tmp_path):
     db = get_db(path)
     try:
         assignment = get_character_items(db, character_id)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
         assert assignment["equipment_location"] == ""
         assert assignment["attuned"] == 1
     finally:

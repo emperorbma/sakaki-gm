@@ -173,3 +173,90 @@ def migrate(db):
             )
         db.execute("PRAGMA user_version = 9")
         db.commit()
+
+    if version < 10:
+        cur.executescript("""
+        CREATE TABLE map_nodes (
+            node_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            node_type TEXT NOT NULL DEFAULT '',
+            spatial_kind TEXT NOT NULL DEFAULT 'unspecified',
+            description TEXT NOT NULL DEFAULT '',
+            coordinate_x REAL,
+            coordinate_y REAL,
+            coordinate_system TEXT NOT NULL DEFAULT '',
+            coordinate_precision TEXT NOT NULL DEFAULT '',
+            coordinate_basis TEXT NOT NULL DEFAULT '',
+            source_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+            source_row TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE map_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            relation TEXT NOT NULL,
+            from_node_id TEXT NOT NULL REFERENCES map_nodes(node_id) ON DELETE CASCADE,
+            to_node_id TEXT NOT NULL REFERENCES map_nodes(node_id) ON DELETE CASCADE,
+            distance_min_miles REAL,
+            distance_max_miles REAL,
+            distance_qualifier TEXT NOT NULL DEFAULT '',
+            direction TEXT NOT NULL DEFAULT '',
+            travel_mode TEXT NOT NULL DEFAULT '',
+            day_minutes INTEGER,
+            night_minutes INTEGER,
+            notes TEXT NOT NULL DEFAULT '',
+            source_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+            source_row TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX map_links_from_relation
+            ON map_links(from_node_id, relation);
+        CREATE INDEX map_links_to_relation
+            ON map_links(to_node_id, relation);
+        PRAGMA user_version = 10;
+        """)
+        db.commit()
+
+    if version < 11:
+        node_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(map_nodes)")
+        }
+        if "spatial_kind" not in node_columns:
+            db.execute(
+                "ALTER TABLE map_nodes "
+                "ADD COLUMN spatial_kind TEXT NOT NULL DEFAULT 'unspecified'"
+            )
+        if "coordinate_precision" not in node_columns:
+            db.execute(
+                "ALTER TABLE map_nodes "
+                "ADD COLUMN coordinate_precision TEXT NOT NULL DEFAULT ''"
+            )
+        cur.executescript("""
+        CREATE TABLE encounter_tables (
+            table_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            source_file TEXT NOT NULL DEFAULT '',
+            roll_die TEXT NOT NULL DEFAULT '',
+            location_node_id TEXT NOT NULL
+                REFERENCES map_nodes(node_id) ON DELETE CASCADE,
+            binding_basis TEXT NOT NULL DEFAULT '',
+            source_note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+            source_row TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX encounter_tables_by_location
+            ON encounter_tables(location_node_id);
+        CREATE TABLE encounter_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            table_id TEXT NOT NULL
+                REFERENCES encounter_tables(table_id) ON DELETE CASCADE,
+            roll TEXT NOT NULL,
+            roll_min INTEGER NOT NULL,
+            roll_max INTEGER NOT NULL,
+            encounter TEXT NOT NULL,
+            cr_xp TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            source_row TEXT NOT NULL DEFAULT '',
+            CHECK (roll_min >= 1 AND roll_max >= roll_min)
+        );
+        CREATE INDEX encounter_entries_by_table_roll
+            ON encounter_entries(table_id, roll_min, roll_max);
+        PRAGMA user_version = 11;
+        """)
+        db.commit()
