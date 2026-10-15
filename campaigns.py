@@ -1,4 +1,5 @@
 # campaigns.py — one SQLite file per campaign, listed in the app config
+from datetime import datetime
 import sqlite3
 import uuid
 from pathlib import Path
@@ -132,6 +133,33 @@ def register_file(config_path, db_path) -> str:
     cfg["active_campaign"] = cid
     save_config(cfg, config_path)
     return cid
+
+
+def create_campaign_backup(db, db_path, backup_dir=None) -> Path:
+    """Create a timestamped SQLite snapshot without changing campaign state."""
+    source_path = Path(db_path).resolve()
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Campaign database does not exist: {source_path}")
+    directory = Path(backup_dir) if backup_dir else source_path.parent / "backups"
+    directory.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup_path = directory / f"{source_path.stem}-{timestamp}{source_path.suffix}"
+    temporary_path = backup_path.with_suffix(backup_path.suffix + ".tmp")
+    if backup_path.exists() or temporary_path.exists():
+        raise FileExistsError(f"Campaign backup already exists: {backup_path}")
+
+    db.commit()
+    snapshot = sqlite3.connect(temporary_path)
+    try:
+        db.backup(snapshot)
+        snapshot.close()
+        temporary_path.replace(backup_path)
+    except Exception:
+        snapshot.close()
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return backup_path
 
 
 def remove_campaign(config_path, campaign_id: str, campaigns_dir=CAMPAIGNS_DIR) -> Path:

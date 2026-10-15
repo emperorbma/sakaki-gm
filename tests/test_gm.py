@@ -8,6 +8,7 @@ import pytest
 from campaigns import (
     active_path,
     bootstrap,
+    create_campaign_backup,
     create_campaign,
     register_file,
     remove_campaign,
@@ -371,6 +372,44 @@ def test_two_bottles_leave_the_first_file_unchanged(tmp_path):
     assert [row["name"] for row in kept.execute("SELECT name FROM characters")] == ["Keep"]
     kept.close()
     assert hashlib.sha256(legacy.read_bytes()).hexdigest() == digest
+
+
+def test_campaign_backup_creates_timestamped_snapshot(tmp_path):
+    source_path = tmp_path / "campaign.db"
+    db = get_db(source_path)
+    db.execute(
+        "UPDATE metadata SET value='Snapshot test' WHERE key='campaign_name'"
+    )
+    db.execute(
+        "UPDATE world SET value='Unsaved location' WHERE key='location'"
+    )
+
+    backup_path = create_campaign_backup(db, source_path)
+
+    assert backup_path.parent == tmp_path / "backups"
+    assert backup_path.name.startswith("campaign-")
+    assert backup_path.name.endswith(".db")
+    backup_db = sqlite3.connect(backup_path)
+    try:
+        assert backup_db.execute(
+            "SELECT value FROM metadata WHERE key='campaign_name'"
+        ).fetchone()[0] == "Snapshot test"
+        assert backup_db.execute(
+            "SELECT value FROM world WHERE key='location'"
+        ).fetchone()[0] == "Unsaved location"
+    finally:
+        backup_db.close()
+
+    db.execute("UPDATE world SET value='Changed after backup' WHERE key='location'")
+    db.commit()
+    verification_db = sqlite3.connect(backup_path)
+    try:
+        assert verification_db.execute(
+            "SELECT value FROM world WHERE key='location'"
+        ).fetchone()[0] == "Unsaved location"
+    finally:
+        verification_db.close()
+    db.close()
 
 
 def test_bootstrap_recovers_to_existing_campaign_when_active_path_is_missing(tmp_path):

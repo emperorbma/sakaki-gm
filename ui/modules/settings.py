@@ -24,7 +24,39 @@ class SettingsModule:
         self.main_app = main_app
         self.frame = ttk.Frame(notebook)
 
-        prompt = ttk.LabelFrame(self.frame, text="System prompt")
+        settings_canvas = tk.Canvas(self.frame, highlightthickness=0)
+        settings_scrollbar = ttk.Scrollbar(
+            self.frame,
+            orient=tk.VERTICAL,
+            command=settings_canvas.yview,
+        )
+        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+        settings_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        settings_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        content = ttk.Frame(settings_canvas)
+        content_window = settings_canvas.create_window(
+            (0, 0), window=content, anchor="nw"
+        )
+        content.bind(
+            "<Configure>",
+            lambda _event: settings_canvas.configure(
+                scrollregion=settings_canvas.bbox("all")
+            ),
+        )
+        settings_canvas.bind(
+            "<Configure>",
+            lambda event: settings_canvas.itemconfigure(
+                content_window, width=event.width
+            ),
+        )
+        settings_canvas.bind(
+            "<MouseWheel>",
+            lambda event: settings_canvas.yview_scroll(
+                -int(event.delta / 120), "units"
+            ),
+        )
+
+        prompt = ttk.LabelFrame(content, text="System prompt")
         prompt.pack(fill=tk.BOTH, expand=True, padx=16, pady=12)
         ttk.Label(
             prompt,
@@ -41,13 +73,13 @@ class SettingsModule:
         self.prompt_source.pack(anchor="w", padx=10, pady=(0, 8))
         self.reload_system_prompt()
 
-        rules = ttk.LabelFrame(self.frame, text="Campaign rules")
+        rules = ttk.LabelFrame(content, text="Campaign rules")
         rules.pack(fill=tk.X, padx=16, pady=12)
         ttk.Button(rules, text="Load Standard D&D 5e Rules", command=self.load_5e).pack(anchor="w", padx=10, pady=8)
         self.system_label = ttk.Label(rules, text=self._system_text())
         self.system_label.pack(anchor="w", padx=10, pady=(0, 8))
 
-        llm = ttk.LabelFrame(self.frame, text="Language model")
+        llm = ttk.LabelFrame(content, text="Language model")
         llm.pack(fill=tk.X, padx=16, pady=12)
         cfg = load_config(self.main_app.config_path)
         current = cfg["llm"]

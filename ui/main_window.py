@@ -10,6 +10,7 @@ from campaigns import (
     CAMPAIGNS_DIR,
     active_path,
     bootstrap,
+    create_campaign_backup,
     campaign_name,
     create_campaign,
     register_file,
@@ -58,6 +59,7 @@ class MainWindow:
         header.pack(fill=tk.X, padx=15, pady=(12, 4))
         ttk.Label(header, text="PyGM Core", font=("Georgia", 28, "bold")).pack(side=tk.LEFT)
         ttk.Button(header, text="Remove", command=self.remove_current).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(header, text="Backup", command=self.backup_current).pack(side=tk.RIGHT, padx=4)
         ttk.Button(header, text="Open", command=self.open_campaign_file).pack(side=tk.RIGHT, padx=4)
         ttk.Button(header, text="Rename", command=self.rename_current).pack(side=tk.RIGHT, padx=4)
         ttk.Button(header, text="New", command=self.new_campaign).pack(side=tk.RIGHT, padx=4)
@@ -208,6 +210,21 @@ class MainWindow:
             return
         rename_campaign(self.db, name.strip())
         self.refresh_campaign_chrome()
+
+    def backup_current(self):
+        try:
+            self.save_location()
+            self.world_module.save_prompt(quiet=True)
+            self.documents_module.save_current(quiet=True)
+            self.settings_module.save_system_prompt(quiet=True)
+            backup_path = create_campaign_backup(self.db, self.db_path)
+        except Exception as exc:
+            messagebox.showerror("Campaign backup", str(exc))
+            return
+        messagebox.showinfo(
+            "Campaign backup",
+            f"Campaign backup created at:\n{backup_path}",
+        )
 
     def open_campaign_file(self):
         chosen = filedialog.askopenfilename(
