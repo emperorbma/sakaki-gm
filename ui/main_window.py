@@ -82,7 +82,7 @@ class MainWindow:
         self.documents_module = DocumentsModule(notebook, self.db)
         notebook.add(self.documents_module.frame, text="Documents")
         self.geography_module = GeographyModule(notebook, self.db)
-        notebook.add(self.geography_module.frame, text="Map")
+        notebook.add(self.geography_module.frame, text="Geography")
         self.items_module = ItemsModule(notebook, self.db)
         notebook.add(self.items_module.frame, text="Items")
         self.quests_module = QuestsModule(notebook, self.db)

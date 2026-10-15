@@ -2,22 +2,21 @@
 import tkinter as tk
 from tkinter import ttk
 
-from geography_db import (
+from object_graph_db import (
     get_encounter_tables,
-    get_map_nodes,
+    get_geography_objects,
     get_navigation_exits,
-    get_setting_candidates,
 )
 
 
 SETTING_ROOT = "__campaign_setting__"
-SPATIAL_FILTERS = (
+GEOGRAPHY_FILTERS = (
     "Regions and settlements",
     "Region",
     "Settlement",
     "Area",
     "Point",
-    "All room types",
+    "All geographic kinds",
 )
 
 
@@ -44,13 +43,13 @@ class GeographyModule:
         self.kind_filter = ttk.Combobox(
             filters,
             state="readonly",
-            values=SPATIAL_FILTERS,
+            values=GEOGRAPHY_FILTERS,
             width=25,
         )
         self.kind_filter.current(0)
         self.kind_filter.pack(side=tk.LEFT, padx=(6, 12))
         self.kind_filter.bind("<<ComboboxSelected>>", self._refresh_exits)
-        ttk.Label(filters, text="Search exits").pack(side=tk.LEFT)
+        ttk.Label(filters, text="Search objects").pack(side=tk.LEFT)
         self.search_var = tk.StringVar()
         self.search = ttk.Entry(filters, textvariable=self.search_var)
         self.search.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
@@ -63,7 +62,7 @@ class GeographyModule:
         body.add(exit_frame, weight=1)
         body.add(details_frame, weight=2)
 
-        ttk.Label(exit_frame, text="Exits").pack(anchor="w", pady=(0, 4))
+        ttk.Label(exit_frame, text="Related objects").pack(anchor="w", pady=(0, 4))
         list_frame = ttk.Frame(exit_frame)
         list_frame.pack(fill=tk.BOTH, expand=True)
         self.exits = ttk.Treeview(
@@ -91,7 +90,7 @@ class GeographyModule:
             command=self._open_selected,
         ).pack(anchor="w", pady=(6, 0))
 
-        ttk.Label(details_frame, text="Current node").pack(anchor="w", pady=(0, 4))
+        ttk.Label(details_frame, text="Current object").pack(anchor="w", pady=(0, 4))
         self.details = tk.Text(
             details_frame, wrap=tk.WORD, font=("Georgia", 11), state=tk.DISABLED
         )
@@ -103,11 +102,11 @@ class GeographyModule:
         self._stack = [SETTING_ROOT]
         self._refresh_exits()
 
-    def _current_node_id(self):
+    def _current_object_id(self):
         return self._stack[-1]
 
     def _refresh_exits(self, *_args):
-        current = self._current_node_id()
+        current = self._current_object_id()
         is_root = current == SETTING_ROOT
         self._loading = True
         self.exits.delete(*self.exits.get_children())
@@ -127,7 +126,7 @@ class GeographyModule:
                     "target": node,
                     "link": {},
                 }
-                for node in get_setting_candidates(
+                for node in get_geography_objects(
                     self.db, self.kind_filter.get()
                 )
             ]
@@ -141,8 +140,8 @@ class GeographyModule:
                 (
                     item["relation"],
                     target["name"],
-                    target["node_type"],
-                    target["spatial_kind"],
+                    target["object_type"],
+                    target["geography_kind"],
                     target["description"],
                     item["link"].get("direction", ""),
                     item["link"].get("notes", ""),
@@ -156,15 +155,15 @@ class GeographyModule:
                 "",
                 tk.END,
                 iid=str(len(self._rows) - 1),
-                values=(label, target["name"], target["spatial_kind"]),
+                values=(label, target["name"], target["geography_kind"]),
             )
         self._loading = False
 
-    def _node_name(self, node_id):
+    def _node_name(self, object_id):
         row = self.db.execute(
-            "SELECT name FROM map_nodes WHERE node_id=?", (node_id,)
+            "SELECT name FROM objects WHERE object_id=?", (object_id,)
         ).fetchone()
-        return row["name"] if row else node_id
+        return row["name"] if row else object_id
 
     def _exit_label(self, item):
         if item["relation"] != "route":
@@ -199,22 +198,23 @@ class GeographyModule:
 
     def _show_setting_details(self):
         self._write_details(
-            "Virtual root for this campaign's navigable setting.\n\n"
-            "Its exits are query results, not physical connections. "
-            "Choose a room kind and search to narrow the destinations."
+            "Geography is a query view over objects classified by geographic "
+            "kind.\n\n"
+            "Its results may have any other relationships in the object graph. "
+            "Choose a geographic kind and search to narrow the objects."
         )
 
-    def _show_node_details(self, node_id):
+    def _show_node_details(self, object_id):
         node = self.db.execute(
-            "SELECT * FROM map_nodes WHERE node_id=?", (node_id,)
+            "SELECT * FROM objects WHERE object_id=?", (object_id,)
         ).fetchone()
         if node is None:
-            self._write_details("This room is no longer in the map graph.")
+            self._write_details("This object is no longer in the graph.")
             return
         lines = [
             node["name"],
-            f"Type: {node['node_type'] or 'unspecified'}",
-            f"Spatial kind: {node['spatial_kind'] or 'unspecified'}",
+            f"Object type: {node['object_type'] or 'unspecified'}",
+            f"Geography kind: {node['geography_kind'] or 'not classified'}",
         ]
         if node["description"]:
             lines.extend(("", node["description"]))
@@ -232,7 +232,7 @@ class GeographyModule:
                 lines.append(f"Precision: {node['coordinate_precision']}")
             if node["coordinate_basis"]:
                 lines.append(f"Basis: {node['coordinate_basis']}")
-        tables = get_encounter_tables(self.db, node_id)
+        tables = get_encounter_tables(self.db, object_id)
         if tables:
             lines.extend(("", "Encounter tables:"))
             lines.extend(
@@ -245,7 +245,7 @@ class GeographyModule:
         if not selected:
             return
         row_index = int(selected[0])
-        target_id = self._rows[row_index]["target"]["node_id"]
+        target_id = self._rows[row_index]["target"]["object_id"]
         self._stack.append(target_id)
         self.search_var.set("")
         self._refresh_exits()

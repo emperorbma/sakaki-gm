@@ -1,15 +1,21 @@
-"""Structured campaign geography and route-graph access."""
+"""Campaign object graph storage and geography-specific query operations."""
 import csv
 import heapq
 import io
 import re
 
-MAP_NODES_TITLE = "Geography of the Eldenweave"
-NODE_COLUMNS = ("id", "name", "type", "spatial kind", "description")
+GEOGRAPHY_SOURCE_TITLE = "Geography of the Eldenweave"
+GEOGRAPHY_OBJECT_COLUMNS = (
+    "object id",
+    "name",
+    "object type",
+    "geography kind",
+    "description",
+)
 LINK_COLUMNS = (
     "relation",
-    "from id",
-    "to id",
+    "from object id",
+    "to object id",
     "distance min (mi)",
     "distance max (mi)",
     "distance qualifier",
@@ -24,7 +30,7 @@ ENCOUNTER_BINDING_COLUMNS = (
     "table name",
     "source file",
     "roll die",
-    "location node id",
+    "location object id",
     "binding basis",
 )
 
@@ -32,41 +38,45 @@ ENCOUNTER_BINDING_COLUMNS = (
 def parse_geography_tables(
     markdown: str,
 ) -> tuple[list[dict], list[dict], list[dict]]:
-    """Parse room nodes, exits/descriptive links, and explicit table bindings."""
+    """Parse geography objects, generic relations, and explicit table bindings."""
     sections = _markdown_tables(markdown)
-    nodes = _rows_for_table(sections.get("map nodes"), NODE_COLUMNS, "Map Nodes")
+    nodes = _rows_for_table(
+        sections.get("geography objects"),
+        GEOGRAPHY_OBJECT_COLUMNS,
+        "Geography Objects",
+    )
     links = _rows_for_table(
-        sections.get("location links"), LINK_COLUMNS, "Location Links"
+        sections.get("object relations"), LINK_COLUMNS, "Object Relations"
     )
     bindings = _rows_for_table(
         sections.get("encounter table bindings"),
         ENCOUNTER_BINDING_COLUMNS,
         "Encounter Table Bindings",
     )
-    node_ids = {node["node_id"] for node in nodes}
-    if len(node_ids) != len(nodes):
-        raise ValueError("Map Nodes contains duplicate IDs")
+    object_ids = {obj["object_id"] for obj in nodes}
+    if len(object_ids) != len(nodes):
+        raise ValueError("Geography Objects contains duplicate object IDs")
     table_ids = {binding["table_id"] for binding in bindings}
     if len(table_ids) != len(bindings):
         raise ValueError("Encounter Table Bindings contains duplicate table IDs")
     for link in links:
-        if link["from_node_id"] not in node_ids:
+        if link["from_object_id"] not in object_ids:
             raise ValueError(
-                f"Location Links references unknown From ID "
-                f"{link['from_node_id']!r}"
+                f"Object Relations references unknown From ID "
+                f"{link['from_object_id']!r}"
             )
-        if link["to_node_id"] not in node_ids:
+        if link["to_object_id"] not in object_ids:
             raise ValueError(
-                f"Location Links references unknown To ID "
-                f"{link['to_node_id']!r}"
+                f"Object Relations references unknown To ID "
+                f"{link['to_object_id']!r}"
             )
-        if link["from_node_id"] == link["to_node_id"]:
-            raise ValueError("Location Links cannot connect a node to itself")
+        if link["from_object_id"] == link["to_object_id"]:
+            raise ValueError("Object Relations cannot connect an object to itself")
     for binding in bindings:
-        if binding["location_node_id"] not in node_ids:
+        if binding["location_object_id"] not in object_ids:
             raise ValueError(
                 f"Encounter table references unknown location "
-                f"{binding['location_node_id']!r}"
+                f"{binding['location_object_id']!r}"
             )
         if not re.fullmatch(r"d\d+", binding["roll_die"], re.IGNORECASE):
             raise ValueError(
@@ -75,8 +85,10 @@ def parse_geography_tables(
     return nodes, links, bindings
 
 
-def sync_geography(db, markdown: str, source_title: str = MAP_NODES_TITLE) -> None:
-    """Replace structured map rows from a geography source document atomically."""
+def sync_geography(
+    db, markdown: str, source_title: str = GEOGRAPHY_SOURCE_TITLE
+) -> None:
+    """Sync geography-sourced objects and relations into the object graph."""
     nodes, links, bindings = parse_geography_tables(markdown)
     source = db.execute(
         "SELECT id FROM notes WHERE title=? ORDER BY id LIMIT 1",
@@ -86,27 +98,108 @@ def sync_geography(db, markdown: str, source_title: str = MAP_NODES_TITLE) -> No
 
     db.execute("BEGIN IMMEDIATE")
     try:
-        db.execute("DELETE FROM map_links")
+        if source_note_id is not None:
+            db.execute(
+                "DELETE FROM object_links WHERE source_note_id=?",
+                (source_note_id,),
+            )
+        incoming_ids = [obj["object_id"] for obj in nodes]
+        if incoming_ids:
+            placeholders = ",".join("?" for _ in incoming_ids)
+            conflicts = db.execute(
+                f"""
+                SELECT object_id FROM objects
+                WHERE object_id IN ({placeholders})
+                  AND (source_note_id IS NOT ?)
+                """,
+                (*incoming_ids, source_note_id),
+            ).fetchall()
+            if conflicts:
+                raise ValueError(
+                    "Geography source object IDs conflict with objects owned "
+                    f"by another source: {[row['object_id'] for row in conflicts]!r}"
+                )
+        if source_note_id is not None:
+            binding_ids = [binding["table_id"] for binding in bindings]
+            if binding_ids:
+                placeholders = ",".join("?" for _ in binding_ids)
+                db.execute(
+                    f"""
+                    DELETE FROM encounter_tables
+                    WHERE source_note_id=? AND table_id NOT IN ({placeholders})
+                    """,
+                    (source_note_id, *binding_ids),
+                )
+            else:
+                db.execute(
+                    "DELETE FROM encounter_tables WHERE source_note_id=?",
+                    (source_note_id,),
+                )
+            if incoming_ids:
+                placeholders = ",".join("?" for _ in incoming_ids)
+                db.execute(
+                    f"""
+                    DELETE FROM objects
+                    WHERE source_note_id=?
+                      AND object_id NOT IN ({placeholders})
+                      AND NOT EXISTS (
+                          SELECT 1 FROM object_links
+                          WHERE (from_object_id=objects.object_id
+                                 OR to_object_id=objects.object_id)
+                            AND (source_note_id IS NULL OR source_note_id != ?)
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM encounter_tables
+                          WHERE location_object_id=objects.object_id
+                            AND (source_note_id IS NULL OR source_note_id != ?)
+                      )
+                    """,
+                    (
+                        source_note_id,
+                        *incoming_ids,
+                        source_note_id,
+                        source_note_id,
+                    ),
+                )
+            else:
+                db.execute(
+                    """
+                    DELETE FROM objects
+                    WHERE source_note_id=?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM object_links
+                          WHERE (from_object_id=objects.object_id
+                                 OR to_object_id=objects.object_id)
+                            AND (source_note_id IS NULL OR source_note_id != ?)
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM encounter_tables
+                          WHERE location_object_id=objects.object_id
+                            AND (source_note_id IS NULL OR source_note_id != ?)
+                      )
+                    """,
+                    (source_note_id, source_note_id, source_note_id),
+                )
         db.executemany(
             """
-            INSERT INTO map_nodes (
-                node_id, name, node_type, spatial_kind, description,
+            INSERT INTO objects (
+                object_id, name, object_type, geography_kind, description,
                 source_note_id, source_row
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(node_id) DO UPDATE SET
+            ON CONFLICT(object_id) DO UPDATE SET
                 name=excluded.name,
-                node_type=excluded.node_type,
-                spatial_kind=excluded.spatial_kind,
+                object_type=excluded.object_type,
+                geography_kind=excluded.geography_kind,
                 description=excluded.description,
                 source_note_id=excluded.source_note_id,
                 source_row=excluded.source_row
             """,
             [
                 (
-                    node["node_id"],
+                    node["object_id"],
                     node["name"],
-                    node["node_type"],
-                    node["spatial_kind"],
+                    node["object_type"],
+                    node["geography_kind"],
                     node["description"],
                     source_note_id,
                     node["source_row"],
@@ -114,23 +207,17 @@ def sync_geography(db, markdown: str, source_title: str = MAP_NODES_TITLE) -> No
                 for node in nodes
             ],
         )
-        binding_ids = [binding["table_id"] for binding in bindings]
-        placeholders = ",".join("?" for _ in binding_ids)
-        db.execute(
-            f"DELETE FROM encounter_tables WHERE table_id NOT IN ({placeholders})",
-            binding_ids,
-        )
         db.executemany(
             """
             INSERT INTO encounter_tables (
-                table_id, name, source_file, roll_die, location_node_id,
+                table_id, name, source_file, roll_die, location_object_id,
                 binding_basis, source_note_id, source_row
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(table_id) DO UPDATE SET
                 name=excluded.name,
                 source_file=excluded.source_file,
                 roll_die=excluded.roll_die,
-                location_node_id=excluded.location_node_id,
+                location_object_id=excluded.location_object_id,
                 binding_basis=excluded.binding_basis,
                 source_note_id=excluded.source_note_id,
                 source_row=excluded.source_row
@@ -141,7 +228,7 @@ def sync_geography(db, markdown: str, source_title: str = MAP_NODES_TITLE) -> No
                     binding["name"],
                     binding["source_file"],
                     binding["roll_die"],
-                    binding["location_node_id"],
+                    binding["location_object_id"],
                     binding["binding_basis"],
                     source_note_id,
                     binding["source_row"],
@@ -149,16 +236,10 @@ def sync_geography(db, markdown: str, source_title: str = MAP_NODES_TITLE) -> No
                 for binding in bindings
             ],
         )
-        node_ids = [node["node_id"] for node in nodes]
-        node_placeholders = ",".join("?" for _ in node_ids)
-        db.execute(
-            f"DELETE FROM map_nodes WHERE node_id NOT IN ({node_placeholders})",
-            node_ids,
-        )
         db.executemany(
             """
-            INSERT INTO map_links (
-                relation, from_node_id, to_node_id, distance_min_miles,
+            INSERT INTO object_links (
+                relation, from_object_id, to_object_id, distance_min_miles,
                 distance_max_miles, distance_qualifier, direction, travel_mode,
                 day_minutes, night_minutes, notes, source_note_id, source_row
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -166,8 +247,8 @@ def sync_geography(db, markdown: str, source_title: str = MAP_NODES_TITLE) -> No
             [
                 (
                     link["relation"],
-                    link["from_node_id"],
-                    link["to_node_id"],
+                    link["from_object_id"],
+                    link["to_object_id"],
                     link["distance_min_miles"],
                     link["distance_max_miles"],
                     link["distance_qualifier"],
@@ -264,17 +345,17 @@ def sync_encounter_entries(db, table_id: str, csv_text: str) -> None:
         raise
 
 
-def get_encounter_tables(db, location_node_id: str) -> list[dict]:
+def get_encounter_tables(db, location_object_id: str) -> list[dict]:
     """Get only encounter tables explicitly bound to this room or region."""
     return [
         dict(row)
         for row in db.execute(
             """
             SELECT * FROM encounter_tables
-            WHERE location_node_id=?
+            WHERE location_object_id=?
             ORDER BY name, table_id
             """,
-            (location_node_id,),
+            (location_object_id,),
         ).fetchall()
     ]
 
@@ -293,74 +374,90 @@ def get_encounter_entries(db, table_id: str) -> list[dict]:
     ]
 
 
-def get_map_nodes(db) -> list[dict]:
+def get_objects(db) -> list[dict]:
     return [
         dict(row)
         for row in db.execute(
-            "SELECT * FROM map_nodes ORDER BY name, node_id"
+            "SELECT * FROM objects ORDER BY name, object_id"
         ).fetchall()
     ]
 
 
-def get_map_links(db, relation: str | None = None) -> list[dict]:
+def get_object_links(db, relation: str | None = None) -> list[dict]:
     if relation is None:
         rows = db.execute(
             """
-            SELECT * FROM map_links
-            ORDER BY relation, from_node_id, to_node_id, id
+            SELECT * FROM object_links
+            ORDER BY relation, from_object_id, to_object_id, id
             """
         ).fetchall()
     else:
         rows = db.execute(
             """
-            SELECT * FROM map_links WHERE relation=?
-            ORDER BY from_node_id, to_node_id, id
+            SELECT * FROM object_links WHERE relation=?
+            ORDER BY from_object_id, to_object_id, id
             """,
             (relation,),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def get_setting_candidates(
-    db, spatial_kind: str = "Regions and settlements"
+def get_geography_objects(
+    db, geography_kind: str = "Regions and settlements"
 ) -> list[dict]:
-    """Return queryable Campaign Setting root destinations."""
-    nodes = get_map_nodes(db)
-    if spatial_kind == "Regions and settlements":
-        allowed = {"region", "settlement"}
-        nodes = [node for node in nodes if node["spatial_kind"].casefold() in allowed]
-    elif spatial_kind != "All room types":
-        nodes = [
-            node for node in nodes
-            if node["spatial_kind"].casefold() == spatial_kind.casefold()
-        ]
-    return nodes
+    """Query objects classified for geography, independent of their relations."""
+    if geography_kind == "Regions and settlements":
+        rows = db.execute(
+            """
+            SELECT * FROM objects
+            WHERE geography_kind COLLATE NOCASE IN ('region', 'settlement')
+            ORDER BY name, object_id
+            """
+        ).fetchall()
+    elif geography_kind == "All geographic kinds":
+        rows = db.execute(
+            """
+            SELECT * FROM objects
+            WHERE geography_kind NOT IN ('', 'unspecified')
+            ORDER BY name, object_id
+            """
+        ).fetchall()
+    else:
+        rows = db.execute(
+            """
+            SELECT * FROM objects
+            WHERE geography_kind=? COLLATE NOCASE
+            ORDER BY name, object_id
+            """,
+            (geography_kind,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
-def get_navigation_exits(db, node_id: str) -> list[dict]:
-    """Return navigable route and containment exits from a room."""
+def get_navigation_exits(db, object_id: str) -> list[dict]:
+    """Return navigation and containment interpretations of object links."""
     nodes = {
-        row["node_id"]: dict(row)
-        for row in db.execute("SELECT * FROM map_nodes")
+        row["object_id"]: dict(row)
+        for row in db.execute("SELECT * FROM objects")
     }
-    if node_id not in nodes:
-        raise KeyError(f"Unknown location: {node_id}")
+    if object_id not in nodes:
+        raise KeyError(f"Unknown object: {object_id}")
 
     exits = []
     for row in db.execute(
         """
-        SELECT * FROM map_links
+        SELECT * FROM object_links
         WHERE relation='route'
-          AND (from_node_id=? OR to_node_id=?)
+          AND (from_object_id=? OR to_object_id=?)
         ORDER BY id
         """,
-        (node_id, node_id),
+        (object_id, object_id),
     ):
         link = dict(row)
         target_id = (
-            link["to_node_id"]
-            if link["from_node_id"] == node_id
-            else link["from_node_id"]
+            link["to_object_id"]
+            if link["from_object_id"] == object_id
+            else link["from_object_id"]
         )
         exits.append({
             "relation": "route",
@@ -370,23 +467,23 @@ def get_navigation_exits(db, node_id: str) -> list[dict]:
 
     for row in db.execute(
         """
-        SELECT * FROM map_links
-        WHERE relation='contains' AND from_node_id=?
+        SELECT * FROM object_links
+        WHERE relation='contains' AND from_object_id=?
         ORDER BY id
         """,
-        (node_id,),
+        (object_id,),
     ):
         link = dict(row)
         exits.append({
             "relation": "contains",
-            "target": nodes[link["to_node_id"]],
+            "target": nodes[link["to_object_id"]],
             "link": link,
         })
     exits.sort(
         key=lambda item: (
             item["relation"],
             item["target"]["name"].casefold(),
-            item["target"]["node_id"],
+            item["target"]["object_id"],
         )
     )
     return exits
@@ -394,8 +491,8 @@ def get_navigation_exits(db, node_id: str) -> list[dict]:
 
 def find_route(
     db,
-    start_node_id: str,
-    end_node_id: str,
+    start_object_id: str,
+    end_object_id: str,
     metric: str = "distance",
     travel_period: str = "day",
 ) -> dict | None:
@@ -411,17 +508,17 @@ def find_route(
     if travel_period not in {"day", "night"}:
         raise ValueError("travel_period must be 'day' or 'night'")
     unit = {"distance": "miles", "time": "minutes", "hops": "exits"}[metric]
-    nodes = {
-        row["node_id"]: dict(row)
-        for row in db.execute("SELECT * FROM map_nodes")
+    objects = {
+        row["object_id"]: dict(row)
+        for row in db.execute("SELECT * FROM objects")
     }
-    if start_node_id not in nodes:
-        raise KeyError(f"Unknown start location: {start_node_id}")
-    if end_node_id not in nodes:
-        raise KeyError(f"Unknown end location: {end_node_id}")
-    if start_node_id == end_node_id:
+    if start_object_id not in objects:
+        raise KeyError(f"Unknown start object: {start_object_id}")
+    if end_object_id not in objects:
+        raise KeyError(f"Unknown end object: {end_object_id}")
+    if start_object_id == end_object_id:
         return {
-            "nodes": [nodes[start_node_id]],
+            "objects": [objects[start_object_id]],
             "links": [],
             "total": 0,
             "unit": unit,
@@ -430,10 +527,10 @@ def find_route(
         }
 
     adjacency: dict[str, list[tuple[str, dict, float]]] = {
-        node_id: [] for node_id in nodes
+        object_id: [] for object_id in objects
     }
     for row in db.execute(
-        "SELECT * FROM map_links WHERE relation='route' ORDER BY id"
+        "SELECT * FROM object_links WHERE relation='route' ORDER BY id"
     ):
         link = dict(row)
         if metric == "hops":
@@ -444,21 +541,21 @@ def find_route(
             weight = link[f"{travel_period}_minutes"]
         if weight is None:
             continue
-        adjacency[link["from_node_id"]].append(
-            (link["to_node_id"], link, float(weight))
+        adjacency[link["from_object_id"]].append(
+            (link["to_object_id"], link, float(weight))
         )
-        adjacency[link["to_node_id"]].append(
-            (link["from_node_id"], link, float(weight))
+        adjacency[link["to_object_id"]].append(
+            (link["from_object_id"], link, float(weight))
         )
 
-    distances = {start_node_id: 0.0}
+    distances = {start_object_id: 0.0}
     previous: dict[str, tuple[str, dict]] = {}
-    queue = [(0.0, start_node_id)]
+    queue = [(0.0, start_object_id)]
     while queue:
         distance, current = heapq.heappop(queue)
         if distance != distances.get(current):
             continue
-        if current == end_node_id:
+        if current == end_object_id:
             break
         for neighbor, link, weight in adjacency[current]:
             candidate = distance + weight
@@ -467,35 +564,35 @@ def find_route(
                 previous[neighbor] = (current, link)
                 heapq.heappush(queue, (candidate, neighbor))
 
-    if end_node_id not in distances:
+    if end_object_id not in distances:
         return None
-    path_node_ids = [end_node_id]
+    path_object_ids = [end_object_id]
     path_links = []
-    current = end_node_id
-    while current != start_node_id:
+    current = end_object_id
+    while current != start_object_id:
         parent, link = previous[current]
         path_links.append(_traversed_link(link, parent, current))
-        path_node_ids.append(parent)
+        path_object_ids.append(parent)
         current = parent
-    path_node_ids.reverse()
+    path_object_ids.reverse()
     path_links.reverse()
     return {
-        "nodes": [nodes[node_id] for node_id in path_node_ids],
+        "objects": [objects[object_id] for object_id in path_object_ids],
         "links": path_links,
-        "total": _clean_number(distances[end_node_id]),
+        "total": _clean_number(distances[end_object_id]),
         "unit": unit,
         "metric": metric,
         "travel_period": travel_period if metric == "time" else None,
     }
 
 
-def _traversed_link(link: dict, from_node_id: str, to_node_id: str) -> dict:
+def _traversed_link(link: dict, from_object_id: str, to_object_id: str) -> dict:
     traversed = dict(link)
-    traversed["traversed_from_node_id"] = from_node_id
-    traversed["traversed_to_node_id"] = to_node_id
+    traversed["traversed_from_object_id"] = from_object_id
+    traversed["traversed_to_object_id"] = to_object_id
     traversed["traverses_recorded_direction"] = (
-        link["from_node_id"] == from_node_id
-        and link["to_node_id"] == to_node_id
+        link["from_object_id"] == from_object_id
+        and link["to_object_id"] == to_object_id
     )
     return traversed
 
@@ -516,8 +613,8 @@ def _markdown_tables(markdown: str) -> dict[str, list[tuple[list[str], list[str]
             index += 1
             continue
         if section not in {
-            "map nodes",
-            "location links",
+            "geography objects",
+            "object relations",
             "encounter table bindings",
         } or not lines[index].lstrip().startswith("|"):
             index += 1
@@ -559,22 +656,22 @@ def _rows_for_table(
             )
         values = dict(zip(normalized, (cell.strip() for cell in cells)))
         source_row = " | ".join(cells)
-        if label == "Map Nodes":
-            if not values["id"] or not values["name"]:
-                raise ValueError("Map node ID and name are required")
+        if label == "Geography Objects":
+            if not values["object id"] or not values["name"]:
+                raise ValueError("Geography object ID and name are required")
             output.append({
-                "node_id": values["id"],
+                "object_id": values["object id"],
                 "name": values["name"],
-                "node_type": values["type"],
-                "spatial_kind": values["spatial kind"],
+                "object_type": values["object type"],
+                "geography_kind": values["geography kind"],
                 "description": values["description"],
                 "source_row": source_row,
             })
-        elif label == "Location Links":
+        elif label == "Object Relations":
             output.append({
                 "relation": values["relation"].casefold(),
-                "from_node_id": values["from id"],
-                "to_node_id": values["to id"],
+                "from_object_id": values["from object id"],
+                "to_object_id": values["to object id"],
                 "distance_min_miles": _optional_float(values["distance min (mi)"]),
                 "distance_max_miles": _optional_float(values["distance max (mi)"]),
                 "distance_qualifier": values["distance qualifier"],
@@ -593,7 +690,7 @@ def _rows_for_table(
                 "name": values["table name"],
                 "source_file": values["source file"],
                 "roll_die": values["roll die"].casefold(),
-                "location_node_id": values["location node id"],
+                "location_object_id": values["location object id"],
                 "binding_basis": values["binding basis"],
                 "source_row": source_row,
             })

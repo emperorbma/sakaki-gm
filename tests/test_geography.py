@@ -1,13 +1,13 @@
 import pytest
 
 from db import get_db
-from geography_db import (
+from object_graph_db import (
     find_route,
     get_encounter_entries,
     get_encounter_tables,
-    get_map_nodes,
+    get_objects,
     get_navigation_exits,
-    get_setting_candidates,
+    get_geography_objects,
     parse_geography_tables,
     sync_encounter_entries,
     sync_geography,
@@ -15,15 +15,15 @@ from geography_db import (
 
 
 GEOGRAPHY = """\
-## Map Nodes
-| ID | Name | Type | Spatial Kind | Description |
+## Geography Objects
+| Object ID | Name | Object Type | Geography Kind | Description |
 |---|---|---|---|---|
 | hub | Hub | settlement | settlement | A broad room. |
 | forest | Forest | region | region | A region-sized room. |
 | side-room | Side Room | chamber | point | A specific room. |
 
-## Location Links
-| Relation | From ID | To ID | Distance Min (mi) | Distance Max (mi) | Distance Qualifier | Direction | Travel Mode | Day Minutes | Night Minutes | Notes |
+## Object Relations
+| Relation | From Object ID | To Object ID | Distance Min (mi) | Distance Max (mi) | Distance Qualifier | Direction | Travel Mode | Day Minutes | Night Minutes | Notes |
 |---|---|---|---:|---:|---|---|---|---:|---:|---|
 | route | hub | forest | 3 | 3 | source_reported | north | trail | 60 | 75 | Exit to forest. |
 | route | forest | side-room | | | | hidden | | | | Topological exit without a measured cost. |
@@ -31,7 +31,7 @@ GEOGRAPHY = """\
 | contains | forest | side-room | | | | | | | | Region contains this room. |
 
 ## Encounter Table Bindings
-| Table ID | Table Name | Source File | Roll Die | Location Node ID | Binding Basis |
+| Table ID | Table Name | Source File | Roll Die | Location Object ID | Binding Basis |
 |---|---|---|---|---|---|
 | forest-encounters | Forest Encounters | forest.csv | d20 | forest | Explicit table binding. |
 """
@@ -47,20 +47,20 @@ def test_graph_uses_only_route_exits_and_keeps_rooms_unpinned(tmp_path):
     try:
         sync_geography(db, GEOGRAPHY)
 
-        nodes = {node["node_id"]: node for node in get_map_nodes(db)}
-        assert nodes["forest"]["spatial_kind"] == "region"
+        nodes = {obj["object_id"]: obj for obj in get_objects(db)}
+        assert nodes["forest"]["geography_kind"] == "region"
         assert nodes["forest"]["coordinate_x"] is None
         assert nodes["forest"]["coordinate_y"] is None
 
         route = find_route(db, "forest", "hub")
         assert route["total"] == 3
-        assert [node["node_id"] for node in route["nodes"]] == ["forest", "hub"]
-        assert route["links"][0]["traversed_from_node_id"] == "forest"
+        assert [obj["object_id"] for obj in route["objects"]] == ["forest", "hub"]
+        assert route["links"][0]["traversed_from_object_id"] == "forest"
         assert find_route(db, "hub", "side-room") is None
         topology_route = find_route(db, "hub", "side-room", metric="hops")
         assert topology_route["total"] == 2
         assert topology_route["unit"] == "exits"
-        assert [node["node_id"] for node in topology_route["nodes"]] == [
+        assert [obj["object_id"] for obj in topology_route["objects"]] == [
             "hub",
             "forest",
             "side-room",
@@ -74,15 +74,15 @@ def test_navigation_exits_include_routes_and_containment_but_not_near(tmp_path):
     try:
         sync_geography(db, GEOGRAPHY)
         exits = get_navigation_exits(db, "hub")
-        assert {(item["relation"], item["target"]["node_id"]) for item in exits} == {
+        assert {(item["relation"], item["target"]["object_id"]) for item in exits} == {
             ("route", "forest"),
         }
         reverse_exits = get_navigation_exits(db, "side-room")
-        assert [(item["relation"], item["target"]["node_id"]) for item in reverse_exits] == [
+        assert [(item["relation"], item["target"]["object_id"]) for item in reverse_exits] == [
             ("route", "forest"),
         ]
         assert {
-            (item["relation"], item["target"]["node_id"])
+            (item["relation"], item["target"]["object_id"])
             for item in get_navigation_exits(db, "forest")
         } == {
             ("route", "hub"),
@@ -90,10 +90,56 @@ def test_navigation_exits_include_routes_and_containment_but_not_near(tmp_path):
             ("contains", "side-room"),
         }
         assert {
-            node["spatial_kind"]
-            for node in get_setting_candidates(db)
+            obj["geography_kind"]
+            for obj in get_geography_objects(db)
         } == {"region", "settlement"}
-        assert len(get_setting_candidates(db, "All room types")) == 3
+        assert len(get_geography_objects(db, "All geographic kinds")) == 3
+    finally:
+        db.close()
+
+
+def test_geography_query_uses_object_classification_not_relations(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    try:
+        db.execute(
+            "INSERT INTO notes (title, content) VALUES (?, ?)",
+            ("Geography of the Eldenweave", GEOGRAPHY),
+        )
+        db.commit()
+        sync_geography(db, GEOGRAPHY)
+        db.execute(
+            """
+            INSERT INTO objects (
+                object_id, name, object_type, geography_kind, description
+            ) VALUES ('bag', 'Bag of Holding', 'container', '', 'A persistent container.')
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO object_links (relation, from_object_id, to_object_id, notes)
+            VALUES ('contains', 'bag', 'forest', 'Inventory containment, not geography.')
+            """
+        )
+        db.commit()
+
+        geography_objects = get_geography_objects(db, "All geographic kinds")
+        assert "forest" in {obj["object_id"] for obj in geography_objects}
+        assert "bag" not in {obj["object_id"] for obj in geography_objects}
+        assert [
+            (item["relation"], item["target"]["object_id"])
+            for item in get_navigation_exits(db, "bag")
+        ] == [("contains", "forest")]
+
+        sync_geography(db, GEOGRAPHY)
+        assert db.execute(
+            "SELECT COUNT(*) FROM objects WHERE object_id='bag'"
+        ).fetchone()[0] == 1
+        assert db.execute(
+            """
+            SELECT COUNT(*) FROM object_links
+            WHERE from_object_id='bag' AND to_object_id='forest'
+            """
+        ).fetchone()[0] == 1
     finally:
         db.close()
 
@@ -140,24 +186,46 @@ def test_encounter_binding_must_reference_known_room():
         parse_geography_tables(malformed)
 
 
-def test_v10_migration_adds_room_metadata_and_encounter_tables(tmp_path):
+def test_v10_migration_adds_geography_metadata_then_promotes_objects(tmp_path):
     db = get_db(tmp_path / "campaign.db")
     try:
         db.execute("DROP TABLE encounter_entries")
         db.execute("DROP TABLE encounter_tables")
-        db.execute("ALTER TABLE map_nodes DROP COLUMN spatial_kind")
-        db.execute("ALTER TABLE map_nodes DROP COLUMN coordinate_precision")
+        db.execute("ALTER TABLE object_links RENAME TO map_links")
+        db.execute("ALTER TABLE map_links RENAME COLUMN from_object_id TO from_node_id")
+        db.execute("ALTER TABLE map_links RENAME COLUMN to_object_id TO to_node_id")
+        db.execute("ALTER TABLE objects RENAME TO map_nodes")
+        db.execute("ALTER TABLE map_nodes RENAME COLUMN object_id TO node_id")
+        db.execute("ALTER TABLE map_nodes RENAME COLUMN object_type TO node_type")
+        db.execute("ALTER TABLE map_nodes RENAME COLUMN geography_kind TO spatial_kind")
+        db.execute(
+            "ALTER TABLE map_nodes DROP COLUMN coordinate_precision"
+        )
+        db.execute("DROP INDEX object_links_from_relation")
+        db.execute("DROP INDEX object_links_to_relation")
+        db.execute(
+            "CREATE INDEX map_links_from_relation "
+            "ON map_links(from_node_id, relation)"
+        )
+        db.execute(
+            "CREATE INDEX map_links_to_relation "
+            "ON map_links(to_node_id, relation)"
+        )
         db.execute("PRAGMA user_version = 10")
         db.commit()
 
         from db import migrate
 
         migrate(db)
-        columns = {
-            row["name"] for row in db.execute("PRAGMA table_info(map_nodes)")
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(objects)")}
+        assert {"geography_kind", "coordinate_precision"} <= columns
+        assert "map_nodes" not in {
+            row["name"]
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
         }
-        assert {"spatial_kind", "coordinate_precision"} <= columns
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 12
         assert db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='encounter_tables'"

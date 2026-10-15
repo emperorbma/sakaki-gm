@@ -260,3 +260,33 @@ def migrate(db):
         PRAGMA user_version = 11;
         """)
         db.commit()
+
+    if version < 12:
+        db.execute("ALTER TABLE map_links RENAME TO object_links")
+        db.execute("ALTER TABLE object_links RENAME COLUMN from_node_id TO from_object_id")
+        db.execute("ALTER TABLE object_links RENAME COLUMN to_node_id TO to_object_id")
+        db.execute("ALTER TABLE map_nodes RENAME TO objects")
+        db.execute("ALTER TABLE objects RENAME COLUMN node_id TO object_id")
+        db.execute("ALTER TABLE objects RENAME COLUMN node_type TO object_type")
+        db.execute("ALTER TABLE objects RENAME COLUMN spatial_kind TO geography_kind")
+        db.execute(
+            "ALTER TABLE encounter_tables "
+            "RENAME COLUMN location_node_id TO location_object_id"
+        )
+        db.execute("DROP INDEX map_links_from_relation")
+        db.execute("DROP INDEX map_links_to_relation")
+        db.execute(
+            "CREATE INDEX object_links_from_relation "
+            "ON object_links(from_object_id, relation)"
+        )
+        db.execute(
+            "CREATE INDEX object_links_to_relation "
+            "ON object_links(to_object_id, relation)"
+        )
+        db.execute("DROP INDEX encounter_tables_by_location")
+        db.execute(
+            "CREATE INDEX encounter_tables_by_location "
+            "ON encounter_tables(location_object_id)"
+        )
+        db.execute("PRAGMA user_version = 12")
+        db.commit()

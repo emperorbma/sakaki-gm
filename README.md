@@ -38,6 +38,8 @@ Characters have a manually editable **Campaign role** field for labels such as p
 
 The **Quests** tab stores campaign quests by name, free-text status, and description. Add or remove participating characters for each quest; a character can participate in multiple quests. Quest details and linked character names are included in the GM prompt.
 
+The **Geography** tab is a query view over objects classified with geographic kinds such as region, settlement, area, or point. Objects remain part of a shared object graph and may have other relationships; the geography view does not constrain them to map-only links or grid/hex geometry.
+
 ## Model
 
 Settings has two presets:
