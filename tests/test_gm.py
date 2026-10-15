@@ -20,8 +20,10 @@ from llm_config import load_config
 from item_db import (
     create_item,
     delete_item,
+    get_character_inventory_tree,
     get_character_items,
     get_items,
+    save_character_inventory,
     set_character_items,
 )
 from skill_db import (
@@ -64,6 +66,8 @@ def prepare_pre_object_graph_inventory_schema(db):
     if "object_id" not in character_columns:
         return
 
+    db.execute("DROP INDEX item_objects_by_name")
+    db.execute("ALTER TABLE objects DROP COLUMN properties")
     item_rows = db.execute(
         "SELECT object_id, name, description FROM objects WHERE object_type='item'"
     ).fetchall()
@@ -151,7 +155,6 @@ def prepare_pre_object_graph_inventory_schema(db):
             (*params, *params),
         )
     db.execute("DROP INDEX characters_by_object")
-    db.execute("DROP INDEX item_objects_by_name")
     db.execute("ALTER TABLE characters DROP COLUMN object_id")
     db.execute("ALTER TABLE object_links DROP COLUMN properties")
     db.executemany(
@@ -273,7 +276,7 @@ def test_v8_migration_replaces_player_flag_with_blank_campaign_role(tmp_path):
         assert db.execute(
             "SELECT campaign_role FROM characters WHERE name='Serina'"
         ).fetchone()["campaign_role"] == ""
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
     finally:
         db.close()
 
@@ -618,6 +621,107 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
     db.close()
 
 
+def test_container_tag_creates_nested_backpack_and_cleans_orphan(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    character_id = create_character(db, "Serina", {"name": "Serina"})
+    backpack_id = create_item(
+        db,
+        "Backpack",
+        "A sturdy pack.",
+        is_container=True,
+    )
+    potion_id = create_item(db, "Potion", "A healing draught.")
+    assert next(item for item in get_items(db) if item["id"] == backpack_id)[
+        "is_container"
+    ]
+
+    save_character_inventory(
+        db,
+        character_id,
+        [
+            {
+                "object_id": "new-container:backpack-instance",
+                "object_type": "container",
+                "new_container": True,
+                "name": "Backpack",
+                "description": "A sturdy pack.",
+                "object_properties": {"catalog_item_id": backpack_id},
+                "properties": {"quantity": 1, "attuned": False},
+                "children": [
+                    {
+                        "object_id": potion_id,
+                        "object_type": "item",
+                        "properties": {
+                            "quantity": 2,
+                            "attuned": False,
+                            "equipment_location": "",
+                        },
+                    },
+                ],
+            },
+        ],
+    )
+    inventory = get_character_inventory_tree(db, character_id)
+    backpack = inventory["children"][0]
+    assert backpack["object_type"] == "container"
+    assert backpack["object_properties"]["catalog_item_id"] == backpack_id
+    assert backpack["children"][0]["object_id"] == potion_id
+    potion_assignment = next(
+        item for item in get_character_items(db, character_id)
+        if item["name"] == "Potion"
+    )
+    assert potion_assignment["container_path"].endswith(" > Backpack")
+    assert potion_assignment["quantity"] == 2
+
+    save_character_inventory(db, character_id, [])
+    assert db.execute(
+        "SELECT COUNT(*) FROM objects "
+        "WHERE object_id='inventory-container:backpack-instance'"
+    ).fetchone()[0] == 0
+    assert db.execute(
+        "SELECT COUNT(*) FROM object_links WHERE to_object_id=?",
+        (potion_id,),
+    ).fetchone()[0] == 0
+    db.close()
+
+
+def test_missing_character_inventory_container_is_created_on_demand(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    character_id = create_character(db, "Serina", {"name": "Serina"})
+    db.execute(
+        "DELETE FROM object_links "
+        "WHERE from_object_id=? AND relation='contains'",
+        (f"character:{character_id}",),
+    )
+    db.execute("DELETE FROM objects WHERE object_id=?", (f"inventory:{character_id}",))
+    db.commit()
+
+    tree = get_character_inventory_tree(db, character_id)
+
+    assert tree["object_id"] == f"inventory:{character_id}"
+    assert db.execute(
+        "SELECT COUNT(*) FROM object_links "
+        "WHERE from_object_id=? AND to_object_id=? AND relation='contains'",
+        (f"character:{character_id}", f"inventory:{character_id}"),
+    ).fetchone()[0] == 1
+    db.close()
+
+
+def test_schema_v13_adds_object_properties(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    item_id = create_item(db, "Backpack")
+    db.execute("ALTER TABLE objects DROP COLUMN properties")
+    db.execute("PRAGMA user_version = 13")
+    db.commit()
+
+    migrate(db)
+
+    backpack = next(item for item in get_items(db) if item["id"] == item_id)
+    assert db.execute("PRAGMA user_version").fetchone()[0] == 14
+    assert backpack["is_container"] is False
+    db.close()
+
+
 def test_v12_migration_moves_catalog_inventory_to_container_links(tmp_path):
     path = tmp_path / "campaign.db"
     db = get_db(path)
@@ -631,7 +735,7 @@ def test_v12_migration_moves_catalog_inventory_to_container_links(tmp_path):
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
         assignment = get_character_items(db, character_id)[0]
         assert assignment["name"] == "Lunar Scepter"
         assert assignment["quantity"] == 2
@@ -677,7 +781,7 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
         assert get_items(db) == []
         assert get_quests(db) == []
         data = json.loads(
@@ -774,7 +878,7 @@ def test_schema_v4_campaign_migrates_to_quests(tmp_path):
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
         assert get_quests(db) == []
     finally:
         db.close()
@@ -797,7 +901,7 @@ def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     db = get_db(path)
     try:
         quest = get_quests(db)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
         assert quest["id"] == quest_id
         assert quest["name"] == "Legacy quest"
         assert quest["description"] == "Existing objective."
@@ -824,7 +928,7 @@ def test_schema_v6_campaign_adds_equipment_location(tmp_path):
     db = get_db(path)
     try:
         assignment = get_character_items(db, character_id)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
         assert assignment["equipment_location"] == ""
         assert assignment["attuned"] == 1
     finally:

@@ -2,11 +2,16 @@
 import json
 import random
 import sqlite3
+import uuid
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from character_db import create_character, delete_character, get_all_characters, update_character
-from item_db import get_character_items, get_items, set_character_items
+from item_db import (
+    get_character_inventory_tree,
+    get_items,
+    save_character_inventory,
+)
 from skill_db import get_character_skills, get_skills, set_character_skills
 
 TEXT_FIELDS = (
@@ -178,11 +183,12 @@ class CharactersModule:
 
         catalog_items = get_items(self.db)
         item_ids = {item["name"]: item["id"] for item in catalog_items}
+        items_by_id = {item["id"]: item for item in catalog_items}
         catalog_tab = ttk.Frame(notebook)
         notebook.add(catalog_tab, text="Inventory")
         ttk.Label(
             catalog_tab,
-            text="Assign items from the campaign catalog and track quantity and attunement here.",
+            text="Expand containers to see their contents. Add items to the selected container or its parent.",
             wraplength=760,
         ).pack(anchor="w", padx=10, pady=(10, 4))
         inventory_tree = ttk.Treeview(
@@ -192,6 +198,28 @@ class CharactersModule:
             height=12,
             selectmode="browse",
         )
+        inventory_body = ttk.Frame(catalog_tab)
+        inventory_body.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+        catalog_source = ttk.LabelFrame(
+            inventory_body,
+            text="Drag items into inventory",
+        )
+        catalog_source.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
+        catalog_list = tk.Listbox(
+            catalog_source,
+            width=28,
+            exportselection=False,
+        )
+        catalog_list.pack(fill=tk.Y, expand=True, padx=4, pady=4)
+        catalog_list_ids = []
+        for catalog_item in catalog_items:
+            label = catalog_item["name"]
+            if catalog_item["is_container"]:
+                label += " [container]"
+            catalog_list.insert(tk.END, label)
+            catalog_list_ids.append(catalog_item["id"])
+        inventory_view = ttk.Frame(inventory_body)
+        inventory_view.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         inventory_tree.heading("#0", text="Item")
         inventory_tree.heading("quantity", text="Quantity")
         inventory_tree.heading("attuned", text="Attuned")
@@ -200,21 +228,59 @@ class CharactersModule:
         inventory_tree.column("quantity", width=100, anchor="center")
         inventory_tree.column("attuned", width=100, anchor="center")
         inventory_tree.column("location", width=180)
-        inventory_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
-        for assignment in (
-            get_character_items(self.db, existing_id) if existing_id is not None else []
-        ):
-            inventory_tree.insert(
-                "",
-                tk.END,
-                iid=str(assignment["id"]),
-                text=assignment["name"],
-                values=(
-                    assignment["quantity"],
-                    "Yes" if assignment["attuned"] else "No",
-                    assignment["equipment_location"],
-                ),
-            )
+        inventory_tree.pack(fill=tk.BOTH, expand=True)
+        inventory_tree.tag_configure("container", font=("TkDefaultFont", 9, "bold"))
+        inventory_node_data = {}
+        root_id = "inventory-root"
+        inventory_root = (
+            get_character_inventory_tree(self.db, existing_id)
+            if existing_id is not None else None
+        )
+        root_name = inventory_root["name"] if inventory_root else "Inventory"
+        inventory_tree.insert(
+            "",
+            tk.END,
+            iid=root_id,
+            text=root_name,
+            values=("", "", ""),
+            tags=("container",),
+            open=True,
+        )
+        inventory_node_data[root_id] = {
+            "object_id": (
+                inventory_root["object_id"] if inventory_root else None
+            ),
+            "object_type": "container",
+            "root": True,
+        }
+
+        def render_inventory(parent_id, children):
+            for child in children:
+                object_id = child["object_id"]
+                link_properties = child["properties"]
+                is_container = child["object_type"] == "container"
+                inventory_tree.insert(
+                    parent_id,
+                    tk.END,
+                    iid=object_id,
+                    text=child["name"],
+                    values=(
+                        link_properties.get("quantity", 1),
+                        "Yes" if link_properties.get("attuned") else "No",
+                        link_properties.get("equipment_location", ""),
+                    ),
+                    tags=("container",) if is_container else (),
+                    open=is_container,
+                )
+                inventory_node_data[object_id] = {
+                    **child,
+                    "properties": link_properties,
+                }
+                if is_container:
+                    render_inventory(object_id, child["children"])
+
+        if inventory_root:
+            render_inventory(root_id, inventory_root["children"])
 
         inventory_controls = ttk.Frame(catalog_tab)
         inventory_controls.pack(fill=tk.X, padx=10, pady=(0, 10))
@@ -249,6 +315,15 @@ class CharactersModule:
             variable=attuned,
         ).pack(side=tk.LEFT, padx=8)
 
+        def selected_parent():
+            selected = inventory_tree.selection()
+            if not selected:
+                return root_id
+            current = selected[0]
+            if inventory_node_data[current]["object_type"] == "container":
+                return current
+            return inventory_tree.parent(current) or root_id
+
         def selected_catalog_id():
             item_id = item_ids.get(item_name.get())
             if item_id is None:
@@ -276,25 +351,52 @@ class CharactersModule:
             if selection is None:
                 return
             item_id, count = selection
-            row_id = str(item_id)
-            if inventory_tree.exists(row_id):
+            catalog_item = items_by_id[item_id]
+            is_container = catalog_item["is_container"]
+            if not is_container and inventory_tree.exists(item_id):
                 messagebox.showerror(
                     "Inventory",
                     "This character already has that catalog item. Update its quantity instead.",
                     parent=editor,
                 )
                 return
+            row_id = (
+                f"new-container:{uuid.uuid4().hex}"
+                if is_container else item_id
+            )
+            props = {
+                "quantity": count,
+                "attuned": bool(attuned.get()),
+                "equipment_location": equipment_location.get().strip(),
+            }
+            node_data = {
+                "object_id": row_id,
+                "object_type": "container" if is_container else "item",
+                "name": catalog_item["name"],
+                "description": catalog_item["description"],
+                "properties": props,
+                "children": [],
+            }
+            if is_container:
+                node_data.update({
+                    "new_container": True,
+                    "object_properties": {"catalog_item_id": item_id},
+                })
+            parent_id = selected_parent()
             inventory_tree.insert(
-                "",
+                parent_id,
                 tk.END,
                 iid=row_id,
-                text=item_name.get(),
+                text=item_name.get() + (" (container)" if is_container else ""),
                 values=(
                     count,
                     "Yes" if attuned.get() else "No",
                     equipment_location.get().strip(),
                 ),
+                tags=("container",) if is_container else (),
+                open=is_container,
             )
+            inventory_node_data[row_id] = node_data
 
         def update_catalog_item():
             selected = inventory_tree.selection()
@@ -310,7 +412,21 @@ class CharactersModule:
                 return
             item_id, count = selection
             old_row_id = selected[0]
-            row_id = str(item_id)
+            if inventory_node_data[old_row_id]["object_type"] != "item":
+                messagebox.showerror(
+                    "Inventory",
+                    "Containers are separate objects. Remove this one and add the desired container instead.",
+                    parent=editor,
+                )
+                return
+            if items_by_id[item_id]["is_container"]:
+                messagebox.showerror(
+                    "Inventory",
+                    "A container-tagged catalog item creates a new container. Add it separately.",
+                    parent=editor,
+                )
+                return
+            row_id = item_id
             if row_id != old_row_id and inventory_tree.exists(row_id):
                 messagebox.showerror(
                     "Inventory",
@@ -318,9 +434,11 @@ class CharactersModule:
                     parent=editor,
                 )
                 return
+            parent_id = inventory_tree.parent(old_row_id)
             inventory_tree.delete(old_row_id)
+            inventory_node_data.pop(old_row_id, None)
             inventory_tree.insert(
-                "",
+                parent_id,
                 tk.END,
                 iid=row_id,
                 text=item_name.get(),
@@ -330,22 +448,209 @@ class CharactersModule:
                     equipment_location.get().strip(),
                 ),
             )
+            inventory_node_data[row_id] = {
+                "object_id": row_id,
+                "object_type": "item",
+                "description": items_by_id[item_id]["description"],
+                "properties": {
+                    "quantity": count,
+                    "attuned": bool(attuned.get()),
+                    "equipment_location": equipment_location.get().strip(),
+                },
+                "children": [],
+            }
 
         def load_inventory_selection(_event=None):
             selected = inventory_tree.selection()
             if not selected:
                 return
+            node = inventory_node_data[selected[0]]
+            catalog_item_id = node.get("object_properties", {}).get(
+                "catalog_item_id", node["object_id"]
+            )
+            catalog_item = items_by_id.get(catalog_item_id)
+            if catalog_item is None:
+                return
             values = inventory_tree.item(selected[0], "values")
-            item_name.set(inventory_tree.item(selected[0], "text"))
-            quantity.set(int(values[0]))
+            item_name.set(catalog_item["name"])
+            quantity.set(int(values[0] or 1))
             attuned.set(values[1] == "Yes")
             equipment_location.set(values[2])
 
+        def add_container():
+            name = simpledialog.askstring(
+                "Add container",
+                "Container name:",
+                parent=editor,
+            )
+            if name is None:
+                return
+            name = name.strip()
+            if not name:
+                messagebox.showerror(
+                    "Inventory",
+                    "Container name cannot be empty.",
+                    parent=editor,
+                )
+                return
+            row_id = f"new-container:{uuid.uuid4().hex}"
+            inventory_tree.insert(
+                selected_parent(),
+                tk.END,
+                iid=row_id,
+                text=name,
+                values=(1, "No", ""),
+                tags=("container",),
+                open=True,
+            )
+            inventory_node_data[row_id] = {
+                "object_id": row_id,
+                "object_type": "container",
+                "new_container": True,
+                "description": "",
+                "object_properties": {},
+                "properties": {
+                    "quantity": 1,
+                    "attuned": False,
+                    "equipment_location": "",
+                },
+                "children": [],
+            }
+
+        def remove_selected():
+            for selected_id in inventory_tree.selection():
+                if selected_id == root_id:
+                    continue
+                descendants = [selected_id, *inventory_tree.get_children(selected_id)]
+                while descendants:
+                    current = descendants.pop()
+                    descendants.extend(inventory_tree.get_children(current))
+                    inventory_node_data.pop(current, None)
+                inventory_tree.delete(selected_id)
+
+        remove_drop_target = ttk.Label(
+            inventory_controls,
+            text="Drop here to remove from inventory",
+            relief=tk.GROOVE,
+            padding=(8, 4),
+        )
+        remove_drop_target.pack(side=tk.RIGHT, padx=6)
+
+        drag = {"source": None}
+
+        def drag_start(event, source):
+            if source == "catalog":
+                index = catalog_list.nearest(event.y)
+                if 0 <= index < len(catalog_list_ids):
+                    drag["source"] = (
+                        "catalog",
+                        catalog_list_ids[index],
+                        event.x_root,
+                        event.y_root,
+                    )
+                return
+            row_id = inventory_tree.identify_row(event.y)
+            if row_id and row_id != root_id:
+                drag["source"] = (
+                    "inventory",
+                    row_id,
+                    event.x_root,
+                    event.y_root,
+                )
+
+        def parent_at_tree_position(x_root, y_root):
+            left = inventory_tree.winfo_rootx()
+            top = inventory_tree.winfo_rooty()
+            if not (
+                left <= x_root <= left + inventory_tree.winfo_width()
+                and top <= y_root <= top + inventory_tree.winfo_height()
+            ):
+                return None
+            target = inventory_tree.identify_row(y_root - top)
+            if not target:
+                return root_id
+            if inventory_node_data[target]["object_type"] == "container":
+                return target
+            return inventory_tree.parent(target) or root_id
+
+        def dropped_on_remove_target(x_root, y_root):
+            left = remove_drop_target.winfo_rootx()
+            top = remove_drop_target.winfo_rooty()
+            return (
+                left <= x_root <= left + remove_drop_target.winfo_width()
+                and top <= y_root <= top + remove_drop_target.winfo_height()
+            )
+
+        def drag_end(event, source):
+            drag_source = drag["source"]
+            drag["source"] = None
+            if drag_source is None:
+                return
+            if (
+                abs(event.x_root - drag_source[2])
+                + abs(event.y_root - drag_source[3]) < 8
+            ):
+                return
+            target_parent = parent_at_tree_position(event.x_root, event.y_root)
+            if drag_source[0] == "catalog":
+                item_id = drag_source[1]
+                if target_parent is None:
+                    return
+                catalog_item = items_by_id[item_id]
+                if not catalog_item["is_container"] and inventory_tree.exists(item_id):
+                    return
+                item_name.set(catalog_item["name"])
+                quantity.set(1)
+                attuned.set(False)
+                equipment_location.set("")
+                inventory_tree.selection_set(target_parent)
+                add_catalog_item()
+                return
+
+            dragged_id = drag_source[1]
+            if dropped_on_remove_target(event.x_root, event.y_root):
+                inventory_tree.selection_set(dragged_id)
+                remove_selected()
+                return
+            if target_parent is None or target_parent == dragged_id:
+                return
+            ancestor = target_parent
+            while ancestor:
+                if ancestor == dragged_id:
+                    return
+                ancestor = inventory_tree.parent(ancestor)
+            inventory_tree.move(dragged_id, target_parent, tk.END)
+            if inventory_node_data[dragged_id]["object_type"] == "container":
+                inventory_tree.item(target_parent, open=True)
+
+        catalog_list.bind(
+            "<ButtonPress-1>",
+            lambda event: drag_start(event, "catalog"),
+        )
+        catalog_list.bind(
+            "<ButtonRelease-1>",
+            lambda event: drag_end(event, "catalog"),
+        )
+        inventory_tree.bind(
+            "<ButtonPress-1>",
+            lambda event: drag_start(event, "inventory"),
+            add="+",
+        )
+        inventory_tree.bind(
+            "<ButtonRelease-1>",
+            lambda event: drag_end(event, "inventory"),
+            add="+",
+        )
         inventory_tree.bind("<<TreeviewSelect>>", load_inventory_selection)
         ttk.Button(
             inventory_controls,
-            text="Add",
+            text="Add item",
             command=add_catalog_item,
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            inventory_controls,
+            text="Add container",
+            command=add_container,
         ).pack(side=tk.LEFT, padx=4)
         ttk.Button(
             inventory_controls,
@@ -355,10 +660,7 @@ class CharactersModule:
         ttk.Button(
             inventory_controls,
             text="Remove selected",
-            command=lambda: [
-                inventory_tree.delete(selected)
-                for selected in inventory_tree.selection()
-            ],
+            command=remove_selected,
         ).pack(side=tk.LEFT, padx=4)
 
         skills_tab = ttk.Frame(notebook)
@@ -526,19 +828,29 @@ class CharactersModule:
                     campaign_role=campaign_role,
                 )
                 character_id = existing_id
-            assignments = [
-                (
-                    item_id,
-                    int(inventory_tree.set(item_id, "quantity")),
-                    inventory_tree.set(item_id, "attuned") == "Yes",
-                    inventory_tree.set(item_id, "location"),
-                )
-                for item_id in inventory_tree.get_children()
-            ]
+            def inventory_children(parent_id):
+                children = []
+                for item_id in inventory_tree.get_children(parent_id):
+                    node = dict(inventory_node_data[item_id])
+                    node["object_id"] = node.get("object_id") or item_id
+                    node["properties"] = {
+                        "quantity": int(inventory_tree.set(item_id, "quantity") or 1),
+                        "attuned": inventory_tree.set(item_id, "attuned") == "Yes",
+                        "equipment_location": inventory_tree.set(item_id, "location"),
+                    }
+                    if node["object_type"] == "container":
+                        node["children"] = inventory_children(item_id)
+                    children.append(node)
+                return children
+
             try:
-                set_character_items(self.db, character_id, assignments)
-            except sqlite3.Error as exc:
-                messagebox.showerror("Save", f"Could not save catalog inventory: {exc}", parent=editor)
+                save_character_inventory(
+                    self.db,
+                    character_id,
+                    inventory_children(root_id),
+                )
+            except (sqlite3.Error, ValueError, TypeError) as exc:
+                messagebox.showerror("Save", f"Could not save inventory: {exc}", parent=editor)
                 return
             skill_assignments = [
                 (skill_id, values[0].get(), values[1].get())

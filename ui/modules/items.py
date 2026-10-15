@@ -18,7 +18,7 @@ class ItemsModule:
         ttk.Label(header, text="Item Catalog", font=("Georgia", 14, "bold")).pack(side=tk.LEFT)
         ttk.Label(
             self.frame,
-            text="Define reusable items for this campaign. Character inventories track quantity and attunement separately.",
+            text="Define reusable item objects. Items tagged as containers create a new container object whenever added to an inventory.",
         ).pack(anchor="w", padx=12, pady=(0, 8))
 
         body = ttk.Frame(self.frame)
@@ -35,6 +35,12 @@ class ItemsModule:
         ttk.Label(editor, text="Description").pack(anchor="w")
         self.description = tk.Text(editor, wrap=tk.WORD, font=("Georgia", 11), height=12)
         self.description.pack(fill=tk.BOTH, expand=True, pady=(2, 8))
+        self.is_container = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            editor,
+            text="Container (creates an instance with its own contents)",
+            variable=self.is_container,
+        ).pack(anchor="w", pady=(0, 8))
 
         buttons = ttk.Frame(editor)
         buttons.pack(fill=tk.X)
@@ -75,6 +81,7 @@ class ItemsModule:
         self.list.selection_clear(0, tk.END)
         self.name.delete(0, tk.END)
         self.description.delete("1.0", tk.END)
+        self.is_container.set(False)
         self._loading = False
         self.name.focus_set()
 
@@ -87,9 +94,17 @@ class ItemsModule:
         item_id = self._selected_id
         try:
             if item_id is None:
-                item_id = create_item(self.db, name, description)
+                item_id = create_item(
+                    self.db, name, description, self.is_container.get()
+                )
             else:
-                update_item(self.db, item_id, name, description)
+                update_item(
+                    self.db,
+                    item_id,
+                    name,
+                    description,
+                    self.is_container.get(),
+                )
         except sqlite3.IntegrityError:
             self.db.rollback()
             messagebox.showerror(
@@ -142,3 +157,4 @@ class ItemsModule:
         self.name.insert(0, item["name"])
         self.description.delete("1.0", tk.END)
         self.description.insert("1.0", item["description"])
+        self.is_container.set(item["is_container"])

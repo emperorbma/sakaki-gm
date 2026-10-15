@@ -246,6 +246,7 @@ def test_v10_migration_adds_geography_metadata_then_promotes_objects(tmp_path):
         db.execute("DROP INDEX item_objects_by_name")
         db.execute("ALTER TABLE characters DROP COLUMN object_id")
         db.execute("ALTER TABLE object_links DROP COLUMN properties")
+        db.execute("ALTER TABLE objects DROP COLUMN properties")
         db.execute(
             """
             CREATE TABLE items (
@@ -303,7 +304,7 @@ def test_v10_migration_adds_geography_metadata_then_promotes_objects(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
         assert db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='encounter_tables'"

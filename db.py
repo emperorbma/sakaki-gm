@@ -391,3 +391,10 @@ def migrate(db):
             db.execute("DROP TABLE character_items")
             db.execute("DROP TABLE items")
             db.execute("PRAGMA user_version = 13")
+
+    if version < 14:
+        db.execute(
+            "ALTER TABLE objects ADD COLUMN properties TEXT NOT NULL DEFAULT '{}'"
+        )
+        db.execute("PRAGMA user_version = 14")
+        db.commit()
