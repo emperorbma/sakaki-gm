@@ -24,6 +24,7 @@ from llm_config import CONFIG_PATH, load_config
 from ui.log_panel import LogPanel
 from ui.modules.characters import CharactersModule
 from ui.modules.documents import DocumentsModule
+from ui.modules.geography import GeographyModule
 from ui.modules.items import ItemsModule
 from ui.modules.quests import QuestsModule
 from ui.modules.settings import SettingsModule
@@ -80,6 +81,8 @@ class MainWindow:
         notebook.add(self.world_module.frame, text="World")
         self.documents_module = DocumentsModule(notebook, self.db)
         notebook.add(self.documents_module.frame, text="Documents")
+        self.geography_module = GeographyModule(notebook, self.db)
+        notebook.add(self.geography_module.frame, text="Map")
         self.items_module = ItemsModule(notebook, self.db)
         notebook.add(self.items_module.frame, text="Items")
         self.quests_module = QuestsModule(notebook, self.db)
@@ -178,6 +181,7 @@ class MainWindow:
         self.characters_module.set_db(new_db)
         self.world_module.set_db(new_db)
         self.documents_module.set_db(new_db)
+        self.geography_module.set_db(new_db)
         self.items_module.set_db(new_db)
         self.quests_module.set_db(new_db)
         self.settings_module.set_db(new_db)

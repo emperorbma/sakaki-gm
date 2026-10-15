@@ -321,6 +321,77 @@ def get_map_links(db, relation: str | None = None) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_setting_candidates(
+    db, spatial_kind: str = "Regions and settlements"
+) -> list[dict]:
+    """Return queryable Campaign Setting root destinations."""
+    nodes = get_map_nodes(db)
+    if spatial_kind == "Regions and settlements":
+        allowed = {"region", "settlement"}
+        nodes = [node for node in nodes if node["spatial_kind"].casefold() in allowed]
+    elif spatial_kind != "All room types":
+        nodes = [
+            node for node in nodes
+            if node["spatial_kind"].casefold() == spatial_kind.casefold()
+        ]
+    return nodes
+
+
+def get_navigation_exits(db, node_id: str) -> list[dict]:
+    """Return navigable route and containment exits from a room."""
+    nodes = {
+        row["node_id"]: dict(row)
+        for row in db.execute("SELECT * FROM map_nodes")
+    }
+    if node_id not in nodes:
+        raise KeyError(f"Unknown location: {node_id}")
+
+    exits = []
+    for row in db.execute(
+        """
+        SELECT * FROM map_links
+        WHERE relation='route'
+          AND (from_node_id=? OR to_node_id=?)
+        ORDER BY id
+        """,
+        (node_id, node_id),
+    ):
+        link = dict(row)
+        target_id = (
+            link["to_node_id"]
+            if link["from_node_id"] == node_id
+            else link["from_node_id"]
+        )
+        exits.append({
+            "relation": "route",
+            "target": nodes[target_id],
+            "link": link,
+        })
+
+    for row in db.execute(
+        """
+        SELECT * FROM map_links
+        WHERE relation='contains' AND from_node_id=?
+        ORDER BY id
+        """,
+        (node_id,),
+    ):
+        link = dict(row)
+        exits.append({
+            "relation": "contains",
+            "target": nodes[link["to_node_id"]],
+            "link": link,
+        })
+    exits.sort(
+        key=lambda item: (
+            item["relation"],
+            item["target"]["name"].casefold(),
+            item["target"]["node_id"],
+        )
+    )
+    return exits
+
+
 def find_route(
     db,
     start_node_id: str,

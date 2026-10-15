@@ -6,6 +6,8 @@ from geography_db import (
     get_encounter_entries,
     get_encounter_tables,
     get_map_nodes,
+    get_navigation_exits,
+    get_setting_candidates,
     parse_geography_tables,
     sync_encounter_entries,
     sync_geography,
@@ -26,7 +28,7 @@ GEOGRAPHY = """\
 | route | hub | forest | 3 | 3 | source_reported | north | trail | 60 | 75 | Exit to forest. |
 | route | forest | side-room | | | | hidden | | | | Topological exit without a measured cost. |
 | near | hub | side-room | 1 | 1 | source_reported | east | | | | Not an exit. |
-| contains | hub | side-room | | | | interior | | | | Descriptive relationship. |
+| contains | forest | side-room | | | | | | | | Region contains this room. |
 
 ## Encounter Table Bindings
 | Table ID | Table Name | Source File | Roll Die | Location Node ID | Binding Basis |
@@ -63,6 +65,35 @@ def test_graph_uses_only_route_exits_and_keeps_rooms_unpinned(tmp_path):
             "forest",
             "side-room",
         ]
+    finally:
+        db.close()
+
+
+def test_navigation_exits_include_routes_and_containment_but_not_near(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    try:
+        sync_geography(db, GEOGRAPHY)
+        exits = get_navigation_exits(db, "hub")
+        assert {(item["relation"], item["target"]["node_id"]) for item in exits} == {
+            ("route", "forest"),
+        }
+        reverse_exits = get_navigation_exits(db, "side-room")
+        assert [(item["relation"], item["target"]["node_id"]) for item in reverse_exits] == [
+            ("route", "forest"),
+        ]
+        assert {
+            (item["relation"], item["target"]["node_id"])
+            for item in get_navigation_exits(db, "forest")
+        } == {
+            ("route", "hub"),
+            ("route", "side-room"),
+            ("contains", "side-room"),
+        }
+        assert {
+            node["spatial_kind"]
+            for node in get_setting_candidates(db)
+        } == {"region", "settlement"}
+        assert len(get_setting_candidates(db, "All room types")) == 3
     finally:
         db.close()
 
