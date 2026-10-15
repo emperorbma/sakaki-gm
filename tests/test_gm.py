@@ -475,6 +475,46 @@ def test_default_config_migrates_old_name_to_sakaki_gm(monkeypatch, tmp_path):
     assert json.loads(old_config.read_text(encoding="utf-8")) == previous
 
 
+def test_model_capability_profiles_are_validated_and_keyed_per_endpoint(tmp_path):
+    from llm_config import load_config, model_profile_key, save_config
+
+    config = tmp_path / "config.json"
+    settings = {
+        "provider": "OpenAI_Compatible",
+        "base_url": "http://localhost:1234/v1/",
+        "model": "local-model",
+    }
+    key = model_profile_key(settings)
+    assert key == model_profile_key({
+        **settings,
+        "provider": "openai_compatible",
+        "base_url": "http://localhost:1234/v1",
+    })
+    assert key != model_profile_key({**settings, "model": "other-model"})
+
+    config.write_text(
+        json.dumps({
+            "model_profiles": {
+                key: [
+                    "chat",
+                    "tool_use",
+                    "chat",
+                    "unknown",
+                    {"malformed": "entry"},
+                ],
+                "invalid": "not-a-list",
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    loaded = load_config(config)
+
+    assert loaded["model_profiles"] == {key: ["chat", "tool_use"]}
+    save_config(loaded, config)
+    assert load_config(config)["model_profiles"] == {key: ["chat", "tool_use"]}
+
+
 def test_remove_missing_campaign_keeps_active_database(tmp_path):
     config = tmp_path / "config.json"
     campaigns = tmp_path / "campaigns"

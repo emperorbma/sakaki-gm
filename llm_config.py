@@ -25,9 +25,17 @@ RAG_MODES = {
     "context": "App-retrieved context",
 }
 
+MODEL_CAPABILITIES = {
+    "chat": "Chat",
+    "query_decomposition": "Query decomposition",
+    "tool_use": "Tool use",
+    "structured_json": "Structured JSON",
+}
+
 DEFAULT_CONFIG = {
     "active_campaign": None,
     "campaigns": [],
+    "model_profiles": {},
     "llm": {
         "provider": "spacexai",
         "base_url": PRESETS["spacexai"]["base_url"],
@@ -64,6 +72,18 @@ def load_config(path=None) -> dict:
                     for item in campaigns
                     if isinstance(item, dict) and item.get("id") and item.get("path")
                 ]
+            profiles = loaded.get("model_profiles")
+            if isinstance(profiles, dict):
+                cfg["model_profiles"] = {
+                    key: list(dict.fromkeys(
+                        capability for capability in capabilities
+                        if isinstance(capability, str)
+                        and capability in MODEL_CAPABILITIES
+                    ))
+                    for key, capabilities in profiles.items()
+                    if isinstance(key, str)
+                    and isinstance(capabilities, list)
+                }
             llm = loaded.get("llm")
             if isinstance(llm, dict):
                 for key in cfg["llm"]:
@@ -77,6 +97,19 @@ def load_config(path=None) -> dict:
     if migrate_legacy:
         save_config(cfg, CONFIG_PATH)
     return cfg
+
+
+def model_profile_key(settings: dict) -> str:
+    """Return a stable key for capabilities assigned to a model endpoint."""
+    return json.dumps(
+        [
+            str(settings.get("provider") or "").strip().casefold(),
+            str(settings.get("base_url") or "").strip().rstrip("/"),
+            str(settings.get("model") or "").strip(),
+        ],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
 
 
 def save_config(cfg: dict, path=None) -> None:

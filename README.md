@@ -53,4 +53,6 @@ Settings has two presets:
 
 Choose **Model-initiated tools** for models verified to use lookup tools reliably, or **App-retrieved context** for models that cannot initiate tool calls. Existing configurations default to Model-initiated tools.
 
+Settings also provides user-declared per-model capability labels for **Chat**, **Query decomposition**, **Tool use**, and **Structured JSON**. Labels are saved per provider, endpoint, and model. They describe intended capabilities; the current model-list endpoint does not report them, and these labels do not yet change request routing.
+
 The key and the campaign list are stored in `~/.config/sakaki-gm/config.json`. On first launch after this rename, settings are migrated from `~/.config/pygm/config.json` if the new config does not exist; the old file is left in place. Campaigns created by the app are stored under `~/.local/share/sakaki-gm/campaigns/`. `pygm_campaign.db` and `.venv` are gitignored.

@@ -3,7 +3,15 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from gm import DEFAULT_INSTRUCTIONS, bootstrap_instructions, stored_system_prompt
-from llm_config import RAG_MODES, PRESETS, load_config, resolve_api_key, save_config
+from llm_config import (
+    MODEL_CAPABILITIES,
+    RAG_MODES,
+    PRESETS,
+    load_config,
+    model_profile_key,
+    resolve_api_key,
+    save_config,
+)
 from llm_client import list_models, test_connection
 from skill_db import DEFAULT_5E_SKILLS, replace_campaign_skills
 
@@ -48,6 +56,11 @@ class SettingsModule:
         self.api_key = tk.StringVar(value=current.get("api_key") or "")
         rag_mode = current.get("rag_mode", "tools")
         self.rag_mode = tk.StringVar(value=RAG_MODES.get(rag_mode, RAG_MODES["tools"]))
+        self.model_capabilities = {
+            capability: tk.BooleanVar(value=False)
+            for capability in MODEL_CAPABILITIES
+        }
+        self._load_model_capabilities()
 
         ttk.Label(llm, text="Preset").grid(row=0, column=0, sticky="w", padx=10, pady=6)
         preset = ttk.Combobox(
@@ -57,7 +70,16 @@ class SettingsModule:
         preset.bind("<<ComboboxSelected>>", self.apply_preset)
 
         ttk.Label(llm, text="Base URL").grid(row=1, column=0, sticky="w", padx=10, pady=6)
-        ttk.Entry(llm, textvariable=self.base_url, width=48).grid(row=1, column=1, sticky="w", padx=10, pady=6)
+        base_url_entry = ttk.Entry(llm, textvariable=self.base_url, width=48)
+        base_url_entry.grid(row=1, column=1, sticky="w", padx=10, pady=6)
+        base_url_entry.bind(
+            "<FocusOut>",
+            lambda _event: self._load_model_capabilities(),
+        )
+        base_url_entry.bind(
+            "<Return>",
+            lambda _event: self._load_model_capabilities(),
+        )
         ttk.Label(llm, text="Model").grid(row=2, column=0, sticky="w", padx=10, pady=6)
         model_frame = ttk.Frame(llm)
         model_frame.grid(row=2, column=1, sticky="w", padx=10, pady=6)
@@ -93,9 +115,31 @@ class SettingsModule:
             llm,
             text="Choose model-driven tool calls or app-retrieved context.",
         ).grid(row=6, column=1, sticky="w", padx=10)
+        capabilities = ttk.LabelFrame(llm, text="Model capabilities")
+        capabilities.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        ttk.Label(
+            capabilities,
+            text="User-declared expectations; the model listing does not report these.",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 2))
+        for index, (capability, label) in enumerate(MODEL_CAPABILITIES.items()):
+            ttk.Checkbutton(
+                capabilities,
+                text=label,
+                variable=self.model_capabilities[capability],
+            ).grid(
+                row=1 + index // 2,
+                column=index % 2,
+                sticky="w",
+                padx=8,
+                pady=2,
+            )
+        self.model_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._load_model_capabilities(),
+        )
 
         buttons = ttk.Frame(llm)
-        buttons.grid(row=7, column=1, sticky="w", padx=10, pady=10)
+        buttons.grid(row=8, column=1, sticky="w", padx=10, pady=10)
         ttk.Button(buttons, text="Save", command=self.save_llm).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Test", command=self.test_llm).pack(side=tk.LEFT, padx=4)
 
@@ -179,6 +223,18 @@ class SettingsModule:
         self.base_url.set(preset["base_url"])
         self.model.set(preset["model"])
         self.model_combo["values"] = ()
+        self._load_model_capabilities()
+
+    def _load_model_capabilities(self):
+        cfg = load_config(self.main_app.config_path)
+        key = model_profile_key({
+            "provider": self.provider.get(),
+            "base_url": self.base_url.get(),
+            "model": self.model.get(),
+        })
+        selected = set(cfg["model_profiles"].get(key, []))
+        for capability, variable in self.model_capabilities.items():
+            variable.set(capability in selected)
 
     def _llm_dict(self) -> dict:
         return {
@@ -194,7 +250,13 @@ class SettingsModule:
 
     def save_llm(self):
         cfg = load_config(self.main_app.config_path)
-        cfg["llm"] = self._llm_dict()
+        settings = self._llm_dict()
+        cfg["llm"] = settings
+        cfg["model_profiles"][model_profile_key(settings)] = [
+            capability
+            for capability, variable in self.model_capabilities.items()
+            if variable.get()
+        ]
         save_config(cfg, self.main_app.config_path)
         messagebox.showinfo("Saved", "Model settings saved.")
 
@@ -222,6 +284,7 @@ class SettingsModule:
             messagebox.showinfo("Models", f"Loaded {len(models)} models; current model is available.")
         elif models:
             self.model_combo.current(0)
+            self._load_model_capabilities()
             messagebox.showinfo(
                 "Models",
                 f"Loaded {len(models)} models. The previously configured model "
@@ -229,4 +292,5 @@ class SettingsModule:
             )
         else:
             self.model.set("")
+            self._load_model_capabilities()
             messagebox.showinfo("Models", "The server returned no models.")
