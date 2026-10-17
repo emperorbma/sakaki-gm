@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from db import get_db
-from object_graph_db import (
+from sakaki_gm.db import get_db
+from sakaki_gm.object_graph_db import (
     create_object,
     create_object_link,
     find_route,
@@ -310,7 +310,7 @@ def test_v10_migration_adds_geography_metadata_then_promotes_objects(tmp_path):
         db.execute("PRAGMA user_version = 10")
         db.commit()
 
-        from db import migrate
+        from sakaki_gm.db import migrate
 
         migrate(db)
         columns = {row["name"] for row in db.execute("PRAGMA table_info(objects)")}

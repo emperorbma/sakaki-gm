@@ -6,7 +6,7 @@ import struct
 import time
 import zlib
 
-from llm_config import resolve_api_key
+from sakaki_gm.llm_config import resolve_api_key
 
 
 _LOOKUP_TOOL = [{

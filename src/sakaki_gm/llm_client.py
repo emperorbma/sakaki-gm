@@ -5,8 +5,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from llm_config import resolve_api_key
-from rag_tools import (
+from sakaki_gm.llm_config import resolve_api_key
+from sakaki_gm.rag_tools import (
     CAMPAIGN_TOOLS,
     LOCATION_INFERENCE,
     execute_campaign_tool,

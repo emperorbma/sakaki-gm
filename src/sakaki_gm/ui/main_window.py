@@ -6,7 +6,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import pyperclip
 
-from campaigns import (
+from sakaki_gm.campaigns import (
     CAMPAIGNS_DIR,
     active_path,
     bootstrap,
@@ -18,18 +18,18 @@ from campaigns import (
     rename_campaign,
     set_active,
 )
-from db import get_db
-from gm import apply_updates, build_messages, format_clipboard, parse_reply
-from llm_client import complete
-from llm_config import CONFIG_PATH, load_config
-from ui.log_panel import LogPanel
-from ui.modules.characters import CharactersModule
-from ui.modules.documents import DocumentsModule
-from ui.modules.geography import GeographyModule
-from ui.modules.items import ItemsModule
-from ui.modules.quests import QuestsModule
-from ui.modules.settings import SettingsModule
-from ui.modules.world import WorldModule
+from sakaki_gm.db import get_db
+from sakaki_gm.gm import apply_updates, build_messages, format_clipboard, parse_reply
+from sakaki_gm.llm_client import complete
+from sakaki_gm.llm_config import CONFIG_PATH, load_config
+from sakaki_gm.ui.log_panel import LogPanel
+from sakaki_gm.ui.modules.characters import CharactersModule
+from sakaki_gm.ui.modules.documents import DocumentsModule
+from sakaki_gm.ui.modules.geography import GeographyModule
+from sakaki_gm.ui.modules.items import ItemsModule
+from sakaki_gm.ui.modules.quests import QuestsModule
+from sakaki_gm.ui.modules.settings import SettingsModule
+from sakaki_gm.ui.modules.world import WorldModule
 
 
 class MainWindow:
@@ -41,7 +41,7 @@ class MainWindow:
         self._ask_busy = False
         legacy = legacy_db if legacy_db is not None else None
         if legacy_db is None:
-            from db import LEGACY_DB
+            from sakaki_gm.db import LEGACY_DB
             legacy = LEGACY_DB
         cfg, path = bootstrap(self.config_path, legacy, self.campaigns_dir)
         self._active_campaign_id = cfg["active_campaign"]

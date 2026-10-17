@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import ttk
 
-from object_graph_db import (
+from sakaki_gm.object_graph_db import (
     get_encounter_tables,
     get_geography_objects,
     get_navigation_exits,

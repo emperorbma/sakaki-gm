@@ -3,8 +3,8 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from gm import DEFAULT_INSTRUCTIONS, bootstrap_instructions, stored_system_prompt
-from llm_config import (
+from sakaki_gm.gm import DEFAULT_INSTRUCTIONS, bootstrap_instructions, stored_system_prompt
+from sakaki_gm.llm_config import (
     MODEL_CAPABILITIES,
     RAG_MODES,
     PRESETS,
@@ -13,9 +13,9 @@ from llm_config import (
     resolve_api_key,
     save_config,
 )
-from model_capability_tests import run_capability_tests
-from llm_client import list_models, test_connection
-from skill_db import DEFAULT_5E_SKILLS, replace_campaign_skills
+from sakaki_gm.model_capability_tests import run_capability_tests
+from sakaki_gm.llm_client import list_models, test_connection
+from sakaki_gm.skill_db import DEFAULT_5E_SKILLS, replace_campaign_skills
 
 
 class SettingsModule:

@@ -6,13 +6,13 @@ import uuid
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from character_db import create_character, delete_character, get_all_characters, update_character
-from item_db import (
+from sakaki_gm.character_db import create_character, delete_character, get_all_characters, update_character
+from sakaki_gm.item_db import (
     get_character_inventory_tree,
     get_items,
     save_character_inventory,
 )
-from skill_db import get_character_skills, get_skills, set_character_skills
+from sakaki_gm.skill_db import get_character_skills, get_skills, set_character_skills
 
 TEXT_FIELDS = (
     ("spells", "Spells"),
@@ -985,7 +985,7 @@ class CharactersModule:
         toplevel.geometry("560x180")
         toplevel.transient(self.main_app.root)
         toplevel.grab_set()
-        from ui.modules.importer import ImporterModule
+        from sakaki_gm.ui.modules.importer import ImporterModule
         importer = ImporterModule(toplevel, self.main_app)
         importer.pack(fill="both", expand=True)
 
@@ -999,7 +999,7 @@ class CharactersModule:
         )
         if not files:
             return
-        from ui.modules.importer import import_campaign_files
+        from sakaki_gm.ui.modules.importer import import_campaign_files
         try:
             summary = import_campaign_files(self.db, files)
         except Exception as exc:

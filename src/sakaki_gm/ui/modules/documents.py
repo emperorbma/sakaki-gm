@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from ui.modules.importer import import_document_files
+from sakaki_gm.ui.modules.importer import import_document_files
 
 
 class DocumentsModule:
