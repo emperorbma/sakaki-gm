@@ -6,13 +6,17 @@ Sakaki GM is a local Game Master desk. Each campaign is its own SQLite file, one
 
 This repository is proprietary. Copyright © 2026 Brian Angeletti. All rights reserved. Repository access for review does not grant permission to reuse, modify, or redistribute its contents. See [LICENSE](LICENSE). Third-party components remain subject to their respective licenses.
 
+## Layout
+
+Application code lives under `src/sakaki_gm/`. Install the package into a virtualenv (`pip install -e ".[dev]"`), then run `python -m sakaki_gm` (or use the start scripts below).
+
 ## Linux
 
 ```bash
 ./start-sakaki-gm.sh
 ```
 
-The script creates `.venv`, installs the Python packages, and opens the window. If it stops early on Debian, install the missing package and run it again:
+The script creates `.venv`, installs the package in editable mode, and opens the window. If it stops early on Debian, install the missing package and run it again:
 
 ```bash
 sudo apt install python3-venv python3-tk
@@ -22,7 +26,7 @@ sudo apt install python3-venv python3-tk
 
 ## Windows
 
-Double-click `start-sakaki-gm.bat`. Python 3 must be on `PATH` as `py` or `python`. The batch file creates `.venv` next to itself and installs the packages.
+Double-click `start-sakaki-gm.bat`. Python 3 must be on `PATH` as `py` or `python`. The batch file creates `.venv` next to itself and installs the package.
 
 ## Campaigns
 

@@ -2,7 +2,7 @@ import sqlite3
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from item_db import create_item, delete_item, get_items, update_item
+from sakaki_gm.item_db import create_item, delete_item, get_items, update_item
 
 
 class ItemsModule:

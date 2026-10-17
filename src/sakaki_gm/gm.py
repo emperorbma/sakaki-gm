@@ -1,13 +1,13 @@
 # gm.py — prompt, reply parsing, and campaign updates
 import json
 
-from item_db import (
+from sakaki_gm.item_db import (
     get_character_inventory_container,
     get_character_items,
     get_items,
 )
-from quest_db import get_quest_characters, get_quests
-from skill_db import get_character_skills, skill_bonus
+from sakaki_gm.quest_db import get_quest_characters, get_quests
+from sakaki_gm.skill_db import get_character_skills, skill_bonus
 
 HP_CURRENT = "hp_current"
 HP_MAX = "hp_max"

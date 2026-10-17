@@ -4,8 +4,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from character_db import create_character, update_character
-from skill_db import move_legacy_skills_to_notes
+from sakaki_gm.character_db import create_character, update_character
+from sakaki_gm.skill_db import move_legacy_skills_to_notes
 
 ABILITIES = ("str", "dex", "con", "int", "wis", "cha")
 ABILITY_RE = re.compile(

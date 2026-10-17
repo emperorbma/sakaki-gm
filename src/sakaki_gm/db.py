@@ -3,10 +3,12 @@ import json
 import sqlite3
 from pathlib import Path
 
-from skill_db import DEFAULT_5E_SKILLS, move_legacy_skills_to_notes
+from sakaki_gm.skill_db import DEFAULT_5E_SKILLS, move_legacy_skills_to_notes
 
-APP_DIR = Path(__file__).resolve().parent
-LEGACY_DB = APP_DIR / "pygm_campaign.db"
+PACKAGE_DIR = Path(__file__).resolve().parent
+# src/sakaki_gm -> src -> repository root (where pygm_campaign.db lives)
+PROJECT_ROOT = PACKAGE_DIR.parent.parent
+LEGACY_DB = PROJECT_ROOT / "pygm_campaign.db"
 
 
 def get_db(path):

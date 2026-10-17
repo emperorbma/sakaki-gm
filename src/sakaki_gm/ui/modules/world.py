@@ -3,7 +3,7 @@ import json
 import tkinter as tk
 from tkinter import ttk
 
-from gm import world_value
+from sakaki_gm.gm import world_value
 
 
 class WorldModule:

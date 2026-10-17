@@ -11,7 +11,8 @@ if [[ ! -x .venv/bin/python ]]; then
   }
 fi
 
-if [[ ! -f .venv/requirements.stamp || requirements.txt -nt .venv/requirements.stamp ]]; then
+if [[ ! -f .venv/requirements.stamp || requirements.txt -nt .venv/requirements.stamp || pyproject.toml -nt .venv/requirements.stamp ]]; then
+  .venv/bin/python -m pip install -U pip
   .venv/bin/python -m pip install -r requirements.txt
   touch .venv/requirements.stamp
 fi
@@ -27,4 +28,4 @@ if [[ -f "$DESKTOP" ]]; then
   sed -i "s|^Path=.*|Path=$ROOT|" "$DESKTOP"
 fi
 
-exec .venv/bin/python sakaki-gm.py
+exec .venv/bin/python -m sakaki_gm

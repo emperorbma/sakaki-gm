@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 
-from model_capability_tests import run_capability_tests
+from sakaki_gm.model_capability_tests import run_capability_tests
 
 
 def make_response(content=None, tool_calls=None):

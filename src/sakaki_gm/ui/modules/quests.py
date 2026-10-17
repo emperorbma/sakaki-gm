@@ -2,7 +2,7 @@ import sqlite3
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from quest_db import delete_quest, get_quest_characters, get_quests, save_quest
+from sakaki_gm.quest_db import delete_quest, get_quest_characters, get_quests, save_quest
 
 
 class QuestsModule:

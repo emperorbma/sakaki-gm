@@ -1,6 +1,6 @@
 import pytest
 
-from ui.modules.characters import _is_stat_block_scaffold, _optional_int
+from sakaki_gm.ui.modules.characters import _is_stat_block_scaffold, _optional_int
 
 
 def test_stat_block_scaffold_detection():

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from campaigns import (
+from sakaki_gm.campaigns import (
     active_path,
     bootstrap,
     create_campaign_backup,
@@ -13,14 +13,14 @@ from campaigns import (
     register_file,
     remove_campaign,
 )
-from character_db import create_character
-from db import LEGACY_DB, get_db, migrate
-from gm import apply_updates, build_messages, parse_reply
-from llm_client import complete, list_models
-from llm_config import load_config
-from object_graph_db import create_object, create_object_link
-from rag_tools import execute_campaign_tool
-from item_db import (
+from sakaki_gm.character_db import create_character
+from sakaki_gm.db import LEGACY_DB, get_db, migrate
+from sakaki_gm.gm import apply_updates, build_messages, parse_reply
+from sakaki_gm.llm_client import complete, list_models
+from sakaki_gm.llm_config import load_config
+from sakaki_gm.object_graph_db import create_object, create_object_link
+from sakaki_gm.rag_tools import execute_campaign_tool
+from sakaki_gm.item_db import (
     create_item,
     delete_item,
     get_character_inventory_tree,
@@ -29,20 +29,20 @@ from item_db import (
     save_character_inventory,
     set_character_items,
 )
-from skill_db import (
+from sakaki_gm.skill_db import (
     DEFAULT_5E_SKILLS,
     get_character_skills,
     get_skills,
     set_character_skills,
     skill_bonus,
 )
-from quest_db import (
+from sakaki_gm.quest_db import (
     delete_quest,
     get_quest_characters,
     get_quests,
     save_quest,
 )
-from ui.modules.importer import (
+from sakaki_gm.ui.modules.importer import (
     import_campaign_files,
     import_campaign_folder,
     import_document_files,
@@ -486,7 +486,7 @@ def test_remove_campaign_recovers_to_valid_database_not_stale_entry(tmp_path):
 
 
 def test_default_config_migrates_old_name_to_sakaki_gm(monkeypatch, tmp_path):
-    import llm_config
+    import sakaki_gm.llm_config as llm_config
 
     old_config = tmp_path / "pygm" / "config.json"
     new_config = tmp_path / "sakaki-gm" / "config.json"
@@ -515,7 +515,7 @@ def test_default_config_migrates_old_name_to_sakaki_gm(monkeypatch, tmp_path):
 
 
 def test_model_capability_profiles_are_validated_and_keyed_per_endpoint(tmp_path):
-    from llm_config import load_config, model_profile_key, save_config
+    from sakaki_gm.llm_config import load_config, model_profile_key, save_config
 
     config = tmp_path / "config.json"
     settings = {

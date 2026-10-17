@@ -4,8 +4,8 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from db import LEGACY_DB, get_db
-from llm_config import (
+from sakaki_gm.db import LEGACY_DB, get_db
+from sakaki_gm.llm_config import (
     CAMPAIGNS_DIR,
     LEGACY_CAMPAIGNS_DIR,
     load_config,

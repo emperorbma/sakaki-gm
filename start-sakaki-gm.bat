@@ -20,10 +20,12 @@ if not exist ".venv\Scripts\python.exe" (
 set "DOINSTALL=0"
 if not exist ".venv\requirements.stamp" set "DOINSTALL=1"
 if "%DOINSTALL%"=="0" (
-  .venv\Scripts\python.exe -c "import os,sys; sys.exit(0 if os.path.getmtime('requirements.txt')<=os.path.getmtime('.venv/requirements.stamp') else 1)"
+  .venv\Scripts\python.exe -c "import os,sys; stamp=os.path.getmtime('.venv/requirements.stamp'); sys.exit(0 if os.path.getmtime('requirements.txt')<=stamp and os.path.getmtime('pyproject.toml')<=stamp else 1)"
   if errorlevel 1 set "DOINSTALL=1"
 )
 if "%DOINSTALL%"=="1" (
+  .venv\Scripts\python.exe -m pip install -U pip
+  if errorlevel 1 exit /b 1
   .venv\Scripts\python.exe -m pip install -r requirements.txt
   if errorlevel 1 exit /b 1
   .venv\Scripts\python.exe -c "import pathlib; pathlib.Path('.venv/requirements.stamp').touch()"
@@ -35,5 +37,5 @@ if errorlevel 1 (
   exit /b 1
 )
 
-.venv\Scripts\python.exe sakaki-gm.py
+.venv\Scripts\python.exe -m sakaki_gm
 exit /b %errorlevel%
