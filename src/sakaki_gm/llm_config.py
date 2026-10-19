@@ -133,3 +133,49 @@ def resolve_api_key(llm: dict) -> str:
     if llm.get("provider") == "openai_compatible":
         return "local"
     raise RuntimeError("Set XAI_API_KEY or enter an API key in Settings.")
+
+
+def model_capabilities(settings: dict, profiles: dict | None = None) -> list[str]:
+    """Return declared/probed capability labels for this provider/endpoint/model."""
+    if profiles is None:
+        profiles = load_config().get("model_profiles", {})
+    if not isinstance(profiles, dict):
+        return []
+    raw = profiles.get(model_profile_key(settings), [])
+    if not isinstance(raw, list):
+        return []
+    return [
+        capability for capability in raw
+        if isinstance(capability, str) and capability in MODEL_CAPABILITIES
+    ]
+
+
+def resolve_ask_gm_mode(settings: dict, profiles: dict | None = None) -> str:
+    """Choose tools vs app-retrieved context from settings and capability labels.
+
+    Local OpenAI-compatible endpoints stay on app-retrieved context unless both
+    tool_use and structured_json are labeled for that model. SpaceXAI/Grok may
+    use tools when the user selected that mode and either has no profile yet or
+    has both required labels. Missing labels never invent capability.
+    """
+    requested = settings.get("rag_mode", "tools")
+    if requested not in RAG_MODES:
+        requested = "tools"
+    if requested != "tools":
+        return "context"
+
+    caps = set(model_capabilities(settings, profiles))
+    provider = str(settings.get("provider") or "").strip().casefold()
+    required = {"tool_use", "structured_json"}
+
+    if provider == "openai_compatible":
+        # Weak/local default: app retrieves unless this exact model was labeled.
+        if required <= caps:
+            return "tools"
+        return "context"
+
+    # Strong providers (e.g. spacexai): honor tools when unlabeled (user choice)
+    # or when both tool labels are present; otherwise fall back to context.
+    if not caps or required <= caps:
+        return "tools"
+    return "context"

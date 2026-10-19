@@ -17,7 +17,7 @@ from sakaki_gm.character_db import create_character
 from sakaki_gm.db import LEGACY_DB, get_db, migrate
 from sakaki_gm.gm import apply_updates, build_messages, parse_reply
 from sakaki_gm.llm_client import complete, list_models
-from sakaki_gm.llm_config import load_config
+from sakaki_gm.llm_config import load_config, model_profile_key
 from sakaki_gm.object_graph_db import create_object, create_object_link
 from sakaki_gm.rag_tools import execute_campaign_tool
 from sakaki_gm.item_db import (
@@ -1341,17 +1341,22 @@ def test_complete_uses_campaign_lookup_tools_during_turn(tmp_path):
             '{"narration":"The abbey shines beneath the moon.","updates":{}}'
         ))
 
+    settings = {
+        "provider": "openai_compatible",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "local",
+        "api_key": "",
+        "rag_mode": "tools",
+    }
     reply = complete(
-        {
-            "provider": "openai_compatible",
-            "base_url": "http://127.0.0.1:11434/v1",
-            "model": "local",
-            "api_key": "",
-        },
+        settings,
         "system",
         "Do not change campaign state.",
         create=create,
         tool_db_path=db_path,
+        model_profiles={
+            model_profile_key(settings): ["tool_use", "structured_json"],
+        },
     )
 
     assert "abbey shines" in reply
@@ -1362,6 +1367,12 @@ def test_complete_uses_campaign_lookup_tools_during_turn(tmp_path):
         "inspect_object",
         "inspect_location",
     }
+    tool_payload = json.loads(next(
+        message["content"] for message in calls[1]["messages"]
+        if message["role"] == "tool"
+    ))
+    assert "context_id" in tool_payload
+    assert tool_payload["documents"][0]["record_id"].startswith("document:")
 
 
 def test_complete_uses_app_retrieved_context_without_model_tools(tmp_path):
