@@ -514,6 +514,25 @@ def test_default_config_migrates_old_name_to_sakaki_gm(monkeypatch, tmp_path):
     assert json.loads(old_config.read_text(encoding="utf-8")) == previous
 
 
+def test_ui_show_gm_reply_debug_defaults_off_and_loads_bool(tmp_path):
+    from sakaki_gm.llm_config import load_config, save_config, show_gm_reply_debug
+
+    config = tmp_path / "config.json"
+    assert show_gm_reply_debug(load_config(config)) is False
+
+    config.write_text(
+        json.dumps({"ui": {"show_gm_reply_debug": 1}}),
+        encoding="utf-8",
+    )
+    loaded = load_config(config)
+    assert loaded["ui"]["show_gm_reply_debug"] is True
+    assert show_gm_reply_debug(loaded) is True
+
+    loaded["ui"]["show_gm_reply_debug"] = False
+    save_config(loaded, config)
+    assert show_gm_reply_debug(load_config(config)) is False
+
+
 def test_model_capability_profiles_are_validated_and_keyed_per_endpoint(tmp_path):
     from sakaki_gm.llm_config import load_config, model_profile_key, save_config
 

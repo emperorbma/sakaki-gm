@@ -44,6 +44,9 @@ DEFAULT_CONFIG = {
         "api_key": "",
         "rag_mode": "tools",
     },
+    "ui": {
+        "show_gm_reply_debug": False,
+    },
 }
 
 
@@ -90,14 +93,30 @@ def load_config(path=None) -> dict:
                 for key in cfg["llm"]:
                     if key in llm and llm[key] is not None:
                         cfg["llm"][key] = llm[key]
+            ui = loaded.get("ui")
+            if isinstance(ui, dict):
+                for key in cfg["ui"]:
+                    if key in ui and ui[key] is not None:
+                        cfg["ui"][key] = ui[key]
     if (
         not isinstance(cfg["llm"]["rag_mode"], str)
         or cfg["llm"]["rag_mode"] not in RAG_MODES
     ):
         cfg["llm"]["rag_mode"] = "tools"
+    cfg["ui"]["show_gm_reply_debug"] = bool(cfg["ui"].get("show_gm_reply_debug"))
     if migrate_legacy:
         save_config(cfg, CONFIG_PATH)
     return cfg
+
+
+def show_gm_reply_debug(cfg: dict | None = None) -> bool:
+    """Return whether the raw GM reply paste panel should be shown."""
+    if cfg is None:
+        cfg = load_config()
+    ui = cfg.get("ui") if isinstance(cfg, dict) else None
+    if not isinstance(ui, dict):
+        return False
+    return bool(ui.get("show_gm_reply_debug"))
 
 
 def model_profile_key(settings: dict) -> str:

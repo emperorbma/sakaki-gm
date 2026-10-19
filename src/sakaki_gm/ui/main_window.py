@@ -21,7 +21,7 @@ from sakaki_gm.campaigns import (
 from sakaki_gm.db import get_db
 from sakaki_gm.gm import apply_updates, build_messages, format_clipboard, parse_reply
 from sakaki_gm.llm_client import complete
-from sakaki_gm.llm_config import CONFIG_PATH, load_config
+from sakaki_gm.llm_config import CONFIG_PATH, load_config, show_gm_reply_debug
 from sakaki_gm.ui.log_panel import LogPanel
 from sakaki_gm.ui.modules.characters import CharactersModule
 from sakaki_gm.ui.modules.documents import DocumentsModule
@@ -96,20 +96,41 @@ class MainWindow:
         notebook.add(self.log_panel.frame, text="Log")
 
         bottom = ttk.Frame(self.root)
-        bottom.pack(fill=tk.X, padx=15, pady=10)
+        bottom.pack(fill=tk.X, padx=15, pady=(10, 4))
         self.action_entry = tk.Entry(bottom, font=("Georgia", 12))
         self.action_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.action_entry.bind("<Return>", lambda _event: self.ask_gm())
         self.ask_button = ttk.Button(bottom, text="Ask GM", command=self.ask_gm)
         self.ask_button.pack(side=tk.RIGHT, padx=5)
-        ttk.Button(bottom, text="Copy Prompt", command=self.copy_prompt).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(bottom, text="d20", command=lambda: self.quick_roll(20)).pack(side=tk.RIGHT)
+        self.copy_prompt_button = ttk.Button(
+            bottom, text="Copy Prompt", command=self.copy_prompt
+        )
+        self.copy_prompt_button.pack(side=tk.RIGHT, padx=5)
+        ttk.Button(bottom, text="d20", command=lambda: self.quick_roll(20)).pack(
+            side=tk.RIGHT
+        )
 
-        reply_frame = ttk.LabelFrame(self.root, text="Paste LLM Reply")
-        reply_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
-        self.reply_box = tk.Text(reply_frame, height=8, font=("Georgia", 11))
+        status_row = ttk.Frame(self.root)
+        status_row.pack(fill=tk.X, padx=15, pady=(0, 8))
+        self.ask_status_var = tk.StringVar(value="")
+        self.ask_status = ttk.Label(
+            status_row,
+            textvariable=self.ask_status_var,
+            foreground="#4a5568",
+        )
+        self.ask_status.pack(side=tk.LEFT)
+
+        self.reply_frame = ttk.LabelFrame(
+            self.root,
+            text="GM reply debug (raw model output)",
+        )
+        self.reply_box = tk.Text(self.reply_frame, height=8, font=("Georgia", 11))
         self.reply_box.pack(fill=tk.X, expand=True, padx=10, pady=10)
-        ttk.Button(reply_frame, text="Process", command=self.process_reply).pack(side=tk.RIGHT, padx=10)
+        ttk.Button(
+            self.reply_frame, text="Process", command=self.process_reply
+        ).pack(side=tk.RIGHT, padx=10, pady=(0, 10))
+        self._reply_debug_visible = False
+        self.apply_ui_preferences()
 
     def refresh_campaign_chrome(self):
         self._loading_campaigns = True
@@ -289,6 +310,36 @@ class MainWindow:
         self.action_entry.delete(0, tk.END)
         messagebox.showinfo("Copied", "Prompt copied to clipboard.")
 
+    def apply_ui_preferences(self):
+        """Show or hide debug-only controls from saved UI settings."""
+        visible = show_gm_reply_debug(load_config(self.config_path))
+        if visible and not self._reply_debug_visible:
+            self.reply_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
+            self._reply_debug_visible = True
+        elif not visible and self._reply_debug_visible:
+            self.reply_frame.pack_forget()
+            self._reply_debug_visible = False
+
+    def _set_ask_busy(self, busy: bool, *, model: str = "") -> None:
+        self._ask_busy = busy
+        if busy:
+            label = "Asking GM…"
+            if model:
+                label = f"Asking GM ({model})…"
+            self.ask_status_var.set(label)
+            self.ask_button.configure(text="Asking…")
+            self.ask_button.state(["disabled"])
+            self.copy_prompt_button.state(["disabled"])
+            self.action_entry.configure(state="disabled")
+            self.root.config(cursor="watch")
+        else:
+            self.ask_status_var.set("")
+            self.ask_button.configure(text="Ask GM")
+            self.ask_button.state(["!disabled"])
+            self.copy_prompt_button.state(["!disabled"])
+            self.action_entry.configure(state="normal")
+            self.root.config(cursor="")
+
     def ask_gm(self):
         if self._ask_busy:
             return
@@ -306,10 +357,14 @@ class MainWindow:
         )
         settings = load_config(self.config_path)["llm"]
         tool_db_path = self.db_path
+        model_name = str(settings.get("model") or "").strip()
         self.log_panel.add_entry("Player", action)
         self.action_entry.delete(0, tk.END)
-        self._ask_busy = True
-        self.ask_button.state(["disabled"])
+        self._set_ask_busy(True, model=model_name)
+        self.log_panel.add_entry(
+            "System",
+            f"Asking GM{' (' + model_name + ')' if model_name else ''}…",
+        )
 
         def work():
             try:
@@ -327,19 +382,20 @@ class MainWindow:
         threading.Thread(target=work, daemon=True).start()
 
     def _ask_failed(self, exc):
-        self._ask_busy = False
-        self.ask_button.state(["!disabled"])
+        self._set_ask_busy(False)
         self.log_panel.add_entry("System", f"Model request failed: {exc}")
         messagebox.showerror("Model", str(exc))
 
     def _ask_finished(self, reply):
-        self._ask_busy = False
-        self.ask_button.state(["!disabled"])
-        self.reply_box.delete("1.0", tk.END)
-        self.reply_box.insert("1.0", reply)
+        self._set_ask_busy(False)
+        if self._reply_debug_visible:
+            self.reply_box.delete("1.0", tk.END)
+            self.reply_box.insert("1.0", reply)
         self._apply_reply_text(reply)
 
     def process_reply(self):
+        if not self._reply_debug_visible:
+            return
         reply = self.reply_box.get("1.0", tk.END).strip()
         if not reply:
             return
