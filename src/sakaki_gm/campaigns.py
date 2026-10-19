@@ -226,7 +226,7 @@ def remove_campaign(config_path, campaign_id: str, campaigns_dir=CAMPAIGNS_DIR) 
     """Drop a bottle from the registry.
 
     The file is deleted only when it lives under campaigns_dir. A project
-    database such as pygm_campaign.db stays on disk.
+    database such as the legacy campaign file in the repo root stays on disk.
     """
     cfg = load_config(config_path)
     entry = next((item for item in cfg["campaigns"] if item["id"] == campaign_id), None)
