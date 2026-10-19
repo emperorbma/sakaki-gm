@@ -17,7 +17,14 @@ from sakaki_gm.campaigns import (
 )
 from sakaki_gm.character_db import create_character
 from sakaki_gm.db import LEGACY_DB, get_db, migrate
-from sakaki_gm.gm import apply_updates, build_messages, parse_reply
+from sakaki_gm.gm import (
+    apply_proposals,
+    apply_updates,
+    build_messages,
+    citation_messages,
+    normalize_proposals,
+    parse_reply,
+)
 from sakaki_gm.llm_client import complete, list_models
 from sakaki_gm.llm_config import load_config, model_profile_key
 from sakaki_gm.object_graph_db import create_object, create_object_link
@@ -1205,12 +1212,13 @@ def test_saved_system_prompt_replaces_the_instruction_note(tmp_path):
 def test_apply_updates_accepts_hp_alias_and_events(tmp_path):
     db = get_db(tmp_path / "campaign.db")
     create_character(db, "Serina", {"name": "Serina", "hp_current": 11, "hp_max": 11, "class": "Wizard"})
-    narration, updates = parse_reply(
+    parsed = parse_reply(
         'The crown hums.\n{"narration": "The crown hums.", "updates": '
         '{"characters": {"Serina": {"hp": 8, "max_hp": 11}}, '
         '"world": {"location": "Starfall\'s End", "events": "attuned the crown"}}}'
     )
-    assert narration == "The crown hums."
+    assert parsed.narration == "The crown hums."
+    updates = parsed.updates
     messages = apply_updates(db, updates)
     assert "State updated" in messages
     data = json.loads(db.execute("SELECT data FROM characters WHERE name='Serina'").fetchone()["data"])
@@ -1226,6 +1234,76 @@ def test_apply_updates_accepts_hp_alias_and_events(tmp_path):
     assert events == ["one", "two"]
     messages = apply_updates(db, {"characters": {"Nobody": {"hp_current": 1}}})
     assert any(line.startswith("Unknown character") for line in messages)
+    db.close()
+
+
+def test_parse_reply_extracts_citations_and_spend_use_proposals():
+    parsed = parse_reply(
+        json.dumps({
+            "narration": "The ward opens Detect Magic.",
+            "updates": {"world": {"events": "examined the reagents"}},
+            "cited_record_ids": ["object:catalog-item:4", "object:catalog-item:4", ""],
+            "proposals": [
+                {
+                    "op": "spend_use",
+                    "character": "Serina",
+                    "item_object_id": "catalog-item:4",
+                    "use": "detect_magic",
+                    "summary": "Ward Detect Magic spent until long rest",
+                    "record_id": "object:catalog-item:4",
+                },
+                {"op": "rewrite_notes", "summary": "unsupported"},
+                {"op": "spend_use", "character": "Serina"},
+            ],
+        })
+    )
+    assert parsed.cited_record_ids == ["object:catalog-item:4"]
+    assert len(parsed.proposals) == 1
+    assert parsed.proposals[0]["op"] == "spend_use"
+    assert parsed.proposals[0]["use"] == "detect_magic"
+    assert normalize_proposals([{"op": "nope"}]) == []
+
+
+def test_citation_messages_report_known_and_unknown_ids():
+    from sakaki_gm.scratch_context import ScratchContext
+
+    scratch = ScratchContext(context_id="turn")
+    scratch.stage_object({
+        "object_id": "catalog-item:4",
+        "name": "Serpentine Lunar Echo Ward",
+        "object_type": "item",
+        "geography_kind": None,
+        "description": "Once per long rest, cast Detect Magic.",
+    })
+    assert citation_messages(None, ["object:catalog-item:4"])[0].startswith(
+        "Cited record IDs were present"
+    )
+    lines = citation_messages(
+        scratch,
+        ["object:catalog-item:4", "document:missing"],
+    )
+    assert any(line.startswith("Cited 1 scratch record") for line in lines)
+    assert any("document:missing" in line for line in lines)
+
+
+def test_apply_proposals_records_spend_use_on_character(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    create_character(db, "Serina", {"name": "Serina", "hp_current": 11})
+    messages = apply_proposals(db, [{
+        "op": "spend_use",
+        "character": "Serina",
+        "item_object_id": "catalog-item:4",
+        "use": "detect_magic",
+        "summary": "Ward Detect Magic spent until long rest",
+    }])
+    assert any(line.startswith("Recorded spent use") for line in messages)
+    assert "Proposals applied" in messages
+    data = json.loads(
+        db.execute("SELECT data FROM characters WHERE name='Serina'").fetchone()["data"]
+    )
+    assert data["spent_uses"][0]["use"] == "detect_magic"
+    assert data["spent_uses"][0]["item_object_id"] == "catalog-item:4"
+    assert "spent_at" in data["spent_uses"][0]
     db.close()
 
 

@@ -21,9 +21,18 @@ from sakaki_gm.campaigns import (
     set_active,
 )
 from sakaki_gm.db import get_db
-from sakaki_gm.gm import apply_updates, build_messages, format_clipboard, parse_reply
+from sakaki_gm.gm import (
+    apply_proposals,
+    apply_updates,
+    build_messages,
+    citation_messages,
+    format_clipboard,
+    parse_reply,
+    proposal_summary_lines,
+)
 from sakaki_gm.llm_client import complete
 from sakaki_gm.llm_config import CONFIG_PATH, load_config, show_gm_reply_debug
+from sakaki_gm.scratch_context import ScratchContext
 from sakaki_gm.ui.log_panel import LogPanel
 from sakaki_gm.ui.modules.characters import CharactersModule
 from sakaki_gm.ui.modules.documents import DocumentsModule
@@ -422,6 +431,7 @@ class MainWindow:
         settings = load_config(self.config_path)["llm"]
         tool_db_path = self.db_path
         model_name = str(settings.get("model") or "").strip()
+        turn_scratch = ScratchContext()
         self.log_panel.add_entry("Player", action)
         self.action_entry.delete(0, tk.END)
         self._set_ask_busy(True, model=model_name)
@@ -437,11 +447,17 @@ class MainWindow:
                     system,
                     user,
                     tool_db_path=tool_db_path,
+                    scratch=turn_scratch,
                 )
             except Exception as exc:
                 self.root.after(0, lambda err=exc: self._ask_failed(err))
                 return
-            self.root.after(0, lambda text=reply: self._ask_finished(text))
+            self.root.after(
+                0,
+                lambda text=reply, scratch=turn_scratch: self._ask_finished(
+                    text, scratch
+                ),
+            )
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -450,12 +466,12 @@ class MainWindow:
         self.log_panel.add_entry("System", f"Model request failed: {exc}")
         messagebox.showerror("Model", str(exc))
 
-    def _ask_finished(self, reply):
+    def _ask_finished(self, reply, scratch=None):
         self._set_ask_busy(False)
         if self._reply_debug_visible:
             self.reply_box.delete("1.0", tk.END)
             self.reply_box.insert("1.0", reply)
-        self._apply_reply_text(reply)
+        self._apply_reply_text(reply, scratch=scratch)
 
     def process_reply(self):
         if not self._reply_debug_visible:
@@ -467,19 +483,48 @@ class MainWindow:
         self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
         self.reply_box.delete("1.0", tk.END)
-        self._apply_reply_text(reply)
+        self._apply_reply_text(reply, scratch=None)
 
-    def _apply_reply_text(self, reply: str):
-        narration, updates = parse_reply(reply)
-        self.log_panel.add_entry("GM", narration or reply)
-        if updates:
-            for line in apply_updates(self.db, updates):
+    def _apply_reply_text(self, reply: str, *, scratch=None):
+        parsed = parse_reply(reply)
+        self.log_panel.add_entry("GM", parsed.narration or reply)
+        for line in citation_messages(scratch, parsed.cited_record_ids):
+            self.log_panel.add_entry("System", line)
+        if parsed.updates:
+            for line in apply_updates(self.db, parsed.updates):
                 self.log_panel.add_entry("System", line)
         else:
             self.log_panel.add_entry("System", "No state updates in the reply")
+        if parsed.proposals:
+            self._review_proposals(parsed.proposals, scratch=scratch)
         self.characters_module.refresh()
         self.load_location()
         self.world_module.reload()
+
+    def _review_proposals(self, proposals, *, scratch=None):
+        proposal_record_ids = [
+            proposal["record_id"]
+            for proposal in proposals
+            if isinstance(proposal.get("record_id"), str)
+        ]
+        for line in citation_messages(scratch, proposal_record_ids):
+            if line.startswith("Unknown"):
+                self.log_panel.add_entry("System", line)
+        summaries = proposal_summary_lines(proposals)
+        for summary in summaries:
+            self.log_panel.add_entry("System", f"Proposal pending: {summary}")
+        body = "\n".join(f"• {line}" for line in summaries)
+        if not messagebox.askyesno(
+            "GM proposals",
+            "The GM proposed writes that need approval before they change "
+            "the campaign:\n\n"
+            f"{body}\n\n"
+            "Apply these proposals now?",
+        ):
+            self.log_panel.add_entry("System", "Proposals declined")
+            return
+        for line in apply_proposals(self.db, proposals):
+            self.log_panel.add_entry("System", line)
 
     def quick_roll(self, sides):
         import random
