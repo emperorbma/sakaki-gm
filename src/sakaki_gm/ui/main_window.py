@@ -523,7 +523,7 @@ class MainWindow:
         ):
             self.log_panel.add_entry("System", "Proposals declined")
             return
-        for line in apply_proposals(self.db, proposals):
+        for line in apply_proposals(self.db, proposals, scratch=scratch):
             self.log_panel.add_entry("System", line)
 
     def quick_roll(self, sides):

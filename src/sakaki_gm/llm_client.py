@@ -54,6 +54,10 @@ def complete(
             create, model, messages, tool_db_path, turn_scratch
         )
 
+    try:
+        turn_scratch.check_deadline()
+    except ScratchBudgetExceeded as exc:
+        raise RuntimeError(str(exc)) from exc
     query = user.rsplit("PLAYER ACTION\n", 1)[-1]
     context = _retrieve_campaign_context(tool_db_path, query, turn_scratch)
     messages[1]["content"] = (
@@ -128,6 +132,10 @@ def _complete_with_campaign_tools(
     db.row_factory = sqlite3.Row
     try:
         for round_index in range(scratch.max_rounds):
+            try:
+                scratch.check_deadline()
+            except ScratchBudgetExceeded as exc:
+                raise RuntimeError(str(exc)) from exc
             response = create(
                 model=model,
                 messages=messages,

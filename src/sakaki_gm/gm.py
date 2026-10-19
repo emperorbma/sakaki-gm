@@ -11,12 +11,21 @@ from sakaki_gm.item_db import (
     get_items,
 )
 from sakaki_gm.quest_db import get_quest_characters, get_quests
+from sakaki_gm.scratch_context import snapshot_revision
 from sakaki_gm.skill_db import get_character_skills, skill_bonus
 
 HP_CURRENT = "hp_current"
 HP_MAX = "hp_max"
 OBSOLETE_REFERENCE_PREFIX = "[OBSOLETE REFERENCE]"
-SUPPORTED_PROPOSAL_OPS = frozenset({"spend_use"})
+SUPPORTED_PROPOSAL_OPS = frozenset({
+    "spend_use",
+    "inventory_add",
+    "inventory_update",
+    "inventory_remove",
+    "note_append",
+    "link_create",
+})
+ALLOWED_LINK_RELATIONS = frozenset({"located_at", "contains"})
 
 JSON_CONTRACT = """Reply with one JSON object and no other text:
 {
@@ -40,7 +49,8 @@ Use the exact character names as keys. Omit a character to leave them unchanged.
 Hit points are hp_current and hp_max. For world.events, a string is appended and a list replaces the log.
 cited_record_ids lists scratch record_id values you relied on; use [] if none.
 proposals are suggested writes that need approval; never put them inside updates.
-Supported proposal ops: spend_use.
+Supported proposal ops: spend_use, inventory_add, inventory_update, inventory_remove,
+note_append, link_create (located_at or contains only).
 """
 
 
@@ -320,15 +330,57 @@ def normalize_proposals(value) -> list[dict]:
         if not isinstance(op, str) or op.strip() not in SUPPORTED_PROPOSAL_OPS:
             continue
         proposal = {"op": op.strip()}
-        for key in ("character", "item_object_id", "use", "summary", "record_id"):
+        for key in (
+            "character",
+            "item_object_id",
+            "use",
+            "summary",
+            "record_id",
+            "text",
+            "relation",
+            "from_object_id",
+            "to_object_id",
+            "notes",
+            "equipment_location",
+        ):
             raw = item.get(key)
             if isinstance(raw, str) and raw.strip():
                 proposal[key] = raw.strip()
-        if proposal["op"] == "spend_use":
-            if "character" not in proposal or "use" not in proposal:
-                continue
+        if "text" not in proposal and isinstance(item.get("content"), str):
+            content = item["content"].strip()
+            if content:
+                proposal["text"] = content
+        note_id = item.get("note_id")
+        if isinstance(note_id, int) and not isinstance(note_id, bool):
+            proposal["note_id"] = note_id
+        elif isinstance(note_id, str) and note_id.strip().isdigit():
+            proposal["note_id"] = int(note_id.strip())
+        quantity = item.get("quantity")
+        if isinstance(quantity, int) and not isinstance(quantity, bool) and quantity >= 1:
+            proposal["quantity"] = quantity
+        if isinstance(item.get("attuned"), bool):
+            proposal["attuned"] = item["attuned"]
+        if not _proposal_required_fields(proposal):
+            continue
         proposals.append(proposal)
     return proposals
+
+
+def _proposal_required_fields(proposal: dict) -> bool:
+    op = proposal["op"]
+    if op == "spend_use":
+        return "character" in proposal and "use" in proposal
+    if op in {"inventory_add", "inventory_update", "inventory_remove"}:
+        return "character" in proposal and "item_object_id" in proposal
+    if op == "note_append":
+        return "note_id" in proposal and "text" in proposal
+    if op == "link_create":
+        return (
+            proposal.get("relation") in ALLOWED_LINK_RELATIONS
+            and "from_object_id" in proposal
+            and "to_object_id" in proposal
+        )
+    return False
 
 
 def citation_messages(scratch, cited_record_ids) -> list[str]:
@@ -363,13 +415,28 @@ def proposal_summary_lines(proposals: list[dict]) -> list[str]:
         if summary:
             lines.append(f"{proposal['op']}: {summary}")
             continue
-        if proposal["op"] == "spend_use":
+        op = proposal["op"]
+        if op == "spend_use":
             target = proposal.get("item_object_id") or "item"
             lines.append(
                 f"spend_use: {proposal['character']} / {proposal['use']} ({target})"
             )
+        elif op.startswith("inventory_"):
+            lines.append(
+                f"{op}: {proposal['character']} / {proposal['item_object_id']}"
+            )
+        elif op == "note_append":
+            preview = proposal["text"]
+            if len(preview) > 80:
+                preview = preview[:77] + "..."
+            lines.append(f"note_append: note {proposal['note_id']} — {preview}")
+        elif op == "link_create":
+            lines.append(
+                f"link_create: {proposal['relation']} "
+                f"{proposal['from_object_id']} → {proposal['to_object_id']}"
+            )
         else:
-            lines.append(proposal["op"])
+            lines.append(op)
     return lines
 
 
@@ -433,20 +500,33 @@ def apply_updates(db, updates: dict) -> list:
     return messages
 
 
-def apply_proposals(db, proposals: list[dict]) -> list:
+def apply_proposals(db, proposals: list[dict], *, scratch=None) -> list:
     """Apply approved proposals. Returns log lines."""
     if not proposals:
         return ["No proposals to apply"]
     messages = []
     changed = False
+    handlers = {
+        "spend_use": _apply_spend_use,
+        "inventory_add": _apply_inventory_add,
+        "inventory_update": _apply_inventory_update,
+        "inventory_remove": _apply_inventory_remove,
+        "note_append": _apply_note_append,
+        "link_create": _apply_link_create,
+    }
     for proposal in normalize_proposals(proposals):
-        if proposal["op"] == "spend_use":
-            line = _apply_spend_use(db, proposal)
-            messages.append(line)
-            if not line.startswith("Skipped"):
-                changed = True
-        else:
+        conflict = _revision_conflict(db, scratch, proposal)
+        if conflict is not None:
+            messages.append(conflict)
+            continue
+        handler = handlers.get(proposal["op"])
+        if handler is None:
             messages.append(f"Skipped unsupported proposal op {proposal['op']!r}")
+            continue
+        line = handler(db, proposal)
+        messages.append(line)
+        if not line.startswith("Skipped"):
+            changed = True
     if changed:
         db.commit()
         messages.append("Proposals applied")
@@ -455,12 +535,114 @@ def apply_proposals(db, proposals: list[dict]) -> list:
     return messages
 
 
+def live_record_revision(db, record_type: str, canonical_key: str) -> str | None:
+    """Fingerprint the live campaign row matching a scratch record."""
+    if record_type == "document":
+        try:
+            note_id = int(canonical_key)
+        except (TypeError, ValueError):
+            return None
+        row = db.execute(
+            "SELECT id, title, content FROM notes WHERE id=?",
+            (note_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return snapshot_revision({
+            "id": row["id"],
+            "title": row["title"],
+            "content": row["content"] or "",
+        })
+    if record_type == "object":
+        row = db.execute(
+            """
+            SELECT object_id, name, object_type, geography_kind, description,
+                   properties
+            FROM objects WHERE object_id=?
+            """,
+            (canonical_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return snapshot_revision({
+            "object_id": row["object_id"],
+            "name": row["name"],
+            "object_type": row["object_type"],
+            "geography_kind": row["geography_kind"],
+            "description": row["description"] or "",
+            "properties": row["properties"],
+        })
+    return None
+
+
+def _revision_conflict(db, scratch, proposal: dict) -> str | None:
+    record_id = proposal.get("record_id")
+    if not record_id:
+        return None
+    if scratch is None:
+        return (
+            f"Skipped {proposal['op']}: record_id {record_id!r} could not be "
+            "verified without scratch."
+        )
+    entry = scratch.get(record_id)
+    if entry is None:
+        return f"Skipped {proposal['op']}: unknown record_id {record_id!r}"
+    live = live_record_revision(db, entry["type"], entry["canonical_key"])
+    if live is None:
+        return (
+            f"Skipped {proposal['op']}: record {record_id!r} no longer exists"
+        )
+    if live != entry["revision"]:
+        return (
+            f"Skipped {proposal['op']}: record {record_id!r} changed since "
+            "the scratch snapshot"
+        )
+    return None
+
+
+def _character_row(db, name: str):
+    return db.execute(
+        "SELECT id, name, data FROM characters WHERE name=?",
+        (name,),
+    ).fetchone()
+
+
+def _catalog_item_exists(db, item_object_id: str) -> bool:
+    row = db.execute(
+        "SELECT 1 FROM objects WHERE object_id=? AND object_type='item'",
+        (item_object_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _find_inventory_item_link(db, character_id: int, item_object_id: str):
+    root_id = get_character_inventory_container(db, character_id)
+    return db.execute(
+        """
+        WITH RECURSIVE inv(object_id) AS (
+            SELECT ?
+            UNION
+            SELECT object_links.to_object_id
+            FROM object_links
+            JOIN inv ON object_links.from_object_id = inv.object_id
+            WHERE object_links.relation = 'contains'
+        )
+        SELECT object_links.id, object_links.from_object_id, object_links.properties
+        FROM object_links
+        JOIN inv ON object_links.from_object_id = inv.object_id
+        WHERE object_links.relation = 'contains'
+          AND object_links.to_object_id = ?
+        ORDER BY object_links.id
+        LIMIT 1
+        """,
+        (root_id, item_object_id),
+    ).fetchone()
+
+
 def _apply_spend_use(db, proposal: dict) -> str:
     name = proposal["character"]
     use = proposal["use"]
-    row = db.execute(
-        "SELECT id, data FROM characters WHERE name=?", (name,)
-    ).fetchone()
+    row = _character_row(db, name)
     if row is None:
         return f"Skipped spend_use for unknown character: {name}"
     try:
@@ -490,6 +672,128 @@ def _apply_spend_use(db, proposal: dict) -> str:
     )
     label = proposal.get("summary") or f"{name}: {use}"
     return f"Recorded spent use — {label}"
+
+
+def _apply_inventory_add(db, proposal: dict) -> str:
+    name = proposal["character"]
+    item_id = proposal["item_object_id"]
+    row = _character_row(db, name)
+    if row is None:
+        return f"Skipped inventory_add for unknown character: {name}"
+    if not _catalog_item_exists(db, item_id):
+        return f"Skipped inventory_add: unknown item {item_id!r}"
+    if _find_inventory_item_link(db, row["id"], item_id) is not None:
+        return f"Skipped inventory_add: {name} already has {item_id}"
+    root_id = get_character_inventory_container(db, row["id"])
+    properties = {
+        "quantity": proposal.get("quantity", 1),
+        "attuned": bool(proposal.get("attuned", False)),
+        "equipment_location": proposal.get("equipment_location", ""),
+    }
+    db.execute(
+        """
+        INSERT INTO object_links (
+            relation, from_object_id, to_object_id, properties, notes
+        ) VALUES ('contains', ?, ?, ?, '')
+        """,
+        (root_id, item_id, json.dumps(properties, ensure_ascii=False)),
+    )
+    return f"Added {item_id} to {name}'s inventory"
+
+
+def _apply_inventory_update(db, proposal: dict) -> str:
+    name = proposal["character"]
+    item_id = proposal["item_object_id"]
+    row = _character_row(db, name)
+    if row is None:
+        return f"Skipped inventory_update for unknown character: {name}"
+    link = _find_inventory_item_link(db, row["id"], item_id)
+    if link is None:
+        return f"Skipped inventory_update: {name} does not have {item_id}"
+    try:
+        properties = json.loads(link["properties"])
+    except json.JSONDecodeError:
+        properties = {}
+    if not isinstance(properties, dict):
+        properties = {}
+    if "quantity" in proposal:
+        properties["quantity"] = proposal["quantity"]
+    if "attuned" in proposal:
+        properties["attuned"] = proposal["attuned"]
+    if "equipment_location" in proposal:
+        properties["equipment_location"] = proposal["equipment_location"]
+    db.execute(
+        "UPDATE object_links SET properties=? WHERE id=?",
+        (json.dumps(properties, ensure_ascii=False), link["id"]),
+    )
+    return f"Updated {item_id} in {name}'s inventory"
+
+
+def _apply_inventory_remove(db, proposal: dict) -> str:
+    name = proposal["character"]
+    item_id = proposal["item_object_id"]
+    row = _character_row(db, name)
+    if row is None:
+        return f"Skipped inventory_remove for unknown character: {name}"
+    link = _find_inventory_item_link(db, row["id"], item_id)
+    if link is None:
+        return f"Skipped inventory_remove: {name} does not have {item_id}"
+    db.execute("DELETE FROM object_links WHERE id=?", (link["id"],))
+    return f"Removed {item_id} from {name}'s inventory"
+
+
+def _apply_note_append(db, proposal: dict) -> str:
+    note_id = proposal["note_id"]
+    row = db.execute(
+        "SELECT id, title, content FROM notes WHERE id=?",
+        (note_id,),
+    ).fetchone()
+    if row is None:
+        return f"Skipped note_append: unknown note {note_id}"
+    existing = row["content"] or ""
+    addition = proposal["text"]
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    db.execute(
+        "UPDATE notes SET content=? WHERE id=?",
+        (existing + addition, note_id),
+    )
+    title = row["title"] or f"note {note_id}"
+    return f"Appended to note {note_id} ({title})"
+
+
+def _apply_link_create(db, proposal: dict) -> str:
+    relation = proposal["relation"]
+    from_id = proposal["from_object_id"]
+    to_id = proposal["to_object_id"]
+    if from_id == to_id:
+        return "Skipped link_create: an object cannot link to itself"
+    for object_id in (from_id, to_id):
+        if db.execute(
+            "SELECT 1 FROM objects WHERE object_id=?", (object_id,)
+        ).fetchone() is None:
+            return f"Skipped link_create: unknown object {object_id!r}"
+    existing = db.execute(
+        """
+        SELECT 1 FROM object_links
+        WHERE relation=? AND from_object_id=? AND to_object_id=?
+        LIMIT 1
+        """,
+        (relation, from_id, to_id),
+    ).fetchone()
+    if existing is not None:
+        return (
+            f"Skipped link_create: {relation} {from_id} → {to_id} already exists"
+        )
+    db.execute(
+        """
+        INSERT INTO object_links (
+            relation, from_object_id, to_object_id, properties, notes
+        ) VALUES (?, ?, ?, '{}', ?)
+        """,
+        (relation, from_id, to_id, proposal.get("notes", "")),
+    )
+    return f"Created {relation} link {from_id} → {to_id}"
 
 
 def _write_events(db, value):

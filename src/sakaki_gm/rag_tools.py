@@ -2,6 +2,8 @@
 import json
 import re
 
+from sakaki_gm.scratch_context import snapshot_revision
+
 
 _CONTEXT_STOP_WORDS = {
     "a", "about", "after", "all", "also", "an", "and", "answer", "answering",
@@ -146,8 +148,8 @@ def retrieve_campaign_context(
     documents = search_documents(db, search_query, document_limit)
     objects = search_objects(db, search_query, object_limit)
     if scratch is not None:
-        documents = _stage_documents(scratch, documents)
-        objects = _stage_objects(scratch, objects)
+        documents = _stage_documents(scratch, documents, db)
+        objects = _stage_objects(scratch, objects, db)
         return scratch.export_prompt_pack(include_ids=True) | {
             "location_inference": LOCATION_INFERENCE,
         }
@@ -171,14 +173,14 @@ def execute_campaign_tool(db, name: str, arguments: dict, *, scratch=None) -> di
             db, arguments.get("query"), arguments.get("limit", 5)
         )
         if scratch is not None:
-            documents = _stage_documents(scratch, documents)
+            documents = _stage_documents(scratch, documents, db)
         result = {"documents": documents}
     elif name == "search_objects":
         objects = search_objects(
             db, arguments.get("query"), arguments.get("limit", 5)
         )
         if scratch is not None:
-            objects = _stage_objects(scratch, objects)
+            objects = _stage_objects(scratch, objects, db)
         result = {
             "objects": objects,
             "location_inference": LOCATION_INFERENCE,
@@ -189,14 +191,14 @@ def execute_campaign_tool(db, name: str, arguments: dict, *, scratch=None) -> di
             staged = dict(result["object"])
             staged["properties"] = result.get("properties")
             staged["relationships"] = result.get("relationships")
-            record_id = scratch.stage_object(staged)
+            record_id = _stage_objects(scratch, [staged], db)[0]["record_id"]
             result = {**result, "record_id": record_id}
     elif name == "inspect_location":
         result = inspect_location(db, arguments.get("location_object_id"))
         if scratch is not None and "location" in result:
             location = dict(result["location"])
             if location.get("object_id"):
-                record_id = scratch.stage_object(location)
+                record_id = _stage_objects(scratch, [location], db)[0]["record_id"]
                 result = {**result, "record_id": record_id}
     else:
         raise ValueError(f"Unknown campaign lookup tool {name!r}.")
@@ -209,18 +211,60 @@ def execute_campaign_tool(db, name: str, arguments: dict, *, scratch=None) -> di
     return result
 
 
-def _stage_documents(scratch, documents: list[dict]) -> list[dict]:
+def _stage_documents(scratch, documents: list[dict], db=None) -> list[dict]:
     staged = []
     for document in documents:
-        record_id = scratch.stage_document(document)
+        revision = None
+        if db is not None and document.get("id") is not None:
+            row = db.execute(
+                "SELECT id, title, content FROM notes WHERE id=?",
+                (document["id"],),
+            ).fetchone()
+            if row is not None:
+                revision = snapshot_revision({
+                    "id": row["id"],
+                    "title": row["title"],
+                    "content": row["content"] or "",
+                })
+        record_id = scratch.stage(
+            "document",
+            str(document["id"]),
+            document,
+            revision=revision,
+        )
         staged.append({**document, "record_id": record_id})
     return staged
 
 
-def _stage_objects(scratch, objects: list[dict]) -> list[dict]:
+def _stage_objects(scratch, objects: list[dict], db=None) -> list[dict]:
     staged = []
     for obj in objects:
-        record_id = scratch.stage_object(obj)
+        revision = None
+        object_id = obj.get("object_id")
+        if db is not None and object_id:
+            row = db.execute(
+                """
+                SELECT object_id, name, object_type, geography_kind, description,
+                       properties
+                FROM objects WHERE object_id=?
+                """,
+                (object_id,),
+            ).fetchone()
+            if row is not None:
+                revision = snapshot_revision({
+                    "object_id": row["object_id"],
+                    "name": row["name"],
+                    "object_type": row["object_type"],
+                    "geography_kind": row["geography_kind"],
+                    "description": row["description"] or "",
+                    "properties": row["properties"],
+                })
+        record_id = scratch.stage(
+            "object",
+            str(object_id),
+            obj,
+            revision=revision,
+        )
         staged.append({**obj, "record_id": record_id})
     return staged
 
