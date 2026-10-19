@@ -135,12 +135,33 @@ def register_file(config_path, db_path) -> str:
     return cid
 
 
+def campaign_backup_dir(db_path, backup_dir=None) -> Path:
+    """Return the directory that stores timestamped backups for a campaign file."""
+    source_path = Path(db_path).resolve()
+    return Path(backup_dir) if backup_dir else source_path.parent / "backups"
+
+
+def list_campaign_backups(db_path, backup_dir=None) -> list[Path]:
+    """Return backup files for a campaign, newest first."""
+    directory = campaign_backup_dir(db_path, backup_dir)
+    if not directory.is_dir():
+        return []
+    return sorted(
+        (
+            path for path in directory.iterdir()
+            if path.is_file() and path.suffix.casefold() == ".db"
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+
 def create_campaign_backup(db, db_path, backup_dir=None) -> Path:
     """Create a timestamped SQLite snapshot without changing campaign state."""
     source_path = Path(db_path).resolve()
     if not source_path.is_file():
         raise FileNotFoundError(f"Campaign database does not exist: {source_path}")
-    directory = Path(backup_dir) if backup_dir else source_path.parent / "backups"
+    directory = campaign_backup_dir(source_path, backup_dir)
     directory.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
@@ -160,6 +181,45 @@ def create_campaign_backup(db, db_path, backup_dir=None) -> Path:
         temporary_path.unlink(missing_ok=True)
         raise
     return backup_path
+
+
+def restore_campaign_from_backup(
+    db,
+    db_path,
+    backup_path,
+    *,
+    make_safety_backup=True,
+    backup_dir=None,
+) -> Path | None:
+    """Replace the live campaign database contents with a backup snapshot.
+
+    The open connection is reused: backup rows are copied into it rather than
+    swapping the file underneath. When make_safety_backup is true, a timestamped
+    snapshot of the current campaign is written first and its path is returned.
+    """
+    source_path = Path(db_path).resolve()
+    snapshot_path = Path(backup_path).resolve()
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Campaign database does not exist: {source_path}")
+    if not snapshot_path.is_file():
+        raise FileNotFoundError(f"Campaign backup does not exist: {snapshot_path}")
+    if snapshot_path == source_path:
+        raise ValueError("Cannot restore a campaign from its own live database file.")
+
+    safety_path = None
+    if make_safety_backup:
+        safety_path = create_campaign_backup(db, source_path, backup_dir=backup_dir)
+
+    uri = snapshot_path.as_uri() + "?mode=ro"
+    snapshot = sqlite3.connect(uri, uri=True)
+    try:
+        snapshot.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+        db.commit()
+        snapshot.backup(db)
+        db.commit()
+    finally:
+        snapshot.close()
+    return safety_path
 
 
 def remove_campaign(config_path, campaign_id: str, campaigns_dir=CAMPAIGNS_DIR) -> Path:

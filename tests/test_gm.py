@@ -10,8 +10,10 @@ from sakaki_gm.campaigns import (
     bootstrap,
     create_campaign_backup,
     create_campaign,
+    list_campaign_backups,
     register_file,
     remove_campaign,
+    restore_campaign_from_backup,
 )
 from sakaki_gm.character_db import create_character
 from sakaki_gm.db import LEGACY_DB, get_db, migrate
@@ -409,6 +411,66 @@ def test_campaign_backup_creates_timestamped_snapshot(tmp_path):
         ).fetchone()[0] == "Unsaved location"
     finally:
         verification_db.close()
+    db.close()
+
+
+def test_restore_campaign_from_backup_replaces_live_state_and_keeps_safety_snapshot(
+    tmp_path,
+):
+    source_path = tmp_path / "campaign.db"
+    db = get_db(source_path)
+    db.execute(
+        "UPDATE world SET value='Before backup' WHERE key='location'"
+    )
+    db.commit()
+    backup_path = create_campaign_backup(db, source_path)
+
+    db.execute(
+        "UPDATE world SET value='Changed after backup' WHERE key='location'"
+    )
+    db.commit()
+    assert db.execute(
+        "SELECT value FROM world WHERE key='location'"
+    ).fetchone()["value"] == "Changed after backup"
+
+    safety_path = restore_campaign_from_backup(db, source_path, backup_path)
+
+    assert safety_path is not None
+    assert safety_path.is_file()
+    assert safety_path != backup_path
+    assert db.execute(
+        "SELECT value FROM world WHERE key='location'"
+    ).fetchone()["value"] == "Before backup"
+    safety_db = sqlite3.connect(safety_path)
+    try:
+        assert safety_db.execute(
+            "SELECT value FROM world WHERE key='location'"
+        ).fetchone()[0] == "Changed after backup"
+    finally:
+        safety_db.close()
+    listed = list_campaign_backups(source_path)
+    assert backup_path in listed
+    assert safety_path in listed
+    db.close()
+
+
+def test_restore_campaign_from_backup_rejects_missing_or_live_file(tmp_path):
+    source_path = tmp_path / "campaign.db"
+    db = get_db(source_path)
+    with pytest.raises(FileNotFoundError):
+        restore_campaign_from_backup(
+            db,
+            source_path,
+            tmp_path / "missing.db",
+            make_safety_backup=False,
+        )
+    with pytest.raises(ValueError):
+        restore_campaign_from_backup(
+            db,
+            source_path,
+            source_path,
+            make_safety_backup=False,
+        )
     db.close()
 
 
