@@ -68,7 +68,7 @@ class MainWindow:
 
         header = ttk.Frame(self.root)
         header.pack(fill=tk.X, padx=15, pady=(12, 4))
-        ttk.Label(header, text="PyGM Core", font=("Georgia", 28, "bold")).pack(side=tk.LEFT)
+        ttk.Label(header, text="Sakaki GM", font=("Georgia", 28, "bold")).pack(side=tk.LEFT)
         ttk.Button(header, text="Remove", command=self.remove_current).pack(side=tk.RIGHT, padx=4)
         ttk.Button(header, text="Restore", command=self.restore_current).pack(side=tk.RIGHT, padx=4)
         ttk.Button(header, text="Backup", command=self.backup_current).pack(side=tk.RIGHT, padx=4)
@@ -160,7 +160,7 @@ class MainWindow:
             self.campaign_combo.current(0)
         self._loading_campaigns = False
         name = self.get_meta("campaign_name", "New Campaign")
-        self.root.title(f"PyGM Core — {name}")
+        self.root.title(f"Sakaki GM — {name}")
         self.load_location()
 
     def load_location(self):

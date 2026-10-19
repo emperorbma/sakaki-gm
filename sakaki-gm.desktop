@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=PyGM Core
+Name=Sakaki GM
 Comment=Local Game Master desk
 Exec=/home/emperorbma/sakaki-gm/start-sakaki-gm.sh
 Path=/home/emperorbma/sakaki-gm
