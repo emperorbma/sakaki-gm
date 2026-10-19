@@ -10,8 +10,10 @@ from sakaki_gm.campaigns import (
     bootstrap,
     create_campaign_backup,
     create_campaign,
+    list_campaign_backups,
     register_file,
     remove_campaign,
+    restore_campaign_from_backup,
 )
 from sakaki_gm.character_db import create_character
 from sakaki_gm.db import LEGACY_DB, get_db, migrate
@@ -412,6 +414,66 @@ def test_campaign_backup_creates_timestamped_snapshot(tmp_path):
     db.close()
 
 
+def test_restore_campaign_from_backup_replaces_live_state_and_keeps_safety_snapshot(
+    tmp_path,
+):
+    source_path = tmp_path / "campaign.db"
+    db = get_db(source_path)
+    db.execute(
+        "UPDATE world SET value='Before backup' WHERE key='location'"
+    )
+    db.commit()
+    backup_path = create_campaign_backup(db, source_path)
+
+    db.execute(
+        "UPDATE world SET value='Changed after backup' WHERE key='location'"
+    )
+    db.commit()
+    assert db.execute(
+        "SELECT value FROM world WHERE key='location'"
+    ).fetchone()["value"] == "Changed after backup"
+
+    safety_path = restore_campaign_from_backup(db, source_path, backup_path)
+
+    assert safety_path is not None
+    assert safety_path.is_file()
+    assert safety_path != backup_path
+    assert db.execute(
+        "SELECT value FROM world WHERE key='location'"
+    ).fetchone()["value"] == "Before backup"
+    safety_db = sqlite3.connect(safety_path)
+    try:
+        assert safety_db.execute(
+            "SELECT value FROM world WHERE key='location'"
+        ).fetchone()[0] == "Changed after backup"
+    finally:
+        safety_db.close()
+    listed = list_campaign_backups(source_path)
+    assert backup_path in listed
+    assert safety_path in listed
+    db.close()
+
+
+def test_restore_campaign_from_backup_rejects_missing_or_live_file(tmp_path):
+    source_path = tmp_path / "campaign.db"
+    db = get_db(source_path)
+    with pytest.raises(FileNotFoundError):
+        restore_campaign_from_backup(
+            db,
+            source_path,
+            tmp_path / "missing.db",
+            make_safety_backup=False,
+        )
+    with pytest.raises(ValueError):
+        restore_campaign_from_backup(
+            db,
+            source_path,
+            source_path,
+            make_safety_backup=False,
+        )
+    db.close()
+
+
 def test_bootstrap_recovers_to_existing_campaign_when_active_path_is_missing(tmp_path):
     config = tmp_path / "config.json"
     campaigns = tmp_path / "campaigns"
@@ -512,6 +574,25 @@ def test_default_config_migrates_old_name_to_sakaki_gm(monkeypatch, tmp_path):
     assert loaded["llm"] == {**previous["llm"], "rag_mode": "tools"}
     assert json.loads(new_config.read_text(encoding="utf-8")) == loaded
     assert json.loads(old_config.read_text(encoding="utf-8")) == previous
+
+
+def test_ui_show_gm_reply_debug_defaults_off_and_loads_bool(tmp_path):
+    from sakaki_gm.llm_config import load_config, save_config, show_gm_reply_debug
+
+    config = tmp_path / "config.json"
+    assert show_gm_reply_debug(load_config(config)) is False
+
+    config.write_text(
+        json.dumps({"ui": {"show_gm_reply_debug": 1}}),
+        encoding="utf-8",
+    )
+    loaded = load_config(config)
+    assert loaded["ui"]["show_gm_reply_debug"] is True
+    assert show_gm_reply_debug(loaded) is True
+
+    loaded["ui"]["show_gm_reply_debug"] = False
+    save_config(loaded, config)
+    assert show_gm_reply_debug(load_config(config)) is False
 
 
 def test_model_capability_profiles_are_validated_and_keyed_per_endpoint(tmp_path):

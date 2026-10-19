@@ -184,6 +184,23 @@ class SettingsModule:
         self.capability_test_button.pack(side=tk.LEFT, padx=4)
         self._capability_test_busy = False
 
+        desk = ttk.LabelFrame(content, text="Desk")
+        desk.pack(fill=tk.X, padx=16, pady=12)
+        ui_cfg = cfg.get("ui") if isinstance(cfg.get("ui"), dict) else {}
+        self.show_gm_reply_debug = tk.BooleanVar(
+            value=bool(ui_cfg.get("show_gm_reply_debug"))
+        )
+        ttk.Checkbutton(
+            desk,
+            text="Show GM reply debug paste (raw model output)",
+            variable=self.show_gm_reply_debug,
+            command=self.save_desk_ui,
+        ).pack(anchor="w", padx=10, pady=8)
+        ttk.Label(
+            desk,
+            text="Off by default. Turn on only when inspecting or re-processing raw replies.",
+        ).pack(anchor="w", padx=10, pady=(0, 8))
+
     def set_db(self, db):
         self.db = db
         self.system_label.config(text=self._system_text())
@@ -300,6 +317,14 @@ class SettingsModule:
         ]
         save_config(cfg, self.main_app.config_path)
         messagebox.showinfo("Saved", "Model settings saved.")
+
+    def save_desk_ui(self):
+        cfg = load_config(self.main_app.config_path)
+        if not isinstance(cfg.get("ui"), dict):
+            cfg["ui"] = {}
+        cfg["ui"]["show_gm_reply_debug"] = bool(self.show_gm_reply_debug.get())
+        save_config(cfg, self.main_app.config_path)
+        self.main_app.apply_ui_preferences()
 
     def test_llm(self):
         settings = self._llm_dict()

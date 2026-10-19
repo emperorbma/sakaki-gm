@@ -44,7 +44,7 @@ Characters have a manually editable **Campaign role** field for labels such as p
 
 The **Quests** tab stores campaign quests by name, free-text status, and description. Add or remove participating characters for each quest; a character can participate in multiple quests. Quest details and linked character names are included in the GM prompt.
 
-Use **Backup** in the campaign header to create a timestamped SQLite snapshot of the current campaign under its `backups` folder. Pending database changes are committed before copying. Backups are not added to the campaign list; use **Open** to restore one as a campaign.
+Use **Backup** in the campaign header to create a timestamped SQLite snapshot of the current campaign under its `backups` folder. Pending database changes are committed before copying. Use **Restore** to replace the open campaign from a chosen `.db` backup (the dialog opens in that campaign’s `backups` folder). Restore writes a safety snapshot of the current campaign first, then copies the backup into the live database and refreshes the desk. Backups are not added to the campaign list; **Open** still registers a separate campaign file when you want a second bottle instead of an in-place restore.
 
 The **Geography** tab is a query view over objects classified with geographic kinds such as region, settlement, area, or point. Objects remain part of a shared object graph and may have other relationships; the geography view does not constrain them to map-only links or grid/hex geometry. Entering a container through a `contains` relationship also offers an inferred exit to its parent when both objects are navigable; it is labeled as inferred rather than treated as a recorded route. Contained items do not automatically become navigable exits.
 
