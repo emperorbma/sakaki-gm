@@ -128,7 +128,14 @@ CAMPAIGN_TOOLS = [
 ]
 
 
-def retrieve_campaign_context(db, query: str, document_limit=4, object_limit=8) -> dict:
+def retrieve_campaign_context(
+    db,
+    query: str,
+    document_limit=4,
+    object_limit=8,
+    *,
+    scratch=None,
+) -> dict:
     terms = list(dict.fromkeys(
         term for term in re.findall(r"[\w'-]+", query.casefold())
         if term not in _CONTEXT_STOP_WORDS
@@ -136,32 +143,86 @@ def retrieve_campaign_context(db, query: str, document_limit=4, object_limit=8) 
     if not terms:
         raise ValueError("The request does not contain searchable campaign terms.")
     search_query = " ".join(terms[:12])
+    documents = search_documents(db, search_query, document_limit)
+    objects = search_objects(db, search_query, object_limit)
+    if scratch is not None:
+        documents = _stage_documents(scratch, documents)
+        objects = _stage_objects(scratch, objects)
+        return scratch.export_prompt_pack(include_ids=True) | {
+            "location_inference": LOCATION_INFERENCE,
+        }
     return {
-        "documents": search_documents(db, search_query, document_limit),
-        "objects": search_objects(db, search_query, object_limit),
+        "documents": documents,
+        "objects": objects,
         "location_inference": LOCATION_INFERENCE,
     }
 
 
-def execute_campaign_tool(db, name: str, arguments: dict) -> dict:
+def execute_campaign_tool(db, name: str, arguments: dict, *, scratch=None) -> dict:
     if not isinstance(arguments, dict):
         raise TypeError("Tool arguments must be a JSON object.")
+    if scratch is not None:
+        # Tool calls belong to this turn's scratch; reject mismatched IDs early.
+        if "context_id" in arguments:
+            scratch.require_context_id(arguments.get("context_id"))
+        scratch.begin_round()
     if name == "search_documents":
-        return {"documents": search_documents(
+        documents = search_documents(
             db, arguments.get("query"), arguments.get("limit", 5)
-        )}
-    if name == "search_objects":
-        return {
-            "objects": search_objects(
-                db, arguments.get("query"), arguments.get("limit", 5)
-            ),
+        )
+        if scratch is not None:
+            documents = _stage_documents(scratch, documents)
+        result = {"documents": documents}
+    elif name == "search_objects":
+        objects = search_objects(
+            db, arguments.get("query"), arguments.get("limit", 5)
+        )
+        if scratch is not None:
+            objects = _stage_objects(scratch, objects)
+        result = {
+            "objects": objects,
             "location_inference": LOCATION_INFERENCE,
         }
-    if name == "inspect_object":
-        return inspect_object(db, arguments.get("object_id"))
-    if name == "inspect_location":
-        return inspect_location(db, arguments.get("location_object_id"))
-    raise ValueError(f"Unknown campaign lookup tool {name!r}.")
+    elif name == "inspect_object":
+        result = inspect_object(db, arguments.get("object_id"))
+        if scratch is not None and "object" in result:
+            staged = dict(result["object"])
+            staged["properties"] = result.get("properties")
+            staged["relationships"] = result.get("relationships")
+            record_id = scratch.stage_object(staged)
+            result = {**result, "record_id": record_id}
+    elif name == "inspect_location":
+        result = inspect_location(db, arguments.get("location_object_id"))
+        if scratch is not None and "location" in result:
+            location = dict(result["location"])
+            if location.get("object_id"):
+                record_id = scratch.stage_object(location)
+                result = {**result, "record_id": record_id}
+    else:
+        raise ValueError(f"Unknown campaign lookup tool {name!r}.")
+    if scratch is not None:
+        result = {
+            "context_id": scratch.context_id,
+            "rounds_used": scratch.rounds_used,
+            **result,
+        }
+    return result
+
+
+def _stage_documents(scratch, documents: list[dict]) -> list[dict]:
+    staged = []
+    for document in documents:
+        record_id = scratch.stage_document(document)
+        staged.append({**document, "record_id": record_id})
+    return staged
+
+
+def _stage_objects(scratch, objects: list[dict]) -> list[dict]:
+    staged = []
+    for obj in objects:
+        record_id = scratch.stage_object(obj)
+        staged.append({**obj, "record_id": record_id})
+    return staged
 
 
 def search_documents(db, query, limit=5) -> list[dict]:
