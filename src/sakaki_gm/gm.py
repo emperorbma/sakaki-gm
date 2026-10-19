@@ -1,5 +1,9 @@
 # gm.py — prompt, reply parsing, and campaign updates
+from __future__ import annotations
+
 import json
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from sakaki_gm.item_db import (
     get_character_inventory_container,
@@ -12,6 +16,7 @@ from sakaki_gm.skill_db import get_character_skills, skill_bonus
 HP_CURRENT = "hp_current"
 HP_MAX = "hp_max"
 OBSOLETE_REFERENCE_PREFIX = "[OBSOLETE REFERENCE]"
+SUPPORTED_PROPOSAL_OPS = frozenset({"spend_use"})
 
 JSON_CONTRACT = """Reply with one JSON object and no other text:
 {
@@ -19,11 +24,32 @@ JSON_CONTRACT = """Reply with one JSON object and no other text:
   "updates": {
     "characters": {"Exact Name": {"hp_current": 8}},
     "world": {"location": "place", "events": ["what just happened"]}
-  }
+  },
+  "cited_record_ids": ["document:11", "object:catalog-item:4"],
+  "proposals": [
+    {
+      "op": "spend_use",
+      "character": "Exact Name",
+      "item_object_id": "catalog-item:4",
+      "use": "detect_magic",
+      "summary": "Ward Detect Magic spent until long rest"
+    }
+  ]
 }
 Use the exact character names as keys. Omit a character to leave them unchanged.
 Hit points are hp_current and hp_max. For world.events, a string is appended and a list replaces the log.
+cited_record_ids lists scratch record_id values you relied on; use [] if none.
+proposals are suggested writes that need approval; never put them inside updates.
+Supported proposal ops: spend_use.
 """
+
+
+@dataclass
+class ParsedReply:
+    narration: str
+    updates: dict | None = None
+    cited_record_ids: list[str] = field(default_factory=list)
+    proposals: list[dict] = field(default_factory=list)
 
 DEFAULT_INSTRUCTIONS = (
     "You are an expert Game Master.\n"
@@ -218,14 +244,14 @@ def format_clipboard(system: str, user: str) -> str:
     return system.rstrip() + "\n\n" + user
 
 
-def parse_reply(text: str):
-    """Return (narration, updates or None)."""
+def parse_reply(text: str) -> ParsedReply:
+    """Parse a GM JSON reply into narration, updates, citations, and proposals."""
     raw = (text or "").strip()
     if not raw:
-        return "", None
+        return ParsedReply(narration="")
     obj = _extract_object(raw)
     if not isinstance(obj, dict):
-        return raw, None
+        return ParsedReply(narration=raw)
     updates = obj.get("updates")
     if not isinstance(updates, dict) and ("characters" in obj or "world" in obj):
         updates = {key: obj[key] for key in ("characters", "world") if key in obj}
@@ -234,7 +260,12 @@ def parse_reply(text: str):
     narration = obj.get("narration")
     if not isinstance(narration, str) or not narration.strip():
         narration = raw
-    return narration.strip(), updates
+    return ParsedReply(
+        narration=narration.strip(),
+        updates=updates,
+        cited_record_ids=_normalize_record_ids(obj.get("cited_record_ids")),
+        proposals=normalize_proposals(obj.get("proposals")),
+    )
 
 
 def _extract_object(text: str):
@@ -256,10 +287,90 @@ def _extract_object(text: str):
             index = start + 1
             continue
         if isinstance(value, dict) and (
-            "updates" in value or "narration" in value or "characters" in value or "world" in value
+            "updates" in value
+            or "narration" in value
+            or "characters" in value
+            or "world" in value
+            or "cited_record_ids" in value
+            or "proposals" in value
         ):
             return value
         index = start + 1
+
+
+def _normalize_record_ids(value) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    ids = []
+    for item in value:
+        if isinstance(item, str) and item.strip() and item.strip() not in ids:
+            ids.append(item.strip())
+    return ids
+
+
+def normalize_proposals(value) -> list[dict]:
+    """Keep well-formed proposal objects; drop unknown ops and malformed rows."""
+    if not isinstance(value, list):
+        return []
+    proposals = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        op = item.get("op")
+        if not isinstance(op, str) or op.strip() not in SUPPORTED_PROPOSAL_OPS:
+            continue
+        proposal = {"op": op.strip()}
+        for key in ("character", "item_object_id", "use", "summary", "record_id"):
+            raw = item.get(key)
+            if isinstance(raw, str) and raw.strip():
+                proposal[key] = raw.strip()
+        if proposal["op"] == "spend_use":
+            if "character" not in proposal or "use" not in proposal:
+                continue
+        proposals.append(proposal)
+    return proposals
+
+
+def citation_messages(scratch, cited_record_ids) -> list[str]:
+    """Return System log lines for citation validation against turn scratch."""
+    if not cited_record_ids:
+        return []
+    if scratch is None:
+        return [
+            "Cited record IDs were present but no scratch workspace was available "
+            "to verify them."
+        ]
+    unknown = scratch.unknown_citations(cited_record_ids)
+    known = [record_id for record_id in cited_record_ids if record_id not in unknown]
+    messages = []
+    if known:
+        messages.append(
+            f"Cited {len(known)} scratch record"
+            f"{'' if len(known) == 1 else 's'}."
+        )
+    if unknown:
+        messages.append(
+            "Unknown cited record IDs (ignored for evidence): "
+            + ", ".join(repr(item) for item in unknown)
+        )
+    return messages
+
+
+def proposal_summary_lines(proposals: list[dict]) -> list[str]:
+    lines = []
+    for proposal in proposals:
+        summary = proposal.get("summary")
+        if summary:
+            lines.append(f"{proposal['op']}: {summary}")
+            continue
+        if proposal["op"] == "spend_use":
+            target = proposal.get("item_object_id") or "item"
+            lines.append(
+                f"spend_use: {proposal['character']} / {proposal['use']} ({target})"
+            )
+        else:
+            lines.append(proposal["op"])
+    return lines
 
 
 def canonicalize_character_patch(patch: dict) -> dict:
@@ -320,6 +431,65 @@ def apply_updates(db, updates: dict) -> list:
     elif not messages:
         return ["No state updates in the reply"]
     return messages
+
+
+def apply_proposals(db, proposals: list[dict]) -> list:
+    """Apply approved proposals. Returns log lines."""
+    if not proposals:
+        return ["No proposals to apply"]
+    messages = []
+    changed = False
+    for proposal in normalize_proposals(proposals):
+        if proposal["op"] == "spend_use":
+            line = _apply_spend_use(db, proposal)
+            messages.append(line)
+            if not line.startswith("Skipped"):
+                changed = True
+        else:
+            messages.append(f"Skipped unsupported proposal op {proposal['op']!r}")
+    if changed:
+        db.commit()
+        messages.append("Proposals applied")
+    elif not messages:
+        return ["No proposals to apply"]
+    return messages
+
+
+def _apply_spend_use(db, proposal: dict) -> str:
+    name = proposal["character"]
+    use = proposal["use"]
+    row = db.execute(
+        "SELECT id, data FROM characters WHERE name=?", (name,)
+    ).fetchone()
+    if row is None:
+        return f"Skipped spend_use for unknown character: {name}"
+    try:
+        current = json.loads(row["data"])
+    except json.JSONDecodeError:
+        current = {}
+    if not isinstance(current, dict):
+        current = {}
+    spent = current.get("spent_uses")
+    if not isinstance(spent, list):
+        spent = []
+    entry = {
+        "use": use,
+        "spent_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if "item_object_id" in proposal:
+        entry["item_object_id"] = proposal["item_object_id"]
+    if "summary" in proposal:
+        entry["summary"] = proposal["summary"]
+    if "record_id" in proposal:
+        entry["record_id"] = proposal["record_id"]
+    spent.append(entry)
+    current["spent_uses"] = spent
+    db.execute(
+        "UPDATE characters SET data=? WHERE id=?",
+        (json.dumps(current, ensure_ascii=False), row["id"]),
+    )
+    label = proposal.get("summary") or f"{name}: {use}"
+    return f"Recorded spent use — {label}"
 
 
 def _write_events(db, value):
