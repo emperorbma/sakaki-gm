@@ -15,6 +15,7 @@ from typing import Any
 DEFAULT_MAX_ROUNDS = 7
 DEFAULT_MAX_RECORDS = 40
 DEFAULT_MAX_CHARS = 24_000
+DEFAULT_MAX_SECONDS = 120.0
 
 
 class ScratchBudgetExceeded(RuntimeError):
@@ -31,16 +32,31 @@ class ScratchContext:
         max_rounds: int = DEFAULT_MAX_ROUNDS,
         max_records: int = DEFAULT_MAX_RECORDS,
         max_chars: int = DEFAULT_MAX_CHARS,
+        max_seconds: float = DEFAULT_MAX_SECONDS,
     ):
         self.context_id = context_id or uuid.uuid4().hex
         self.max_rounds = max_rounds
         self.max_records = max_records
         self.max_chars = max_chars
+        self.max_seconds = max_seconds
         self.created_at = time.time()
         self.rounds_used = 0
         self._records: dict[str, dict[str, Any]] = {}
 
+    def check_deadline(self) -> None:
+        """Raise when the turn has exceeded its wall-clock budget."""
+        if self.max_seconds is None or self.max_seconds <= 0:
+            return
+        elapsed = time.time() - self.created_at
+        if elapsed > self.max_seconds:
+            raise ScratchBudgetExceeded(
+                f"Scratch context {self.context_id} exceeded "
+                f"{self.max_seconds:g}s wall-clock budget "
+                f"({elapsed:.1f}s elapsed)."
+            )
+
     def begin_round(self) -> None:
+        self.check_deadline()
         if self.rounds_used >= self.max_rounds:
             raise ScratchBudgetExceeded(
                 f"Scratch context {self.context_id} exceeded {self.max_rounds} rounds."
@@ -177,6 +193,11 @@ def _record_id(record_type: str, canonical_key: str) -> str:
     return f"{kind}:{canonical_key}"
 
 
-def _revision(snapshot: dict) -> str:
+def snapshot_revision(snapshot: dict) -> str:
+    """Stable short fingerprint for revision checks against live campaign rows."""
     blob = repr(sorted(snapshot.items())).encode("utf-8", errors="replace")
     return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def _revision(snapshot: dict) -> str:
+    return snapshot_revision(snapshot)

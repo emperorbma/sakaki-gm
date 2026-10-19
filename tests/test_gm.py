@@ -1254,12 +1254,33 @@ def test_parse_reply_extracts_citations_and_spend_use_proposals():
                 },
                 {"op": "rewrite_notes", "summary": "unsupported"},
                 {"op": "spend_use", "character": "Serina"},
+                {
+                    "op": "inventory_add",
+                    "character": "Serina",
+                    "item_object_id": "catalog-item:1",
+                    "quantity": 2,
+                },
+                {
+                    "op": "note_append",
+                    "note_id": 11,
+                    "text": "Detected reagents were mundane.",
+                },
+                {
+                    "op": "link_create",
+                    "relation": "located_at",
+                    "from_object_id": "character:1",
+                    "to_object_id": "ritual-hall",
+                },
             ],
         })
     )
     assert parsed.cited_record_ids == ["object:catalog-item:4"]
-    assert len(parsed.proposals) == 1
-    assert parsed.proposals[0]["op"] == "spend_use"
+    assert [proposal["op"] for proposal in parsed.proposals] == [
+        "spend_use",
+        "inventory_add",
+        "note_append",
+        "link_create",
+    ]
     assert parsed.proposals[0]["use"] == "detect_magic"
     assert normalize_proposals([{"op": "nope"}]) == []
 
@@ -1305,6 +1326,132 @@ def test_apply_proposals_records_spend_use_on_character(tmp_path):
     assert data["spent_uses"][0]["item_object_id"] == "catalog-item:4"
     assert "spent_at" in data["spent_uses"][0]
     db.close()
+
+
+def test_apply_proposals_inventory_note_and_link_backends(tmp_path):
+    from sakaki_gm.object_graph_db import create_object
+
+    db = get_db(tmp_path / "campaign.db")
+    character_id = create_character(db, "Serina", {"name": "Serina"})
+    ward_id = create_item(db, "Echo Ward", "Once per rest Detect Magic.")
+    stick_id = create_item(db, "Lunar Stick", "A ritual focus.")
+    set_character_items(db, character_id, [(ward_id, 1, True, "worn")])
+    create_object(db, "ritual-hall", "Ritual Hall", "location", "Academy hall.")
+    note_id = db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("Session", "Preparation continues."),
+    ).lastrowid
+    db.commit()
+
+    messages = apply_proposals(db, [
+        {
+            "op": "inventory_update",
+            "character": "Serina",
+            "item_object_id": ward_id,
+            "equipment_location": "left hand",
+            "attuned": True,
+        },
+        {
+            "op": "inventory_add",
+            "character": "Serina",
+            "item_object_id": stick_id,
+            "quantity": 1,
+            "equipment_location": "beside circle",
+        },
+        {
+            "op": "note_append",
+            "note_id": note_id,
+            "text": "Detect Magic spent on reagents.",
+        },
+        {
+            "op": "link_create",
+            "relation": "located_at",
+            "from_object_id": f"character:{character_id}",
+            "to_object_id": "ritual-hall",
+        },
+    ])
+    assert any("Updated" in line for line in messages)
+    assert any("Added" in line for line in messages)
+    assert any("Appended" in line for line in messages)
+    assert any("Created located_at" in line for line in messages)
+
+    items = {item["id"]: item for item in get_character_items(db, character_id)}
+    assert items[ward_id]["equipment_location"] == "left hand"
+    assert stick_id in items
+    content = db.execute(
+        "SELECT content FROM notes WHERE id=?", (note_id,)
+    ).fetchone()["content"]
+    assert "Detect Magic spent on reagents." in content
+    assert db.execute(
+        """
+        SELECT 1 FROM object_links
+        WHERE relation='located_at' AND from_object_id=? AND to_object_id=?
+        """,
+        (f"character:{character_id}", "ritual-hall"),
+    ).fetchone()
+
+    remove_messages = apply_proposals(db, [{
+        "op": "inventory_remove",
+        "character": "Serina",
+        "item_object_id": stick_id,
+    }])
+    assert any("Removed" in line for line in remove_messages)
+    assert stick_id not in {
+        item["id"] for item in get_character_items(db, character_id)
+    }
+    db.close()
+
+
+def test_apply_proposals_skips_stale_scratch_revision(tmp_path):
+    from sakaki_gm.scratch_context import ScratchContext, snapshot_revision
+
+    db = get_db(tmp_path / "campaign.db")
+    note_id = db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("Lore", "Original text."),
+    ).lastrowid
+    db.commit()
+    scratch = ScratchContext(context_id="rev")
+    scratch.stage(
+        "document",
+        str(note_id),
+        {"id": note_id, "title": "Lore", "excerpt": "Original text."},
+        revision=snapshot_revision({
+            "id": note_id,
+            "title": "Lore",
+            "content": "Original text.",
+        }),
+    )
+    db.execute(
+        "UPDATE notes SET content=? WHERE id=?",
+        ("Changed while Ask GM ran.", note_id),
+    )
+    db.commit()
+
+    messages = apply_proposals(
+        db,
+        [{
+            "op": "note_append",
+            "note_id": note_id,
+            "text": "Should not apply.",
+            "record_id": f"document:{note_id}",
+        }],
+        scratch=scratch,
+    )
+    assert any("changed since the scratch snapshot" in line for line in messages)
+    assert "Should not apply." not in db.execute(
+        "SELECT content FROM notes WHERE id=?", (note_id,)
+    ).fetchone()["content"]
+    db.close()
+
+
+def test_scratch_wall_clock_budget_raises():
+    from sakaki_gm.scratch_context import ScratchBudgetExceeded, ScratchContext
+
+    scratch = ScratchContext(max_seconds=0.01)
+    scratch.created_at -= 1.0
+    with pytest.raises(ScratchBudgetExceeded, match="wall-clock"):
+        scratch.check_deadline()
 
 
 def test_complete_retries_without_response_format():
