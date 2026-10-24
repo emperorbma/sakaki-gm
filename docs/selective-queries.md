@@ -1,6 +1,6 @@
 # Sakaki selective queries
 
-Status: agreed, not implemented. Sakaki stays the campaign retriever. Ask GM calls a model that only generates. Do not add a vector index, Haystack, or LanceDB inside this app. Do not send the same notes to a remote RAG.
+Status: implemented for Ask GM scene packs. Sakaki stays the campaign retriever. Ask GM calls a model that only generates. Do not add a vector index, Haystack, or LanceDB inside this app. Do not send the same notes to a remote RAG.
 
 Repo: `/home/emperorbma/sakaki-gm`. Campaign data is one SQLite bottle per campaign. The live local preset is OpenAI-compatible at `http://127.0.0.1:11434/v1`, model `llama3.1:8b`, context 8192. One completion per Ask GM turn.
 
@@ -33,13 +33,13 @@ Both modes search the local SQLite file. Neither is a switch that skips Sakaki a
 
 Ask GM (`ui/main_window.py`, `ask_gm`) calls `build_messages(..., include_reference_material=False)`, then `complete()` in `src/sakaki_gm/llm_client.py`.
 
-`build_messages` still serializes every character (sheet data, proficient skills, and carried items), every quest, the location string, the event list, and the last twelve log rows. Notes and the item catalog are omitted on that path. A line tells the model that documents can be searched with the lookup tools.
+With that flag false, `build_messages` builds a **scene pack**: acting character short state (hp/ac + gear that matters), resolved place plus routes, and the last few log lines. It does not dump every character sheet, quest list, notes, or the item catalog. Full notes/catalog search stays on the lookup tools (tools mode) or on a gated lore attach (context mode).
 
-Context mode then keyword-scores the text after `PLAYER ACTION` and appends `CAMPAIGN REFERENCE CONTEXT`: up to four note excerpts and eight objects. Scoring is term count over the whole notes table and objects table (`search_documents`, `search_objects`). It does not first restrict the query to terms missing from the scene.
+Context mode calls `out_of_scene_lore_query` first. Only when the action names a character, object, note title, or quest outside the scene pack does it run `retrieve_campaign_context` and append `CAMPAIGN REFERENCE CONTEXT`. Otherwise it skips the lore pack.
 
-Tools mode adds a second system message and lets the model pick those tools. That is selective, and it is the Grok path. The local path still pays for the full character and log dump plus the keyword pack.
+Tools mode adds a second system message and lets the model call `CAMPAIGN_TOOLS` for full document/object/location search. That remains the path for broad queries.
 
-Clipboard copy uses `include_reference_material=True` and is much larger. Leave that path alone unless asked.
+Clipboard copy uses `include_reference_material=True` and still dumps the larger bottle view. Leave that path alone unless asked.
 
 ## Reply contract
 

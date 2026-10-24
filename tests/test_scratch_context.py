@@ -155,6 +155,55 @@ def test_retrieve_and_tools_stage_into_scratch(tmp_path):
     db.close()
 
 
+def test_complete_context_mode_skips_lore_when_scene_covers_action(tmp_path):
+    db_path = tmp_path / "campaign.db"
+    db = get_db(db_path)
+    create_character(
+        db,
+        "Serina",
+        {"name": "Serina", "hp_current": 11, "hp_max": 11},
+        campaign_role="Party member",
+    )
+    db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("Hidden Reliquary", "Secret lore that should stay out of a wait turn."),
+    )
+    db.commit()
+    db.close()
+    calls = []
+
+    class ResponseMessage:
+        content = '{"narration":"Serina waits.","updates":{}}'
+
+    class Response:
+        choices = [type("Choice", (), {"message": ResponseMessage()})()]
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        prompt = kwargs["messages"][1]["content"]
+        assert "CAMPAIGN REFERENCE CONTEXT" not in prompt
+        assert "No extra lore pack was attached" in prompt
+        return Response()
+
+    reply = complete(
+        {
+            "provider": "openai_compatible",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "llama-8b",
+            "api_key": "",
+            "rag_mode": "context",
+        },
+        "system",
+        "CURRENT SCENE\nActing character: {\"name\": \"Serina\"}\n"
+        "PLAYER ACTION\n[Play] I wait.\nDo not change campaign state.",
+        create=create,
+        tool_db_path=db_path,
+        model_profiles={},
+    )
+    assert "Serina waits" in reply
+    assert len(calls) == 1
+
+
 def test_complete_local_defaults_to_app_retrieved_scratch(tmp_path):
     db_path = tmp_path / "campaign.db"
     db = get_db(db_path)

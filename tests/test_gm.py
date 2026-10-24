@@ -730,7 +730,56 @@ def test_tool_prompt_omits_searchable_reference_material(tmp_path):
     assert "Silver Reliquary" in static_user
     assert "secret passage" not in tool_user
     assert "Silver Reliquary" not in tool_user
-    assert "can be searched with the lookup tools" in tool_user
+    assert "CURRENT SCENE" in tool_user
+    assert "lookup tools" in tool_user
+    db.close()
+
+
+def test_ask_gm_scene_pack_is_selective(tmp_path):
+    from sakaki_gm.gm import out_of_scene_lore_query
+    from sakaki_gm.object_graph_db import create_object, create_object_link
+
+    db = get_db(tmp_path / "campaign.db")
+    serina_id = create_character(
+        db,
+        "Serina",
+        {"name": "Serina", "hp_current": 11, "hp_max": 11, "ac": 12},
+        campaign_role="Party member",
+    )
+    create_character(db, "Kael", {"name": "Kael", "hp_current": 20})
+    ward_id = create_item(db, "Echo Ward", "Detect Magic once per rest.")
+    set_character_items(db, serina_id, [(ward_id, 1, True, "worn")])
+    create_object(db, "ritual-hall", "Ritual Hall", "location", "Academy hall.")
+    create_object(db, "docks", "Tide's Rest", "location", "Harbor docks.")
+    create_object_link(db, "route", "ritual-hall", "docks")
+    db.execute(
+        "UPDATE world SET value=? WHERE key='location'",
+        ("Ritual Hall, Academy of Starlight",),
+    )
+    db.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("Lunar Reliquary lore", "The sealed relic waits below."),
+    )
+    db.commit()
+
+    _system, scene_user = build_messages(
+        db,
+        "I examine the Echo Ward.",
+        include_reference_material=False,
+    )
+    assert "CURRENT SCENE" in scene_user
+    assert "Serina" in scene_user
+    assert "Echo Ward" in scene_user
+    assert "Ritual Hall" in scene_user
+    assert "Tide's Rest" in scene_user
+    assert "Kael" not in scene_user
+    assert "sealed relic waits" not in scene_user
+    assert "Quests:" not in scene_user
+
+    assert out_of_scene_lore_query(db, "I examine the Echo Ward.") is None
+    assert "Lunar Reliquary" in out_of_scene_lore_query(
+        db, "What does lore say about the Lunar Reliquary?"
+    )
     db.close()
 
 
