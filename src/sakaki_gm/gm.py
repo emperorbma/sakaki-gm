@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -10,6 +11,7 @@ from sakaki_gm.item_db import (
     get_character_items,
     get_items,
 )
+from sakaki_gm.object_graph_db import get_navigation_exits
 from sakaki_gm.quest_db import get_quest_characters, get_quests
 from sakaki_gm.scratch_context import snapshot_revision
 from sakaki_gm.skill_db import get_character_skills, skill_bonus
@@ -112,97 +114,17 @@ def world_value(db, key, default):
     return [value]
 
 
-def build_messages(db, action: str, *, include_reference_material: bool = True):
-    """Return (system, user) for one GM turn. The user text is prefixed with [Play]."""
-    characters = []
-    for row in db.execute(
-        "SELECT id, name, data, campaign_role, object_id "
-        "FROM characters ORDER BY name"
-    ):
-        try:
-            data = json.loads(row["data"])
-        except json.JSONDecodeError:
-            data = {"error": "unreadable"}
-        if isinstance(data, dict):
-            data.pop("inventory", None)
-            data.pop("attuned", None)
-            data.pop("skills", None)
-        assignments = get_character_items(db, row["id"])
-        skills = []
-        if isinstance(data, dict):
-            proficiency_bonus = data.get("proficiency_bonus", 2)
-            for skill in get_character_skills(db, row["id"]):
-                proficient = bool(skill["proficient"])
-                expertise = bool(skill["expertise"])
-                if not proficient and not expertise:
-                    continue
-                ability = skill["ability"]
-                skills.append({
-                    "id": skill["id"],
-                    "name": skill["name"],
-                    "ability": ability,
-                    "proficient": proficient,
-                    "expertise": expertise,
-                    "bonus": skill_bonus(
-                        data.get(ability) if ability else None,
-                        proficiency_bonus,
-                        proficient,
-                        expertise,
-                    ),
-                })
-        characters.append({
-            "name": row["name"],
-            "campaign_role": row["campaign_role"],
-            "object_id": row["object_id"],
-            "inventory_container_object_id": get_character_inventory_container(
-                db, row["id"]
-            ),
-            "data": data,
-            "skills": skills,
-            "items": [
-                {
-                    "object_id": item["id"],
-                    "name": item["name"],
-                    "description": item["description"],
-                    "quantity": item["quantity"],
-                    "attuned": bool(item["attuned"]),
-                    "equipment_location": item["equipment_location"],
-                }
-                for item in assignments
-            ],
-        })
+SCENE_LOG_LIMIT = 6
+FULL_LOG_LIMIT = 12
 
-    notes = []
-    item_catalog = []
-    if include_reference_material:
-        notes = [
-            {"title": row["title"], "content": row["content"]}
-            for row in db.execute("SELECT title, content FROM notes ORDER BY title")
-            if not (row["title"] or "").startswith(OBSOLETE_REFERENCE_PREFIX)
-        ]
-        item_catalog = [
-            {"name": item["name"], "description": item["description"]}
-            for item in get_items(db)
-        ]
-    quests = [
-        {
-            "name": quest["name"],
-            "description": quest["description"],
-            "status": quest["status"],
-            "characters": [
-                character["name"]
-                for character in get_quest_characters(db, quest["id"])
-            ],
-        }
-        for quest in get_quests(db)
-    ]
-    log_rows = db.execute(
-        "SELECT speaker, message FROM log ORDER BY id DESC LIMIT 12"
-    ).fetchall()
-    recent = [
-        {"speaker": row["speaker"], "message": row["message"]}
-        for row in reversed(log_rows)
-    ]
+
+def build_messages(db, action: str, *, include_reference_material: bool = True):
+    """Return (system, user) for one GM turn. The user text is prefixed with [Play].
+
+    Ask GM passes include_reference_material=False and receives a scene pack:
+    acting character short state, place plus routes, and a short log tail.
+    Clipboard copy keeps the full bottle dump when the flag is True.
+    """
     played = action.strip()
     if not played.startswith("[Play]"):
         played = "[Play]\n" + played
@@ -215,28 +137,44 @@ def build_messages(db, action: str, *, include_reference_material: bool = True):
     if prompt:
         system_parts.append("WORLD\n" + prompt)
     system_parts.append(JSON_CONTRACT.strip())
+    system = "\n\n".join(system_parts)
 
-    user_lines = [
+    if include_reference_material:
+        user = _full_reference_user_message(db, played)
+    else:
+        user = _scene_user_message(db, action, played)
+    return system, user
+
+
+def _full_reference_user_message(db, played: str) -> str:
+    characters = []
+    for row in db.execute(
+        "SELECT id, name, data, campaign_role, object_id "
+        "FROM characters ORDER BY name"
+    ):
+        characters.append(_full_character_payload(db, row))
+    notes = [
+        {"title": row["title"], "content": row["content"]}
+        for row in db.execute("SELECT title, content FROM notes ORDER BY title")
+        if not (row["title"] or "").startswith(OBSOLETE_REFERENCE_PREFIX)
+    ]
+    item_catalog = [
+        {"name": item["name"], "description": item["description"]}
+        for item in get_items(db)
+    ]
+    quests = _quest_payloads(db)
+    recent = _recent_log(db, FULL_LOG_LIMIT)
+    return "\n".join([
         "CURRENT STATE",
         "Characters:",
         json.dumps(characters, ensure_ascii=False),
         f"Location: {world_value(db, 'location', 'Unknown')}",
         "Events:",
         json.dumps(world_value(db, "events", []), ensure_ascii=False),
-    ]
-    if include_reference_material:
-        user_lines.extend([
-            "Notes:",
-            json.dumps(notes, ensure_ascii=False),
-            "Item catalog:",
-            json.dumps(item_catalog, ensure_ascii=False),
-        ])
-    else:
-        user_lines.append(
-            "Campaign reference documents and catalog objects can be searched "
-            "with the lookup tools."
-        )
-    user_lines.extend([
+        "Notes:",
+        json.dumps(notes, ensure_ascii=False),
+        "Item catalog:",
+        json.dumps(item_catalog, ensure_ascii=False),
         "Quests:",
         json.dumps(quests, ensure_ascii=False),
         "Recent log:",
@@ -245,9 +183,325 @@ def build_messages(db, action: str, *, include_reference_material: bool = True):
         "PLAYER ACTION",
         played,
     ])
-    user = "\n".join(user_lines)
-    system = "\n\n".join(system_parts)
-    return system, user
+
+
+def _scene_user_message(db, action: str, played: str) -> str:
+    scene = build_scene_pack(db, action)
+    return "\n".join([
+        "CURRENT SCENE",
+        "Acting character:",
+        json.dumps(scene["acting_character"], ensure_ascii=False),
+        f"Location: {scene['location_text']}",
+        "Place:",
+        json.dumps(scene["place"], ensure_ascii=False),
+        "Routes:",
+        json.dumps(scene["routes"], ensure_ascii=False),
+        "Recent log:",
+        json.dumps(scene["recent_log"], ensure_ascii=False),
+        "Campaign reference documents and the item catalog are omitted here. "
+        "In tools mode, search them with the lookup tools. In context mode, "
+        "the app attaches lore only for names outside this scene.",
+        "",
+        "PLAYER ACTION",
+        played,
+    ])
+
+
+def build_scene_pack(db, action: str) -> dict:
+    """Selective scene for Ask GM: one actor, place, routes, short log."""
+    location_text = world_value(db, "location", "Unknown")
+    if not isinstance(location_text, str) or not location_text.strip():
+        location_text = "Unknown"
+    place = _resolve_location_object(db, location_text)
+    routes = []
+    if place is not None:
+        try:
+            for exit_row in get_navigation_exits(db, place["object_id"]):
+                target = exit_row["target"]
+                routes.append({
+                    "relation": exit_row["relation"],
+                    "inference": exit_row.get("inference"),
+                    "target_object_id": target["object_id"],
+                    "target_name": target["name"],
+                    "target_geography_kind": target.get("geography_kind"),
+                })
+        except KeyError:
+            routes = []
+    acting = _select_acting_character(db, action)
+    return {
+        "acting_character": (
+            _short_character_payload(db, acting, action) if acting else None
+        ),
+        "location_text": location_text,
+        "place": (
+            {
+                "object_id": place["object_id"],
+                "name": place["name"],
+                "object_type": place["object_type"],
+                "geography_kind": place["geography_kind"],
+                "description": (place["description"] or "")[:1200],
+            }
+            if place else None
+        ),
+        "routes": routes,
+        "recent_log": _recent_log(db, SCENE_LOG_LIMIT),
+        "coverage_names": _scene_coverage_names(
+            acting, place, routes, db, action
+        ),
+    }
+
+
+def out_of_scene_lore_query(db, action: str, coverage_names=None) -> str | None:
+    """Return a lore search string when the action names something outside the scene.
+
+    Full notes/catalog search remains available via campaign lookup tools.
+    """
+    if coverage_names is None:
+        coverage_names = build_scene_pack(db, action)["coverage_names"]
+    covered = {
+        name.casefold()
+        for name in coverage_names
+        if isinstance(name, str) and name.strip()
+    }
+    action_cf = (action or "").casefold()
+    mentions = []
+
+    def consider(label: str):
+        text = (label or "").strip()
+        if len(text) < 3:
+            return
+        key = text.casefold()
+        if key in covered:
+            return
+        if not _label_mentioned_in_action(key, action_cf):
+            return
+        if text not in mentions:
+            mentions.append(text)
+
+    for row in db.execute("SELECT name FROM characters ORDER BY name"):
+        consider(row["name"])
+    for row in db.execute(
+        "SELECT name FROM objects ORDER BY length(name) DESC, name"
+    ):
+        consider(row["name"])
+    for row in db.execute("SELECT title FROM notes ORDER BY title"):
+        title = row["title"] or ""
+        if title.startswith(OBSOLETE_REFERENCE_PREFIX):
+            continue
+        consider(title)
+    for quest in get_quests(db):
+        consider(quest["name"])
+    if not mentions:
+        return None
+    return " ".join(mentions[:12])
+
+
+def _scene_coverage_names(acting, place, routes, db, action: str) -> list[str]:
+    names = []
+    if acting is not None:
+        names.append(acting["name"])
+        for item in _character_item_assignments(db, acting["id"]):
+            if item.get("name"):
+                names.append(item["name"])
+    if place is not None and place.get("name"):
+        names.append(place["name"])
+    for route in routes:
+        if route.get("target_name"):
+            names.append(route["target_name"])
+    location_text = world_value(db, "location", "")
+    if isinstance(location_text, str) and location_text.strip():
+        names.append(location_text.strip())
+    return names
+
+
+def _select_acting_character(db, action: str):
+    rows = db.execute(
+        "SELECT id, name, data, campaign_role, object_id "
+        "FROM characters ORDER BY name"
+    ).fetchall()
+    if not rows:
+        return None
+    action_cf = (action or "").casefold()
+    for row in rows:
+        name = (row["name"] or "").strip()
+        if len(name) >= 2 and name.casefold() in action_cf:
+            return row
+    for row in rows:
+        role = (row["campaign_role"] or "").casefold()
+        if any(token in role for token in ("party", "protagonist", "player", "pc")):
+            return row
+    return rows[0]
+
+
+def _character_item_assignments(db, character_id: int) -> list:
+    """Return inventory rows; empty when the bottle is read-only or unset."""
+    try:
+        return get_character_items(db, character_id)
+    except sqlite3.OperationalError:
+        return []
+
+
+def _short_character_payload(db, row, action: str) -> dict:
+    try:
+        data = json.loads(row["data"])
+    except json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    assignments = _character_item_assignments(db, row["id"])
+    action_cf = (action or "").casefold()
+    named = []
+    equipped = []
+    for item in assignments:
+        payload = {
+            "object_id": item["id"],
+            "name": item["name"],
+            "description": item["description"],
+            "quantity": item["quantity"],
+            "attuned": bool(item["attuned"]),
+            "equipment_location": item["equipment_location"],
+        }
+        name = (item["name"] or "").casefold()
+        if name and name in action_cf:
+            named.append(payload)
+        elif item["attuned"] or (item["equipment_location"] or "").strip():
+            equipped.append(payload)
+    gear = named or equipped or [
+        {
+            "object_id": item["id"],
+            "name": item["name"],
+            "quantity": item["quantity"],
+            "attuned": bool(item["attuned"]),
+            "equipment_location": item["equipment_location"],
+        }
+        for item in assignments[:8]
+    ]
+    return {
+        "name": row["name"],
+        "campaign_role": row["campaign_role"],
+        "object_id": row["object_id"],
+        "hp_current": data.get("hp_current"),
+        "hp_max": data.get("hp_max"),
+        "ac": data.get("ac"),
+        "gear": gear,
+    }
+
+
+def _full_character_payload(db, row) -> dict:
+    try:
+        data = json.loads(row["data"])
+    except json.JSONDecodeError:
+        data = {"error": "unreadable"}
+    if isinstance(data, dict):
+        data.pop("inventory", None)
+        data.pop("attuned", None)
+        data.pop("skills", None)
+    assignments = get_character_items(db, row["id"])
+    skills = []
+    if isinstance(data, dict):
+        proficiency_bonus = data.get("proficiency_bonus", 2)
+        for skill in get_character_skills(db, row["id"]):
+            proficient = bool(skill["proficient"])
+            expertise = bool(skill["expertise"])
+            if not proficient and not expertise:
+                continue
+            ability = skill["ability"]
+            skills.append({
+                "id": skill["id"],
+                "name": skill["name"],
+                "ability": ability,
+                "proficient": proficient,
+                "expertise": expertise,
+                "bonus": skill_bonus(
+                    data.get(ability) if ability else None,
+                    proficiency_bonus,
+                    proficient,
+                    expertise,
+                ),
+            })
+    return {
+        "name": row["name"],
+        "campaign_role": row["campaign_role"],
+        "object_id": row["object_id"],
+        "inventory_container_object_id": get_character_inventory_container(
+            db, row["id"]
+        ),
+        "data": data,
+        "skills": skills,
+        "items": [
+            {
+                "object_id": item["id"],
+                "name": item["name"],
+                "description": item["description"],
+                "quantity": item["quantity"],
+                "attuned": bool(item["attuned"]),
+                "equipment_location": item["equipment_location"],
+            }
+            for item in assignments
+        ],
+    }
+
+
+def _quest_payloads(db) -> list[dict]:
+    return [
+        {
+            "name": quest["name"],
+            "description": quest["description"],
+            "status": quest["status"],
+            "characters": [
+                character["name"]
+                for character in get_quest_characters(db, quest["id"])
+            ],
+        }
+        for quest in get_quests(db)
+    ]
+
+
+def _recent_log(db, limit: int) -> list[dict]:
+    log_rows = db.execute(
+        "SELECT speaker, message FROM log ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [
+        {"speaker": row["speaker"], "message": row["message"]}
+        for row in reversed(log_rows)
+    ]
+
+
+def _label_mentioned_in_action(label_cf: str, action_cf: str) -> bool:
+    """True when the action names this label or a multi-word head of it."""
+    if label_cf in action_cf:
+        return True
+    parts = label_cf.split()
+    while len(parts) >= 2:
+        head = " ".join(parts)
+        if len(head) >= 3 and head in action_cf:
+            return True
+        parts = parts[:-1]
+    return False
+
+
+def _resolve_location_object(db, location_text: str):
+    text = (location_text or "").strip()
+    if not text or text == "Unknown":
+        return None
+    loc = text.casefold()
+    rows = db.execute(
+        """
+        SELECT object_id, name, object_type, geography_kind, description
+        FROM objects
+        ORDER BY length(name) DESC, name
+        """
+    ).fetchall()
+    for row in rows:
+        name = (row["name"] or "").strip()
+        if len(name) >= 3 and name.casefold() in loc:
+            return dict(row)
+    for row in rows:
+        name = (row["name"] or "").strip()
+        if name and name.casefold() == loc:
+            return dict(row)
+    return None
 
 
 def format_clipboard(system: str, user: str) -> str:
