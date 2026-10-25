@@ -10,6 +10,7 @@ from sakaki_gm.character_db import create_character, delete_character, get_all_c
 from sakaki_gm.item_db import (
     get_character_inventory_tree,
     get_items,
+    is_customizable_owned_id,
     resolve_item,
     save_character_inventory,
 )
@@ -739,7 +740,7 @@ class CharactersModule:
                 if node.get("root"):
                     continue
                 object_id = node.get("object_id") or row_id
-                if not str(object_id).startswith("item-instance:"):
+                if not is_customizable_owned_id(object_id, node.get("object_type")):
                     continue
                 if not inventory_tree.exists(row_id):
                     continue
@@ -754,14 +755,18 @@ class CharactersModule:
                 else:
                     object_properties.pop("catalog_item_id", None)
                 node["object_properties"] = object_properties
-                inventory_tree.item(row_id, text=resolved["name"])
+                label = resolved["name"]
+                if resolved["object_type"] == "container":
+                    label = f"{label} (container)"
+                tags = ("container",) if resolved["object_type"] == "container" else ()
+                inventory_tree.item(row_id, text=label, tags=tags)
 
         def customize_selected_copy():
             selected = inventory_tree.selection()
             if not selected:
                 messagebox.showerror(
                     "Customize copy",
-                    "Select an owned item copy in the inventory tree.",
+                    "Select an owned item or container copy in the inventory tree.",
                     parent=editor,
                 )
                 return
@@ -770,24 +775,17 @@ class CharactersModule:
             if node.get("root"):
                 messagebox.showerror(
                     "Customize copy",
-                    "Select an item inside the inventory, not the root.",
-                    parent=editor,
-                )
-                return
-            if node["object_type"] == "container":
-                messagebox.showinfo(
-                    "Customize copy",
-                    "Containers are separate objects. Select an item copy "
-                    "(including one nested in a container).",
+                    "Select an owned copy inside the inventory, not the root.",
                     parent=editor,
                 )
                 return
             object_id = node.get("object_id") or row_id
-            if not str(object_id).startswith("item-instance:"):
+            if not is_customizable_owned_id(object_id, node.get("object_type")):
                 messagebox.showinfo(
                     "Customize copy",
                     "Save the character first so this entry becomes a real "
-                    "owned instance, then customize it.",
+                    "owned instance (or use New unique item / Add container), "
+                    "then customize it.",
                     parent=editor,
                 )
                 return
@@ -798,6 +796,51 @@ class CharactersModule:
             )
             editor.wait_window(dialog)
             refresh_owned_copy_labels()
+
+        def add_unique_item():
+            name = simpledialog.askstring(
+                "New unique item",
+                "Name for this unique owned copy (no archetype):",
+                parent=editor,
+            )
+            if name is None:
+                return
+            name = name.strip()
+            if not name:
+                messagebox.showerror(
+                    "New unique item",
+                    "Name cannot be empty.",
+                    parent=editor,
+                )
+                return
+            row_id = f"new-item:{uuid.uuid4().hex}"
+            props = {
+                "quantity": max(1, int(quantity.get() or 1)),
+                "attuned": bool(attuned.get()),
+                "equipment_location": equipment_location.get().strip(),
+            }
+            inventory_tree.insert(
+                selected_parent(),
+                tk.END,
+                iid=row_id,
+                text=name,
+                values=(
+                    props["quantity"],
+                    "Yes" if props["attuned"] else "No",
+                    props["equipment_location"],
+                ),
+            )
+            inventory_node_data[row_id] = {
+                "object_id": row_id,
+                "object_type": "item",
+                "new_item": True,
+                "new_unique": True,
+                "name": name,
+                "description": "",
+                "object_properties": {},
+                "properties": props,
+                "children": [],
+            }
 
         # Fields above; frequent actions here; less common ones under More.
         ttk.Button(
@@ -817,6 +860,7 @@ class CharactersModule:
         ).pack(side=tk.LEFT, padx=4)
         more_menu = tk.Menu(editor, tearoff=0)
         more_menu.add_command(label="Add container", command=add_container)
+        more_menu.add_command(label="New unique item…", command=add_unique_item)
         more_menu.add_command(
             label="Customize copy…",
             command=customize_selected_copy,

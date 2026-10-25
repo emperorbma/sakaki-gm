@@ -62,7 +62,7 @@ Keep the object graph. Split **archetype** from **owned instance**.
 - Full mechanical text lives on the instance description/properties.
 - May still be listed in Documents or notes for lore; the owned object is the authority for play state.
 - Do not force an archetype “just so the Items tab has something to drag.”
-- **Item customization utility:** Archetypes tab → **Customize owned copies…** (and **Detach all copies** on a selected archetype), or Characters → Inventory → **Customize copy…** on a selected owned item (including nested container contents). Edit name/description; **Detach (make unique)** bakes resolved values and clears `instance_of`; **Attach to archetype** re-links and keeps only true overrides. Quantity / attunement / equipment location stay on the inventory contains link and edit in the inventory tree.
+- **Item customization utility:** Archetypes → **Customize owned copies…**, or Inventory → **More → Customize copy…**. Works on **item instances and inventory-container copies** (e.g. detach the Vault). Edit name/description; **Detach (make unique)** / **Attach to archetype**; **New unique item/container** creates copies with no archetype at all. Inventory **More → New unique item…** and **Add container** (no template) are the in-loadout paths for the same idea. Quantity / attunement / equipment location stay on the contains link.
 
 ### Stackable commons vs divergent copies
 

@@ -5,6 +5,8 @@ from tkinter import messagebox, ttk
 from sakaki_gm.item_db import (
     attach_item_instance,
     create_item,
+    create_unique_container_instance,
+    create_unique_item_instance,
     delete_item,
     detach_item_instance,
     detach_instances_of_archetype,
@@ -245,8 +247,8 @@ class InstanceCustomizeDialog(tk.Toplevel):
     ):
         super().__init__(parent)
         self.db = db
-        self.title("Customize owned item copies")
-        self.geometry("820x520")
+        self.title("Customize owned copies")
+        self.geometry("820x560")
         self.transient(parent)
         self.grab_set()
 
@@ -340,6 +342,25 @@ class InstanceCustomizeDialog(tk.Toplevel):
             command=self.attach_copy,
         ).pack(side=tk.LEFT)
 
+        create_row = ttk.Frame(right)
+        create_row.pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(
+            create_row,
+            text="Some copies are born unique — no archetype required:",
+        ).pack(anchor="w")
+        create_buttons = ttk.Frame(create_row)
+        create_buttons.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(
+            create_buttons,
+            text="New unique item…",
+            command=self.create_unique_item,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            create_buttons,
+            text="New unique container…",
+            command=self.create_unique_container,
+        ).pack(side=tk.LEFT, padx=6)
+
         keep = self._initial_instance_id
         self.reload_list(keep_id=keep)
 
@@ -363,8 +384,12 @@ class InstanceCustomizeDialog(tk.Toplevel):
         selected = None
         for index, item in enumerate(self._instances):
             marker = "unique" if item["is_unique"] else "linked"
+            kind = "container" if item.get("is_container") else "item"
             where = item["locations"][0] if item["locations"] else "unplaced"
-            self.list.insert(tk.END, f"{item['name']}  [{marker}]  — {where}")
+            self.list.insert(
+                tk.END,
+                f"{item['name']}  [{kind}/{marker}]  — {where}",
+            )
             if item["id"] == keep_id:
                 selected = index
         if selected is not None:
@@ -389,12 +414,18 @@ class InstanceCustomizeDialog(tk.Toplevel):
     def _show(self, index):
         item = self._instances[index]
         self._selected_id = item["id"]
+        kind = "Container" if item.get("is_container") else "Item"
         if item["is_unique"]:
-            self.status.config(text="Unique copy — no archetype (reattach anytime).")
+            self.status.config(
+                text=f"{kind} unique — no archetype (reattach anytime)."
+            )
         else:
             arch = self._archetypes_by_id.get(item["archetype_id"], {})
             self.status.config(
-                text=f"Linked to archetype: {arch.get('name', item['archetype_id'])}"
+                text=(
+                    f"{kind} linked to archetype: "
+                    f"{arch.get('name', item['archetype_id'])}"
+                )
             )
         self.name.delete(0, tk.END)
         self.name.insert(0, item["name"])
@@ -488,3 +519,55 @@ class InstanceCustomizeDialog(tk.Toplevel):
             messagebox.showerror("Attach", str(exc), parent=self)
             return
         self.reload_list(keep_id=self._selected_id)
+
+    def create_unique_item(self):
+        from tkinter import simpledialog
+
+        name = simpledialog.askstring(
+            "New unique item",
+            "Name for a unique owned item (no archetype):",
+            parent=self,
+        )
+        if name is None:
+            return
+        name = name.strip()
+        if not name:
+            messagebox.showerror("New unique item", "Name cannot be empty.", parent=self)
+            return
+        instance_id = create_unique_item_instance(self.db, name)
+        self.filter_var.set("(uniques only)")
+        self.reload_list(keep_id=instance_id)
+        messagebox.showinfo(
+            "New unique item",
+            f"Created {name}. Place it into an inventory from the character desk "
+            "(or leave it listed here until you nest it).",
+            parent=self,
+        )
+
+    def create_unique_container(self):
+        from tkinter import simpledialog
+
+        name = simpledialog.askstring(
+            "New unique container",
+            "Name for a unique container (no archetype), e.g. a vault:",
+            parent=self,
+        )
+        if name is None:
+            return
+        name = name.strip()
+        if not name:
+            messagebox.showerror(
+                "New unique container",
+                "Name cannot be empty.",
+                parent=self,
+            )
+            return
+        instance_id = create_unique_container_instance(self.db, name)
+        self.filter_var.set("(uniques only)")
+        self.reload_list(keep_id=instance_id)
+        messagebox.showinfo(
+            "New unique container",
+            f"Created {name}. Add it under a character inventory with "
+            "Add container / drag, or nest it after placing from inventory save.",
+            parent=self,
+        )

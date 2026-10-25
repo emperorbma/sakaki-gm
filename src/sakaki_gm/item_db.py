@@ -5,6 +5,17 @@ import uuid
 
 ITEM_INSTANCE_TYPE = "item_instance"
 ITEM_INSTANCE_PREFIX = "item-instance:"
+CONTAINER_INSTANCE_PREFIX = "inventory-container:"
+
+
+def is_customizable_owned_id(object_id: str, object_type: str | None = None) -> bool:
+    """True for owned item/container copies the customize utility can edit."""
+    object_id = str(object_id)
+    if object_id.startswith(ITEM_INSTANCE_PREFIX):
+        return object_type in (None, ITEM_INSTANCE_TYPE)
+    if object_id.startswith(CONTAINER_INSTANCE_PREFIX):
+        return object_type in (None, "container")
+    return False
 
 
 def _parse_properties(raw) -> dict:
@@ -52,7 +63,10 @@ def archetype_id_for_instance(db, instance_id: str) -> str | None:
 
 
 def resolve_item(db, object_id: str) -> dict | None:
-    """Return the practical item view: archetype defaults with instance overrides."""
+    """Return the practical owned-copy view: archetype defaults with overrides.
+
+    Works for item instances and inventory-container copies alike.
+    """
     row = db.execute(
         "SELECT object_id, name, description, object_type, properties "
         "FROM objects WHERE object_id=?",
@@ -63,7 +77,7 @@ def resolve_item(db, object_id: str) -> dict | None:
     overrides = _parse_properties(row["properties"])
     archetype = None
     archetype_id = None
-    if row["object_type"] == ITEM_INSTANCE_TYPE:
+    if is_customizable_owned_id(row["object_id"], row["object_type"]):
         archetype_id = archetype_id_for_instance(db, object_id)
         if archetype_id:
             archetype = db.execute(
@@ -90,16 +104,22 @@ def resolve_item(db, object_id: str) -> dict | None:
         for key, value in overrides.items()
         if key not in {"name", "description"}
     }
+    merged = _deep_merge(base_props, prop_overrides)
+    is_container = (
+        row["object_type"] == "container"
+        or "container" in merged.get("tags", [])
+    )
     return {
         "id": row["object_id"],
         "object_id": row["object_id"],
         "object_type": row["object_type"],
         "name": name,
         "description": description,
-        "properties": _deep_merge(base_props, prop_overrides),
+        "properties": merged,
         "archetype_id": archetype_id,
-        "is_container": "container"
-        in _deep_merge(base_props, prop_overrides).get("tags", []),
+        "is_container": is_container,
+        "is_unique": archetype_id is None
+        and is_customizable_owned_id(row["object_id"], row["object_type"]),
     }
 
 
@@ -147,29 +167,38 @@ def create_item_instance(
 
 
 def list_item_instances(db, archetype_id: str | None = None) -> list[dict]:
-    """Return owned item instances, optionally filtered by archetype."""
+    """Return owned item and container copies, optionally filtered by archetype."""
     if archetype_id:
         rows = db.execute(
             """
             SELECT instance.object_id, instance.name, instance.description,
-                   instance.properties, link.to_object_id AS archetype_id
+                   instance.properties, instance.object_type,
+                   link.to_object_id AS archetype_id
             FROM objects AS instance
             JOIN object_links AS link
               ON link.from_object_id = instance.object_id
              AND link.relation = 'instance_of'
-            WHERE instance.object_type = ?
-              AND link.to_object_id = ?
+            WHERE link.to_object_id = ?
+              AND (
+                  instance.object_type = ?
+                  OR (
+                      instance.object_type = 'container'
+                      AND instance.object_id LIKE ?
+                  )
+              )
             ORDER BY instance.name COLLATE NOCASE, instance.object_id
             """,
-            (ITEM_INSTANCE_TYPE, archetype_id),
+            (
+                archetype_id,
+                ITEM_INSTANCE_TYPE,
+                f"{CONTAINER_INSTANCE_PREFIX}%",
+            ),
         ).fetchall()
-        # Also include already-detached uniques that used to be that name? No —
-        # filter is by live instance_of only.
     else:
         rows = db.execute(
             """
             SELECT instance.object_id, instance.name, instance.description,
-                   instance.properties,
+                   instance.properties, instance.object_type,
                    (
                        SELECT link.to_object_id
                        FROM object_links AS link
@@ -180,9 +209,13 @@ def list_item_instances(db, archetype_id: str | None = None) -> list[dict]:
                    ) AS archetype_id
             FROM objects AS instance
             WHERE instance.object_type = ?
+               OR (
+                   instance.object_type = 'container'
+                   AND instance.object_id LIKE ?
+               )
             ORDER BY instance.name COLLATE NOCASE, instance.object_id
             """,
-            (ITEM_INSTANCE_TYPE,),
+            (ITEM_INSTANCE_TYPE, f"{CONTAINER_INSTANCE_PREFIX}%"),
         ).fetchall()
     results = []
     for row in rows:
@@ -192,9 +225,12 @@ def list_item_instances(db, archetype_id: str | None = None) -> list[dict]:
             "name": resolved.get("name", row["name"]),
             "description": resolved.get("description", row["description"]),
             "properties": resolved.get("properties", {}),
+            "object_type": row["object_type"],
             "archetype_id": row["archetype_id"],
             "locations": item_instance_locations(db, row["object_id"]),
             "is_unique": row["archetype_id"] is None,
+            "is_container": row["object_type"] == "container"
+            or bool(resolved.get("is_container")),
         })
     return results
 
@@ -249,7 +285,7 @@ def update_item_instance(
     property_overrides: dict | None = None,
     commit: bool = True,
 ) -> None:
-    """Persist per-copy fields on an owned instance.
+    """Persist per-copy fields on an owned item or container instance.
 
     While linked to an archetype, name/description are stored as overrides so
     clearing them later can fall back to defaults. Detached uniques store the
@@ -257,11 +293,11 @@ def update_item_instance(
     """
     row = db.execute(
         "SELECT object_id, name, description, properties, object_type "
-        "FROM objects WHERE object_id=? AND object_type=?",
-        (instance_id, ITEM_INSTANCE_TYPE),
+        "FROM objects WHERE object_id=?",
+        (instance_id,),
     ).fetchone()
-    if row is None:
-        raise ValueError(f"Unknown item instance {instance_id!r}.")
+    if row is None or not is_customizable_owned_id(row["object_id"], row["object_type"]):
+        raise ValueError(f"Unknown owned copy {instance_id!r}.")
     overrides = _parse_properties(row["properties"])
     archetype_id = archetype_id_for_instance(db, instance_id)
     object_name = row["name"]
@@ -295,14 +331,13 @@ def update_item_instance(
         """
         UPDATE objects
         SET name=?, description=?, properties=?
-        WHERE object_id=? AND object_type=?
+        WHERE object_id=?
         """,
         (
             object_name,
             object_description,
             json.dumps(overrides, ensure_ascii=False),
             instance_id,
-            ITEM_INSTANCE_TYPE,
         ),
     )
     if commit:
@@ -310,15 +345,16 @@ def update_item_instance(
 
 
 def detach_item_instance(db, instance_id: str, *, commit: bool = True) -> dict:
-    """Bake resolved values onto the instance and remove instance_of.
+    """Bake resolved values onto the owned copy and remove instance_of.
 
-    The copy becomes a unique artifact: further archetype edits no longer apply.
+    Works for item instances and inventory-container copies. The copy becomes
+    unique: further archetype edits no longer apply.
     """
     resolved = resolve_item(db, instance_id)
     if resolved is None:
-        raise ValueError(f"Unknown item instance {instance_id!r}.")
-    if resolved["object_type"] != ITEM_INSTANCE_TYPE:
-        raise ValueError(f"Object {instance_id!r} is not an item instance.")
+        raise ValueError(f"Unknown owned copy {instance_id!r}.")
+    if not is_customizable_owned_id(instance_id, resolved["object_type"]):
+        raise ValueError(f"Object {instance_id!r} is not a customizable owned copy.")
     if not resolved["archetype_id"]:
         return resolved
     baked = dict(resolved["properties"])
@@ -329,14 +365,13 @@ def detach_item_instance(db, instance_id: str, *, commit: bool = True) -> dict:
         """
         UPDATE objects
         SET name=?, description=?, properties=?
-        WHERE object_id=? AND object_type=?
+        WHERE object_id=?
         """,
         (
             resolved["name"],
             resolved["description"],
             json.dumps(baked, ensure_ascii=False),
             instance_id,
-            ITEM_INSTANCE_TYPE,
         ),
     )
     db.execute(
@@ -386,7 +421,7 @@ def attach_item_instance(
     *,
     commit: bool = True,
 ) -> dict:
-    """Link an owned instance to an archetype, keeping only true overrides.
+    """Link an owned item/container copy to an archetype, keeping overrides.
 
     Replaces any existing instance_of. Values that still match the archetype
     are cleared so live defaults apply again; divergent name/description/
@@ -394,11 +429,11 @@ def attach_item_instance(
     """
     row = db.execute(
         "SELECT object_id, name, description, properties, object_type "
-        "FROM objects WHERE object_id=? AND object_type=?",
-        (instance_id, ITEM_INSTANCE_TYPE),
+        "FROM objects WHERE object_id=?",
+        (instance_id,),
     ).fetchone()
-    if row is None:
-        raise ValueError(f"Unknown item instance {instance_id!r}.")
+    if row is None or not is_customizable_owned_id(row["object_id"], row["object_type"]):
+        raise ValueError(f"Unknown owned copy {instance_id!r}.")
     archetype = db.execute(
         "SELECT object_id, name, description, properties "
         "FROM objects WHERE object_id=? AND object_type='item'",
@@ -406,6 +441,16 @@ def attach_item_instance(
     ).fetchone()
     if archetype is None:
         raise ValueError(f"Unknown catalog item object: {archetype_id}")
+    archetype_props = _parse_properties(archetype["properties"])
+    archetype_is_container = "container" in archetype_props.get("tags", [])
+    if row["object_type"] == "container" and not archetype_is_container:
+        raise ValueError(
+            f"Container copy {instance_id!r} can only attach to a container archetype."
+        )
+    if row["object_type"] == ITEM_INSTANCE_TYPE and archetype_is_container:
+        raise ValueError(
+            f"Item copy {instance_id!r} cannot attach to a container archetype."
+        )
 
     # Resolve as if unique first (current stored state), then diff vs archetype.
     current_props = _parse_properties(row["properties"])
@@ -418,8 +463,7 @@ def attach_item_instance(
         for key, value in current_props.items()
         if key not in {"name", "description"}
     }
-    base_props = _parse_properties(archetype["properties"])
-    overrides = _override_diff(base_props, current_kind)
+    overrides = _override_diff(archetype_props, current_kind)
     if current_name != archetype["name"]:
         overrides["name"] = current_name
     if current_description != (archetype["description"] or ""):
@@ -441,14 +485,13 @@ def attach_item_instance(
         """
         UPDATE objects
         SET name=?, description=?, properties=?
-        WHERE object_id=? AND object_type=?
+        WHERE object_id=?
         """,
         (
             archetype["name"],
             "",
             json.dumps(overrides, ensure_ascii=False),
             instance_id,
-            ITEM_INSTANCE_TYPE,
         ),
     )
     if commit:
@@ -464,7 +507,7 @@ def create_unique_item_instance(
     properties: dict | None = None,
     commit: bool = True,
 ) -> str:
-    """Create an owned unique with no archetype."""
+    """Create an owned unique item with no archetype."""
     name = name.strip()
     if not name:
         raise ValueError("Instance name cannot be empty.")
@@ -486,6 +529,82 @@ def create_unique_item_instance(
     if commit:
         db.commit()
     return instance_id
+
+
+def create_unique_container_instance(
+    db,
+    name: str,
+    description: str = "",
+    *,
+    properties: dict | None = None,
+    commit: bool = True,
+) -> str:
+    """Create an owned unique container with no archetype."""
+    name = name.strip()
+    if not name:
+        raise ValueError("Container name cannot be empty.")
+    instance_id = f"{CONTAINER_INSTANCE_PREFIX}{uuid.uuid4().hex}"
+    props = dict(properties or {})
+    db.execute(
+        """
+        INSERT INTO objects (
+            object_id, name, object_type, geography_kind, description, properties
+        ) VALUES (?, ?, 'container', 'unspecified', ?, ?)
+        """,
+        (
+            instance_id,
+            name,
+            description.strip(),
+            json.dumps(props, ensure_ascii=False),
+        ),
+    )
+    if commit:
+        db.commit()
+    return instance_id
+
+
+def place_owned_copy_in_container(
+    db,
+    parent_id: str,
+    object_id: str,
+    *,
+    quantity: int = 1,
+    attuned: bool = False,
+    equipment_location: str = "",
+    commit: bool = True,
+) -> None:
+    """Link an owned copy under a container via contains."""
+    parent = db.execute(
+        "SELECT 1 FROM objects WHERE object_id=? AND object_type='container'",
+        (parent_id,),
+    ).fetchone()
+    if parent is None:
+        raise ValueError(f"Unknown inventory container {parent_id!r}.")
+    child = db.execute(
+        "SELECT object_id, object_type FROM objects WHERE object_id=?",
+        (object_id,),
+    ).fetchone()
+    if child is None or not is_customizable_owned_id(
+        child["object_id"], child["object_type"]
+    ):
+        raise ValueError(f"Unknown owned copy {object_id!r}.")
+    properties = {
+        "quantity": int(quantity),
+        "attuned": bool(attuned),
+        "equipment_location": str(equipment_location).strip(),
+    }
+    if child["object_type"] == "container":
+        properties.setdefault("role", "container")
+    db.execute(
+        """
+        INSERT INTO object_links (
+            relation, from_object_id, to_object_id, properties, notes
+        ) VALUES ('contains', ?, ?, ?, '')
+        """,
+        (parent_id, object_id, json.dumps(properties, ensure_ascii=False)),
+    )
+    if commit:
+        db.commit()
 
 
 def migrate_catalog_contains_to_instances(db) -> int:
@@ -709,7 +828,7 @@ def get_character_inventory_tree(db, character_id: int):
         name = obj["name"]
         description = obj["description"]
         archetype_id = instance_of.get(object_id)
-        if obj["object_type"] == ITEM_INSTANCE_TYPE:
+        if is_customizable_owned_id(object_id, obj["object_type"]):
             resolved = resolve_item(db, object_id)
             if resolved is not None:
                 name = resolved["name"]
@@ -718,6 +837,8 @@ def get_character_inventory_tree(db, character_id: int):
                 if resolved["archetype_id"]:
                     object_properties["catalog_item_id"] = resolved["archetype_id"]
                     archetype_id = resolved["archetype_id"]
+                else:
+                    object_properties.pop("catalog_item_id", None)
         elif obj["object_type"] == "container" and archetype_id:
             object_properties.setdefault("catalog_item_id", archetype_id)
         result = {
@@ -916,9 +1037,23 @@ def save_character_inventory(db, character_id: int, children) -> None:
                     ).fetchone()
                     if catalog is not None:
                         archetype_id = object_id
-                if archetype_id is None:
+                if archetype_id is not None:
+                    instance_id = create_item_instance(db, archetype_id)
+                elif entry.get("new_unique") or is_new:
+                    # Owned unique generated by customization, no archetype.
+                    instance_id = create_unique_item_instance(
+                        db,
+                        entry.get("name") or "Unique item",
+                        entry.get("description", ""),
+                        properties={
+                            key: value
+                            for key, value in object_properties.items()
+                            if key != "catalog_item_id"
+                        },
+                        commit=False,
+                    )
+                else:
                     raise ValueError(f"Unknown catalog item {object_id!r}.")
-                instance_id = create_item_instance(db, archetype_id)
                 kept_instances.add(instance_id)
                 links.append(("contains", parent_id, instance_id, properties))
             else:
