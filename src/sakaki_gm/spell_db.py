@@ -16,6 +16,10 @@ SPELL_SCHOOLS = frozenset({
     "transmutation",
 })
 
+# Per-spell casting paradigm. Characters may mix both in one loadout.
+CASTING_MODES = frozenset({"vancian", "mana"})
+DEFAULT_CASTING_MODE = "vancian"
+
 
 def get_spells(db):
     return db.execute(
@@ -39,6 +43,38 @@ def get_spell(db, spell_id: int):
     ).fetchone()
 
 
+def spell_casting_mode(spell_row_or_props) -> str:
+    """Return ``vancian`` or ``mana`` for a campaign spell row or properties dict.
+
+    Stock 5e titles default to Vancian (known/prepared). Mana-mode spells are
+    loadout membership only — prepared does not apply. Mode is per spell so a
+    character can carry both kinds.
+    """
+    props = spell_row_or_props
+    if not isinstance(props, dict):
+        raw = None
+        try:
+            raw = spell_row_or_props["properties"]
+        except (TypeError, KeyError, IndexError):
+            raw = None
+        if isinstance(raw, str):
+            try:
+                props = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                props = {}
+        elif isinstance(raw, dict):
+            props = raw
+        else:
+            props = {}
+    mode = str(props.get("casting_mode") or DEFAULT_CASTING_MODE).strip().casefold()
+    return mode if mode in CASTING_MODES else DEFAULT_CASTING_MODE
+
+
+def spell_uses_prepared(spell_row_or_props) -> bool:
+    """True when this spell's casting mode uses Vancian preparation."""
+    return spell_casting_mode(spell_row_or_props) == "vancian"
+
+
 def _normalize_spell_fields(
     name: str,
     *,
@@ -51,6 +87,7 @@ def _normalize_spell_fields(
     description: str = "",
     ritual: bool = False,
     concentration: bool = False,
+    casting_mode: str | None = None,
     properties: dict | None = None,
 ) -> dict:
     name = (name or "").strip()
@@ -65,7 +102,14 @@ def _normalize_spell_fields(
     school = (school or "").strip().lower()
     if school and school not in SPELL_SCHOOLS:
         raise ValueError(f"Unknown spell school {school!r}.")
-    props = properties if isinstance(properties, dict) else {}
+    props = dict(properties) if isinstance(properties, dict) else {}
+    mode_source = casting_mode if casting_mode is not None else props.get("casting_mode")
+    mode = str(mode_source or DEFAULT_CASTING_MODE).strip().casefold()
+    if mode not in CASTING_MODES:
+        raise ValueError(
+            f"Unknown casting mode {mode_source!r}; expected vancian or mana."
+        )
+    props["casting_mode"] = mode
     return {
         "name": name,
         "level": level,
@@ -94,6 +138,7 @@ def upsert_campaign_spell(
     description: str = "",
     ritual: bool = False,
     concentration: bool = False,
+    casting_mode: str | None = None,
     properties: dict | None = None,
     spell_id: int | None = None,
 ) -> int:
@@ -109,6 +154,7 @@ def upsert_campaign_spell(
         description=description,
         ritual=ritual,
         concentration=concentration,
+        casting_mode=casting_mode,
         properties=properties,
     )
     with db:
@@ -197,6 +243,9 @@ def upsert_campaign_spell_if_missing(db, entry: dict, *, commit: bool = True) ->
     ).fetchone()
     if existing is not None:
         return None
+    entry_props = (
+        entry.get("properties") if isinstance(entry.get("properties"), dict) else {}
+    )
     fields = _normalize_spell_fields(
         name,
         level=entry.get("level", 0),
@@ -208,7 +257,8 @@ def upsert_campaign_spell_if_missing(db, entry: dict, *, commit: bool = True) ->
         description=entry.get("description", ""),
         ritual=bool(entry.get("ritual")),
         concentration=bool(entry.get("concentration")),
-        properties=entry.get("properties") if isinstance(entry.get("properties"), dict) else {},
+        casting_mode=entry.get("casting_mode"),
+        properties=entry_props,
     )
     cursor = db.execute(
         """
@@ -247,6 +297,7 @@ def delete_campaign_spell(db, spell_id: int) -> None:
 
 
 def get_character_spells(db, character_id: int):
+    """Return this character's spellbook loadout (catalog rows they know)."""
     return db.execute(
         """
         SELECT campaign_spells.id, campaign_spells.name, campaign_spells.level,
@@ -290,6 +341,65 @@ def set_character_spell(
                 (notes or "").strip(),
             ),
         )
+
+
+def set_character_spells(db, character_id: int, assignments) -> None:
+    """Replace a character's spellbook loadout.
+
+    Each assignment is ``(spell_id, known, prepared, notes)``. Rows with
+    ``known`` false are omitted (not in the loadout). ``prepared`` only
+    applies to Vancian-mode catalog spells; mana-mode spells store prepared=0.
+    """
+    mode_by_id = {
+        int(row["id"]): spell_casting_mode(row) for row in get_spells(db)
+    }
+    normalized = []
+    for entry in assignments:
+        if len(entry) == 3:
+            spell_id, known, prepared = entry
+            notes = ""
+        else:
+            spell_id, known, prepared, notes = entry
+        spell_id = int(spell_id)
+        known = bool(known)
+        if not known:
+            continue
+        vancian = mode_by_id.get(spell_id, DEFAULT_CASTING_MODE) == "vancian"
+        prepared = bool(prepared) and vancian
+        normalized.append(
+            (
+                character_id,
+                spell_id,
+                1,
+                1 if prepared else 0,
+                (notes or "").strip(),
+            )
+        )
+    with db:
+        db.execute(
+            "DELETE FROM character_spells WHERE character_id=?",
+            (character_id,),
+        )
+        db.executemany(
+            """
+            INSERT INTO character_spells (
+                character_id, spell_id, known, prepared, notes
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            normalized,
+        )
+
+
+def spell_notes_blurb(data: dict | None) -> str:
+    """Return free-text spell notes kept beside the structured loadout."""
+    if not isinstance(data, dict):
+        return ""
+    text = data.get("spells")
+    if isinstance(text, list):
+        return "\n".join(str(line) for line in text).strip()
+    if isinstance(text, dict):
+        return json.dumps(text, ensure_ascii=False, indent=2)
+    return str(text or "").strip()
 
 
 def find_spell_names_in_text(text: str, catalog_names: list[str]) -> list[str]:

@@ -15,10 +15,18 @@ from sakaki_gm.item_db import (
     save_character_inventory,
 )
 from sakaki_gm.skill_db import get_character_skills, get_skills, set_character_skills
+from sakaki_gm.spell_db import (
+    get_character_spells,
+    get_spells,
+    set_character_spells,
+    spell_casting_mode,
+    spell_notes_blurb,
+    spell_uses_prepared,
+)
 from sakaki_gm.ui.modules.items import InstanceCustomizeDialog
 
+# Free-text sheet tabs. Spells are a structured loadout + blurb (see Spells tab).
 TEXT_FIELDS = (
-    ("spells", "Spells"),
     ("features", "Features"),
     ("saving_throws", "Saves"),
     ("actions", "Actions"),
@@ -973,6 +981,191 @@ class CharactersModule:
         for variable in (*ability_vars.values(), fields["proficiency_bonus"]):
             variable.trace_add("write", refresh_all_skill_bonuses)
 
+        spells_tab = ttk.Frame(notebook)
+        notebook.add(spells_tab, text="Spells")
+        ttk.Label(
+            spells_tab,
+            text=(
+                "Spellbook loadout links catalog spells. Prepared applies only to "
+                "Vancian spells; mana spells are cast from the loadout without "
+                "preparation (hybrid campaigns mix both)."
+            ),
+            wraplength=720,
+        ).pack(anchor="w", padx=10, pady=(10, 6))
+
+        spell_catalog_by_id = {int(row["id"]): row for row in get_spells(self.db)}
+        saved_spell_rows = (
+            get_character_spells(self.db, existing_id)
+            if existing_id is not None else []
+        )
+        # spell_id -> {"prepared": bool}
+        spell_loadout = {
+            int(row["id"]): {"prepared": bool(row["prepared"])}
+            for row in saved_spell_rows
+        }
+
+        spell_list_frame = ttk.Frame(spells_tab)
+        spell_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
+        spells_tree = ttk.Treeview(
+            spell_list_frame,
+            columns=("name", "level", "school", "mode", "prepared"),
+            show="headings",
+            selectmode="browse",
+            height=10,
+        )
+        spells_tree.heading("name", text="Spell")
+        spells_tree.heading("level", text="Level")
+        spells_tree.heading("school", text="School")
+        spells_tree.heading("mode", text="Casting")
+        spells_tree.heading("prepared", text="Prepared")
+        spells_tree.column("name", width=180, stretch=True)
+        spells_tree.column("level", width=70, stretch=False, anchor="center")
+        spells_tree.column("school", width=100, stretch=False)
+        spells_tree.column("mode", width=80, stretch=False, anchor="center")
+        spells_tree.column("prepared", width=80, stretch=False, anchor="center")
+        spell_scroll = ttk.Scrollbar(
+            spell_list_frame, orient=tk.VERTICAL, command=spells_tree.yview
+        )
+        spells_tree.configure(yscrollcommand=spell_scroll.set)
+        spells_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        spell_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def _spell_level_label(level):
+            try:
+                level = int(level)
+            except (TypeError, ValueError):
+                return "—"
+            return "Cantrip" if level <= 0 else f"Level {level}"
+
+        def refresh_spell_loadout_view():
+            spells_tree.delete(*spells_tree.get_children())
+            ordered = sorted(
+                (
+                    spell_catalog_by_id[spell_id]
+                    for spell_id in spell_loadout
+                    if spell_id in spell_catalog_by_id
+                ),
+                key=lambda row: (int(row["level"] or 0), str(row["name"]).casefold()),
+            )
+            for row in ordered:
+                spell_id = int(row["id"])
+                mode = spell_casting_mode(row)
+                prepared = spell_loadout[spell_id]["prepared"]
+                prepared_label = (
+                    "Yes" if prepared else "No"
+                ) if mode == "vancian" else "—"
+                school = (row["school"] or "").strip()
+                spells_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(spell_id),
+                    values=(
+                        row["name"],
+                        _spell_level_label(row["level"]),
+                        school.title() if school else "—",
+                        mode,
+                        prepared_label,
+                    ),
+                )
+
+        def add_spell_to_loadout():
+            owned = set(spell_loadout)
+            available = [
+                row for row in get_spells(self.db)
+                if int(row["id"]) not in owned
+            ]
+            if not available:
+                messagebox.showinfo(
+                    "Spells",
+                    "Every catalog spell is already in this loadout, or the "
+                    "campaign catalog is empty.",
+                    parent=editor,
+                )
+                return
+            picker = tk.Toplevel(editor)
+            picker.title("Add spell from catalog")
+            picker.transient(editor)
+            picker.grab_set()
+            ttk.Label(
+                picker,
+                text="Choose a campaign spell to add to this character's loadout.",
+            ).pack(anchor="w", padx=10, pady=(10, 6))
+            listbox = tk.Listbox(picker, height=16, width=48, font=("Georgia", 11))
+            listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 8))
+            for row in available:
+                mode = spell_casting_mode(row)
+                listbox.insert(
+                    tk.END,
+                    f"{row['name']}  ({_spell_level_label(row['level'])}, {mode})",
+                )
+
+            def confirm_add():
+                selection = listbox.curselection()
+                if not selection:
+                    return
+                chosen = available[selection[0]]
+                spell_catalog_by_id[int(chosen["id"])] = chosen
+                spell_loadout[int(chosen["id"])] = {"prepared": False}
+                refresh_spell_loadout_view()
+                picker.destroy()
+
+            buttons = ttk.Frame(picker)
+            buttons.pack(fill=tk.X, padx=10, pady=(0, 10))
+            ttk.Button(buttons, text="Add", command=confirm_add).pack(side=tk.LEFT)
+            ttk.Button(buttons, text="Cancel", command=picker.destroy).pack(
+                side=tk.LEFT, padx=6
+            )
+            listbox.bind("<Double-Button-1>", lambda _event: confirm_add())
+
+        def remove_selected_spell():
+            selected = spells_tree.selection()
+            if not selected:
+                return
+            spell_loadout.pop(int(selected[0]), None)
+            refresh_spell_loadout_view()
+
+        def toggle_prepared_selected():
+            selected = spells_tree.selection()
+            if not selected:
+                return
+            spell_id = int(selected[0])
+            row = spell_catalog_by_id.get(spell_id)
+            if row is None or not spell_uses_prepared(row):
+                messagebox.showinfo(
+                    "Spells",
+                    "Prepared only applies to Vancian spells. Mana spells are "
+                    "available whenever they are in the loadout.",
+                    parent=editor,
+                )
+                return
+            current = spell_loadout.get(spell_id)
+            if current is None:
+                return
+            current["prepared"] = not current["prepared"]
+            refresh_spell_loadout_view()
+            spells_tree.selection_set(str(spell_id))
+
+        spell_buttons = ttk.Frame(spells_tab)
+        spell_buttons.pack(fill=tk.X, padx=10, pady=(0, 8))
+        ttk.Button(
+            spell_buttons, text="Add from catalog", command=add_spell_to_loadout
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            spell_buttons, text="Remove", command=remove_selected_spell
+        ).pack(side=tk.LEFT, padx=6)
+        ttk.Button(
+            spell_buttons, text="Toggle prepared", command=toggle_prepared_selected
+        ).pack(side=tk.LEFT)
+
+        ttk.Label(
+            spells_tab,
+            text="Spell notes (legacy free text / migration blurb)",
+        ).pack(anchor="w", padx=10)
+        spell_notes = tk.Text(spells_tab, wrap=tk.WORD, font=("Consolas", 10), height=6)
+        spell_notes.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 10))
+        spell_notes.insert("1.0", spell_notes_blurb(data))
+        refresh_spell_loadout_view()
+
         for key, label in TEXT_FIELDS:
             tab = ttk.Frame(notebook)
             notebook.add(tab, text=label)
@@ -1012,6 +1205,7 @@ class CharactersModule:
                 campaign_role = str(payload.pop("campaign_role", "") or "").strip()
                 for key, _label in TEXT_FIELDS:
                     payload[key] = texts[key].get("1.0", "end").strip()
+                payload["spells"] = spell_notes.get("1.0", "end").strip()
                 payload.pop("hp", None)
                 payload.pop("max_hp", None)
             except (tk.TclError, TypeError, ValueError):
@@ -1066,6 +1260,17 @@ class CharactersModule:
                 set_character_skills(self.db, character_id, skill_assignments)
             except sqlite3.Error as exc:
                 messagebox.showerror("Save", f"Could not save character skills: {exc}", parent=editor)
+                return
+            spell_assignments = [
+                (spell_id, True, state["prepared"], "")
+                for spell_id, state in spell_loadout.items()
+            ]
+            try:
+                set_character_spells(self.db, character_id, spell_assignments)
+            except (sqlite3.Error, ValueError) as exc:
+                messagebox.showerror(
+                    "Save", f"Could not save character spells: {exc}", parent=editor
+                )
                 return
             self.refresh()
             messagebox.showinfo("Saved", f"{name} saved!", parent=editor)

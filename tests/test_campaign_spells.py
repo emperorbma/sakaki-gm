@@ -10,6 +10,9 @@ from sakaki_gm.spell_db import (
     get_spells,
     link_character_spells_from_free_text,
     migrate_character_spell_free_text,
+    set_character_spells,
+    spell_casting_mode,
+    spell_notes_blurb,
     upsert_campaign_spell,
 )
 
@@ -159,4 +162,56 @@ def test_linking_skips_partial_word_matches(tmp_path):
     assert found == []
     found = find_spell_names_in_text("She casts Light on the torch.", ["Light", "Fireball"])
     assert found == ["Light"]
+    db.close()
+
+
+def test_stock_spells_default_to_vancian_casting_mode(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    fireball = next(spell for spell in get_spells(db) if spell["name"] == "Fireball")
+    assert spell_casting_mode(fireball) == "vancian"
+    db.close()
+
+
+def test_hybrid_loadout_prepared_only_for_vancian(tmp_path):
+    """Hybrid campaigns mix Vancian and mana spells in one character loadout."""
+    db = get_db(tmp_path / "campaign.db")
+    fireball = next(spell for spell in get_spells(db) if spell["name"] == "Fireball")
+    mana_id = upsert_campaign_spell(
+        db,
+        "Arc Surge",
+        level=2,
+        school="evocation",
+        casting_mode="mana",
+        description="Spend mana to release a surge of force.",
+    )
+    cursor = db.execute(
+        "INSERT INTO characters (name, data) VALUES (?, ?)",
+        ("Hybrid Caster", json.dumps({"spells": "old list: Fireball"}, ensure_ascii=False)),
+    )
+    character_id = int(cursor.lastrowid)
+    db.commit()
+
+    set_character_spells(
+        db,
+        character_id,
+        [
+            (fireball["id"], True, True, ""),
+            (mana_id, True, True, ""),  # prepared request ignored for mana
+        ],
+    )
+    by_name = {row["name"]: row for row in get_character_spells(db, character_id)}
+    assert by_name["Fireball"]["prepared"] == 1
+    assert by_name["Arc Surge"]["prepared"] == 0
+    assert spell_casting_mode(
+        next(spell for spell in get_spells(db) if spell["id"] == mana_id)
+    ) == "mana"
+
+    blurb = spell_notes_blurb(
+        json.loads(
+            db.execute(
+                "SELECT data FROM characters WHERE id=?", (character_id,)
+            ).fetchone()["data"]
+        )
+    )
+    assert "Fireball" in blurb
     db.close()

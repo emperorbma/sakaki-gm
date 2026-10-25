@@ -4,10 +4,13 @@ from tkinter import messagebox, ttk
 
 from sakaki_gm.rules_5e_spells import ensure_5e_spells
 from sakaki_gm.spell_db import (
+    CASTING_MODES,
+    DEFAULT_CASTING_MODE,
     SPELL_SCHOOLS,
     delete_campaign_spell,
     get_spell,
     get_spells,
+    spell_casting_mode,
     upsert_campaign_spell,
 )
 
@@ -39,9 +42,10 @@ class SpellsModule:
         ttk.Label(
             self.frame,
             text=(
-                "Campaign spell catalog used for character known/prepared links. "
-                "Stock D&D 5e titles are seeded on bottle open; free-text character "
-                "spell notes are left intact and only cleanly matched names are linked."
+                "Campaign spell catalog for character spellbook loadouts. "
+                "Casting mode is per spell (Vancian known/prepared, or mana) so "
+                "hybrid bottles can mix both. Stock 5e titles seed as Vancian; "
+                "matched free-text names link without rewriting character prose."
             ),
             wraplength=780,
         ).pack(anchor="w", padx=12, pady=(0, 8))
@@ -53,16 +57,18 @@ class SpellsModule:
         list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.spells_list = ttk.Treeview(
             list_frame,
-            columns=("name", "level", "school"),
+            columns=("name", "level", "school", "mode"),
             show="headings",
             selectmode="browse",
         )
         self.spells_list.heading("name", text="Spell")
         self.spells_list.heading("level", text="Level")
         self.spells_list.heading("school", text="School")
-        self.spells_list.column("name", width=240, stretch=True)
-        self.spells_list.column("level", width=80, stretch=False, anchor="center")
-        self.spells_list.column("school", width=110, stretch=False)
+        self.spells_list.heading("mode", text="Casting")
+        self.spells_list.column("name", width=200, stretch=True)
+        self.spells_list.column("level", width=70, stretch=False, anchor="center")
+        self.spells_list.column("school", width=100, stretch=False)
+        self.spells_list.column("mode", width=80, stretch=False, anchor="center")
         scroll = ttk.Scrollbar(
             list_frame, orient=tk.VERTICAL, command=self.spells_list.yview
         )
@@ -99,7 +105,16 @@ class SpellsModule:
             values=sorted(SPELL_SCHOOLS),
             state="readonly",
             width=14,
-        ).grid(row=1, column=1, sticky="w")
+        ).grid(row=1, column=1, sticky="w", padx=(0, 10))
+        ttk.Label(meta, text="Casting").grid(row=0, column=2, sticky="w")
+        self.spell_casting_mode = tk.StringVar(value=DEFAULT_CASTING_MODE)
+        ttk.Combobox(
+            meta,
+            textvariable=self.spell_casting_mode,
+            values=sorted(CASTING_MODES),
+            state="readonly",
+            width=10,
+        ).grid(row=1, column=2, sticky="w")
 
         flags = ttk.Frame(editor)
         flags.pack(fill=tk.X, pady=(0, 8))
@@ -173,6 +188,7 @@ class SpellsModule:
                     spell["name"],
                     _level_label(spell["level"]),
                     school.title() if school else "—",
+                    spell_casting_mode(spell),
                 ),
             )
             if keep_id is not None and spell["id"] == keep_id:
@@ -189,6 +205,7 @@ class SpellsModule:
         self.spell_name.set("")
         self.spell_level.set("0")
         self.spell_school.set("evocation")
+        self.spell_casting_mode.set(DEFAULT_CASTING_MODE)
         self.spell_ritual.set(False)
         self.spell_concentration.set(False)
         self.spell_casting_time.set("")
@@ -213,6 +230,7 @@ class SpellsModule:
         self.spell_level.set(str(row["level"] if row["level"] is not None else 0))
         school = (row["school"] or "evocation").lower()
         self.spell_school.set(school if school in SPELL_SCHOOLS else "evocation")
+        self.spell_casting_mode.set(spell_casting_mode(row))
         self.spell_ritual.set(bool(row["ritual"]))
         self.spell_concentration.set(bool(row["concentration"]))
         self.spell_casting_time.set(row["casting_time"] or "")
@@ -236,6 +254,7 @@ class SpellsModule:
             "description": self._description_text(),
             "ritual": bool(self.spell_ritual.get()),
             "concentration": bool(self.spell_concentration.get()),
+            "casting_mode": self.spell_casting_mode.get() or DEFAULT_CASTING_MODE,
         }
 
     def add_spell(self):
