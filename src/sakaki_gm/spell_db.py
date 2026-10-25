@@ -313,15 +313,34 @@ def get_character_spells(db, character_id: int):
     ).fetchall()
 
 
+def _normalize_prepared_count(prepared, *, vancian: bool) -> int:
+    """Coerce prepared to a non-negative integer slot count.
+
+    5e-style lists typically use 0/1. Classic Vancian may store multiple
+    preparations of the same title. Mana-mode spells always store 0.
+    """
+    if not vancian:
+        return 0
+    try:
+        count = int(prepared)
+    except (TypeError, ValueError):
+        count = 1 if prepared else 0
+    return max(0, count)
+
+
 def set_character_spell(
     db,
     character_id: int,
     spell_id: int,
     *,
     known: bool = True,
-    prepared: bool = False,
+    prepared: int | bool = 0,
     notes: str = "",
 ) -> None:
+    mode = spell_casting_mode(get_spell(db, spell_id) or {})
+    prepared_count = _normalize_prepared_count(
+        prepared, vancian=(mode == "vancian")
+    )
     with db:
         db.execute(
             """
@@ -337,7 +356,7 @@ def set_character_spell(
                 character_id,
                 spell_id,
                 1 if known else 0,
-                1 if prepared else 0,
+                prepared_count,
                 (notes or "").strip(),
             ),
         )
@@ -347,8 +366,9 @@ def set_character_spells(db, character_id: int, assignments) -> None:
     """Replace a character's spellbook loadout.
 
     Each assignment is ``(spell_id, known, prepared, notes)``. Rows with
-    ``known`` false are omitted (not in the loadout). ``prepared`` only
-    applies to Vancian-mode catalog spells; mana-mode spells store prepared=0.
+    ``known`` false are omitted (not in the loadout). ``prepared`` is an
+    integer preparation count for Vancian spells (0/1 for typical 5e lists;
+    higher for multi-slot Vancian). Mana-mode spells store prepared=0.
     """
     mode_by_id = {
         int(row["id"]): spell_casting_mode(row) for row in get_spells(db)
@@ -365,13 +385,13 @@ def set_character_spells(db, character_id: int, assignments) -> None:
         if not known:
             continue
         vancian = mode_by_id.get(spell_id, DEFAULT_CASTING_MODE) == "vancian"
-        prepared = bool(prepared) and vancian
+        prepared_count = _normalize_prepared_count(prepared, vancian=vancian)
         normalized.append(
             (
                 character_id,
                 spell_id,
                 1,
-                1 if prepared else 0,
+                prepared_count,
                 (notes or "").strip(),
             )
         )
@@ -430,17 +450,18 @@ def link_character_spells_from_free_text(
     character_id: int,
     text: str,
     *,
-    mark_prepared: bool = False,
+    mark_prepared: int | bool = 0,
 ) -> dict:
     """Link catalog spells named in free text. Never edits the free-text field.
 
     Only exact catalog title matches become ``character_spells`` rows.
-    Unrecognized prose is left alone. Defaults to known=True, prepared=False
-    so migration does not invent preparation state.
+    Unrecognized prose is left alone. Defaults to known with prepared=0 so
+    migration does not invent preparation counts.
     """
     catalog = {row["name"]: row["id"] for row in get_spells(db)}
     matched_names = find_spell_names_in_text(text, list(catalog))
     linked = []
+    prepared_count = _normalize_prepared_count(mark_prepared, vancian=True)
     for name in matched_names:
         spell_id = catalog[name]
         existing = db.execute(
@@ -457,7 +478,7 @@ def link_character_spells_from_free_text(
             character_id,
             spell_id,
             known=True,
-            prepared=bool(mark_prepared),
+            prepared=prepared_count,
             notes="",
         )
         linked.append(name)

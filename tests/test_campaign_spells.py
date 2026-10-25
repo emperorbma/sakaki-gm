@@ -172,8 +172,8 @@ def test_stock_spells_default_to_vancian_casting_mode(tmp_path):
     db.close()
 
 
-def test_hybrid_loadout_prepared_only_for_vancian(tmp_path):
-    """Hybrid campaigns mix Vancian and mana spells in one character loadout."""
+def test_hybrid_loadout_prepared_count_for_vancian(tmp_path):
+    """Hybrid campaigns mix Vancian and mana spells; prepared is a count."""
     db = get_db(tmp_path / "campaign.db")
     fireball = next(spell for spell in get_spells(db) if spell["name"] == "Fireball")
     mana_id = upsert_campaign_spell(
@@ -195,12 +195,12 @@ def test_hybrid_loadout_prepared_only_for_vancian(tmp_path):
         db,
         character_id,
         [
-            (fireball["id"], True, True, ""),
-            (mana_id, True, True, ""),  # prepared request ignored for mana
+            (fireball["id"], True, 3, ""),  # multi-slot Vancian preparations
+            (mana_id, True, 5, ""),  # prepared count ignored for mana
         ],
     )
     by_name = {row["name"]: row for row in get_character_spells(db, character_id)}
-    assert by_name["Fireball"]["prepared"] == 1
+    assert by_name["Fireball"]["prepared"] == 3
     assert by_name["Arc Surge"]["prepared"] == 0
     assert spell_casting_mode(
         next(spell for spell in get_spells(db) if spell["id"] == mana_id)
