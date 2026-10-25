@@ -1,4 +1,3 @@
-import json
 import sqlite3
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -16,27 +15,22 @@ from sakaki_gm.item_db import (
     update_item,
     update_item_instance,
 )
+from sakaki_gm.item_property_sets import (
+    armor_from_properties,
+    assemble_properties,
+    container_from_properties,
+    format_strength,
+    format_weapon_properties,
+    kind_enabled,
+    money_from_properties,
+    other_properties,
+    parse_strength_text,
+    parse_weapon_properties_text,
+    properties_from_json,
+    properties_to_json,
+    weapon_from_properties,
+)
 from sakaki_gm.rules_5e_equipment import ensure_5e_equipment_archetypes
-
-
-def _format_properties(properties) -> str:
-    data = properties if isinstance(properties, dict) else {}
-    if not data:
-        return "{}"
-    return json.dumps(data, ensure_ascii=False, indent=2)
-
-
-def _parse_properties_text(raw: str) -> dict:
-    text = (raw or "").strip()
-    if not text:
-        return {}
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Property sets must be valid JSON ({exc}).") from exc
-    if not isinstance(data, dict):
-        raise ValueError("Property sets must be a JSON object.")
-    return data
 
 
 class ItemsModule:
@@ -46,6 +40,7 @@ class ItemsModule:
         self._items = []
         self._loading = False
         self._selected_id = None
+        self._kind_tabs = {}
 
         header = ttk.Frame(self.frame)
         header.pack(fill=tk.X, padx=12, pady=(12, 4))
@@ -67,8 +62,8 @@ class ItemsModule:
             text=(
                 "Reusable definitions. Owned copies in inventories and on the map "
                 "are instances that take these defaults unless a copy overrides them. "
-                "Container archetypes spawn a new container instance when added. "
-                "Use Customize owned copies to edit, detach, or reattach instances."
+                "Check a kind to attach its property set; Container also spawns a "
+                "nestable inventory instance when added to a loadout."
             ),
             wraplength=780,
         ).pack(anchor="w", padx=12, pady=(0, 8))
@@ -83,28 +78,41 @@ class ItemsModule:
         editor.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
         ttk.Label(editor, text="Name").pack(anchor="w")
         self.name = ttk.Entry(editor, font=("Georgia", 11))
-        self.name.pack(fill=tk.X, pady=(2, 8))
+        self.name.pack(fill=tk.X, pady=(2, 6))
         ttk.Label(editor, text="Description").pack(anchor="w")
-        self.description = tk.Text(editor, wrap=tk.WORD, font=("Georgia", 11), height=7)
-        self.description.pack(fill=tk.BOTH, expand=True, pady=(2, 8))
+        self.description = tk.Text(editor, wrap=tk.WORD, font=("Georgia", 11), height=5)
+        self.description.pack(fill=tk.BOTH, expand=False, pady=(2, 6))
+
+        kinds = ttk.Frame(editor)
+        kinds.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(kinds, text="Kinds").pack(side=tk.LEFT, padx=(0, 8))
+        self.is_weapon = tk.BooleanVar(value=False)
+        self.is_armor = tk.BooleanVar(value=False)
         self.is_container = tk.BooleanVar(value=False)
+        self.is_money = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            editor,
-            text="Container archetype (creates a container instance with its own contents)",
+            kinds, text="Weapon", variable=self.is_weapon, command=self._sync_kind_tabs
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(
+            kinds, text="Armor", variable=self.is_armor, command=self._sync_kind_tabs
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(
+            kinds,
+            text="Container",
             variable=self.is_container,
-        ).pack(anchor="w", pady=(0, 6))
-        ttk.Label(editor, text="Property sets").pack(anchor="w")
-        ttk.Label(
-            editor,
-            text=(
-                "Attached kinds as JSON (tags, weapon, armor, food, container, …). "
-                "Leave {} when none. Saving keeps these; the container checkbox "
-                "only syncs the container tag."
-            ),
-            wraplength=520,
-        ).pack(anchor="w", pady=(0, 2))
-        self.properties = tk.Text(editor, wrap=tk.NONE, font=("Consolas", 10), height=8)
-        self.properties.pack(fill=tk.BOTH, expand=True, pady=(2, 8))
+            command=self._sync_kind_tabs,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(
+            kinds,
+            text="Money / Currency",
+            variable=self.is_money,
+            command=self._sync_kind_tabs,
+        ).pack(side=tk.LEFT)
+
+        self.kind_notebook = ttk.Notebook(editor)
+        self.kind_notebook.pack(fill=tk.BOTH, expand=True, pady=(2, 8))
+        self._build_kind_tabs()
+        self._sync_kind_tabs()
 
         buttons = ttk.Frame(editor)
         buttons.pack(fill=tk.X)
@@ -117,6 +125,119 @@ class ItemsModule:
             command=self.detach_all_copies,
         ).pack(side=tk.LEFT, padx=6)
         self.reload()
+
+    def _build_kind_tabs(self):
+        weapon = ttk.Frame(self.kind_notebook, padding=8)
+        self.weapon_category = ttk.Entry(weapon, font=("Georgia", 11))
+        self.weapon_damage = ttk.Entry(weapon, font=("Georgia", 11))
+        self.weapon_range = ttk.Entry(weapon, font=("Georgia", 11))
+        self.weapon_properties = ttk.Entry(weapon, font=("Georgia", 11))
+        for label, widget in (
+            ("Category", self.weapon_category),
+            ("Damage", self.weapon_damage),
+            ("Range", self.weapon_range),
+            ("Properties (comma-separated)", self.weapon_properties),
+        ):
+            ttk.Label(weapon, text=label).pack(anchor="w")
+            widget.pack(fill=tk.X, pady=(2, 8))
+        self._kind_tabs["weapon"] = weapon
+
+        armor = ttk.Frame(self.kind_notebook, padding=8)
+        self.armor_category = ttk.Entry(armor, font=("Georgia", 11))
+        self.armor_ac = ttk.Entry(armor, font=("Georgia", 11))
+        self.armor_strength = ttk.Entry(armor, font=("Georgia", 11))
+        self.armor_stealth = tk.BooleanVar(value=False)
+        for label, widget in (
+            ("Category", self.armor_category),
+            ("AC", self.armor_ac),
+            ("Strength requirement (blank = none)", self.armor_strength),
+        ):
+            ttk.Label(armor, text=label).pack(anchor="w")
+            widget.pack(fill=tk.X, pady=(2, 8))
+        ttk.Checkbutton(
+            armor,
+            text="Stealth disadvantage",
+            variable=self.armor_stealth,
+        ).pack(anchor="w", pady=(0, 8))
+        self._kind_tabs["armor"] = armor
+
+        container = ttk.Frame(self.kind_notebook, padding=8)
+        self.container_capacity = ttk.Entry(container, font=("Georgia", 11))
+        self.container_role = ttk.Entry(container, font=("Georgia", 11))
+        ttk.Label(container, text="Capacity").pack(anchor="w")
+        self.container_capacity.pack(fill=tk.X, pady=(2, 8))
+        ttk.Label(container, text="Role").pack(anchor="w")
+        self.container_role.pack(fill=tk.X, pady=(2, 8))
+        ttk.Label(
+            container,
+            text="Nestable inventory container when added to a character loadout.",
+            wraplength=420,
+        ).pack(anchor="w")
+        self._kind_tabs["container"] = container
+
+        money = ttk.Frame(self.kind_notebook, padding=8)
+        self.money_value = ttk.Entry(money, font=("Georgia", 11))
+        ttk.Label(money, text="Value").pack(anchor="w")
+        self.money_value.pack(fill=tk.X, pady=(2, 8))
+        ttk.Label(
+            money,
+            text='Examples: "1 cp", "1 unit", "100 units".',
+            wraplength=420,
+        ).pack(anchor="w")
+        self._kind_tabs["money"] = money
+
+        other = ttk.Frame(self.kind_notebook, padding=8)
+        ttk.Label(
+            other,
+            text=(
+                "Other tags and blocks as JSON (food, vessel, focus, reagent, …). "
+                "Managed kind tags/blocks are edited above and stripped from this pane."
+            ),
+            wraplength=420,
+        ).pack(anchor="w", pady=(0, 4))
+        self.other_properties = tk.Text(
+            other, wrap=tk.NONE, font=("Consolas", 10), height=8
+        )
+        self.other_properties.pack(fill=tk.BOTH, expand=True)
+        self._kind_tabs["other"] = other
+        self.kind_notebook.add(other, text="Other")
+
+    def _sync_kind_tabs(self):
+        enabled = {
+            "weapon": self.is_weapon.get(),
+            "armor": self.is_armor.get(),
+            "container": self.is_container.get(),
+            "money": self.is_money.get(),
+        }
+        titles = {
+            "weapon": "Weapon",
+            "armor": "Armor",
+            "container": "Container",
+            "money": "Money",
+        }
+        # Preserve Other; rebuild managed tabs in a stable order.
+        for kind in ("weapon", "armor", "container", "money"):
+            tab = self._kind_tabs[kind]
+            try:
+                self.kind_notebook.forget(tab)
+            except tk.TclError:
+                pass
+        for kind in ("weapon", "armor", "container", "money"):
+            if enabled[kind]:
+                # Insert before Other when possible.
+                other = self._kind_tabs["other"]
+                try:
+                    other_index = self.kind_notebook.index(other)
+                except tk.TclError:
+                    other_index = "end"
+                self.kind_notebook.insert(
+                    other_index, self._kind_tabs[kind], text=titles[kind]
+                )
+        # Prefer the first managed tab when one was just enabled.
+        for kind in ("weapon", "armor", "container", "money"):
+            if enabled[kind]:
+                self.kind_notebook.select(self._kind_tabs[kind])
+                break
 
     def set_db(self, db):
         self.db = db
@@ -167,11 +288,84 @@ class ItemsModule:
         self.list.selection_clear(0, tk.END)
         self.name.delete(0, tk.END)
         self.description.delete("1.0", tk.END)
-        self.is_container.set(False)
-        self.properties.delete("1.0", tk.END)
-        self.properties.insert("1.0", "{}")
+        self._load_properties({})
         self._loading = False
         self.name.focus_set()
+
+    def _load_properties(self, properties: dict | None):
+        props = properties or {}
+        self.is_weapon.set(kind_enabled(props, "weapon"))
+        self.is_armor.set(kind_enabled(props, "armor"))
+        self.is_container.set(kind_enabled(props, "container"))
+        self.is_money.set(kind_enabled(props, "money"))
+
+        weapon = weapon_from_properties(props)
+        self.weapon_category.delete(0, tk.END)
+        self.weapon_category.insert(0, weapon["category"])
+        self.weapon_damage.delete(0, tk.END)
+        self.weapon_damage.insert(0, weapon["damage"])
+        self.weapon_range.delete(0, tk.END)
+        self.weapon_range.insert(0, weapon["range"])
+        self.weapon_properties.delete(0, tk.END)
+        self.weapon_properties.insert(
+            0, format_weapon_properties(weapon["properties"])
+        )
+
+        armor = armor_from_properties(props)
+        self.armor_category.delete(0, tk.END)
+        self.armor_category.insert(0, armor["category"])
+        self.armor_ac.delete(0, tk.END)
+        self.armor_ac.insert(0, armor["ac"])
+        self.armor_strength.delete(0, tk.END)
+        self.armor_strength.insert(0, format_strength(armor["strength"]))
+        self.armor_stealth.set(bool(armor["stealth_disadvantage"]))
+
+        container = container_from_properties(props)
+        self.container_capacity.delete(0, tk.END)
+        self.container_capacity.insert(0, container["capacity"])
+        self.container_role.delete(0, tk.END)
+        self.container_role.insert(0, container["role"])
+
+        money = money_from_properties(props)
+        self.money_value.delete(0, tk.END)
+        self.money_value.insert(0, money["value"])
+
+        self.other_properties.delete("1.0", tk.END)
+        self.other_properties.insert(
+            "1.0", properties_to_json(other_properties(props))
+        )
+        self._sync_kind_tabs()
+
+    def _collect_properties(self) -> dict:
+        other = properties_from_json(self.other_properties.get("1.0", "end"))
+        return assemble_properties(
+            is_weapon=self.is_weapon.get(),
+            is_armor=self.is_armor.get(),
+            is_container=self.is_container.get(),
+            is_money=self.is_money.get(),
+            weapon={
+                "category": self.weapon_category.get().strip(),
+                "damage": self.weapon_damage.get().strip(),
+                "range": self.weapon_range.get().strip() or "melee",
+                "properties": parse_weapon_properties_text(
+                    self.weapon_properties.get()
+                ),
+            },
+            armor={
+                "category": self.armor_category.get().strip(),
+                "ac": self.armor_ac.get().strip(),
+                "stealth_disadvantage": self.armor_stealth.get(),
+                "strength": parse_strength_text(self.armor_strength.get()),
+            },
+            container={
+                "capacity": self.container_capacity.get().strip(),
+                "role": self.container_role.get().strip(),
+            },
+            money={
+                "value": self.money_value.get().strip(),
+            },
+            other=other,
+        )
 
     def save_item(self):
         name = self.name.get().strip()
@@ -184,9 +378,7 @@ class ItemsModule:
             )
             return
         try:
-            properties = _parse_properties_text(
-                self.properties.get("1.0", "end")
-            )
+            properties = self._collect_properties()
         except ValueError as exc:
             messagebox.showerror("Archetype", str(exc), parent=self.frame)
             return
@@ -302,9 +494,7 @@ class ItemsModule:
         self.name.insert(0, item["name"])
         self.description.delete("1.0", tk.END)
         self.description.insert("1.0", item["description"])
-        self.is_container.set(item["is_container"])
-        self.properties.delete("1.0", tk.END)
-        self.properties.insert("1.0", _format_properties(item.get("properties")))
+        self._load_properties(item.get("properties"))
 
 
 class InstanceCustomizeDialog(tk.Toplevel):
@@ -517,7 +707,7 @@ class InstanceCustomizeDialog(tk.Toplevel):
         self.description.delete("1.0", tk.END)
         self.description.insert("1.0", item["description"] or "")
         self.properties.delete("1.0", tk.END)
-        self.properties.insert("1.0", _format_properties(item.get("properties")))
+        self.properties.insert("1.0", properties_to_json(item.get("properties")))
         self.location.config(
             text="; ".join(item["locations"]) if item["locations"] else "—"
         )
@@ -539,7 +729,7 @@ class InstanceCustomizeDialog(tk.Toplevel):
             )
             return
         try:
-            properties = _parse_properties_text(
+            properties = properties_from_json(
                 self.properties.get("1.0", "end")
             )
         except ValueError as exc:

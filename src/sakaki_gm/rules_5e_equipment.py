@@ -866,17 +866,26 @@ DEFAULT_5E_EQUIPMENT: tuple[dict, ...] = (
     {
         "name": "Gold Coin",
         "description": "A gold piece.",
-        "properties": {"tags": ["currency"]},
+        "properties": {
+            "tags": ["money"],
+            "money": {"value": "1 gp"},
+        },
     },
     {
         "name": "Silver Coin",
         "description": "A silver piece.",
-        "properties": {"tags": ["currency"]},
+        "properties": {
+            "tags": ["money"],
+            "money": {"value": "1 sp"},
+        },
     },
     {
         "name": "Copper Coin",
         "description": "A copper piece.",
-        "properties": {"tags": ["currency"]},
+        "properties": {
+            "tags": ["money"],
+            "money": {"value": "1 cp"},
+        },
     },
     {
         "name": "Traveler's Clothes",
