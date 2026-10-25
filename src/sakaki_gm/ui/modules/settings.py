@@ -291,12 +291,16 @@ class SettingsModule:
         items_module = getattr(self.main_app, "items_module", None)
         if items_module is not None:
             items_module.reload()
-        messagebox.showinfo(
-            "Success",
+        detail = (
             "Standard 5e rules loaded.\n"
             f"Equipment archetypes: {equipment['added']} added, "
-            f"{equipment['skipped']} already present.",
+            f"{equipment['skipped']} already present."
         )
+        if equipment.get("repaired"):
+            detail += (
+                f"\nRepaired {equipment['repaired']} stock Waterskin(s) to vessel."
+            )
+        messagebox.showinfo("Success", detail)
 
     def apply_preset(self, _event=None):
         preset = PRESETS.get(self.provider.get())

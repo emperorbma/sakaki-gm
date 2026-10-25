@@ -133,11 +133,13 @@ class ItemsModule:
             return
         result = ensure_5e_equipment_archetypes(self.db, commit=True)
         self.reload()
-        messagebox.showinfo(
-            "5e equipment",
+        detail = (
             f"Added {result['added']} archetype(s); "
-            f"{result['skipped']} already present.",
+            f"{result['skipped']} already present."
         )
+        if result.get("repaired"):
+            detail += f"\nRepaired {result['repaired']} stock Waterskin(s) to vessel."
+        messagebox.showinfo("5e equipment", detail)
 
     def reload(self, keep_id=None):
         self._loading = True

@@ -67,6 +67,55 @@ def test_ensure_preserves_typed_property_sets(tmp_path):
     bag = json.loads(backpack["properties"])
     assert "container" in bag["tags"]
     assert bag["container"]["role"] == "pack"
+
+    waterskin = next(item for item in get_items(db) if item["name"] == "Waterskin")
+    assert waterskin["is_container"] is False
+    assert "vessel" in waterskin["properties"]["tags"]
+    assert waterskin["properties"]["vessel"]["capacity"] == "4 pints"
+    db.close()
+
+
+def test_ensure_repairs_legacy_stock_waterskin(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    skin_id = create_item(db, "Waterskin", "Holds 4 pints of liquid.")
+    db.execute(
+        "UPDATE objects SET properties=? WHERE object_id=?",
+        (
+            json.dumps({
+                "tags": ["container"],
+                "container": {"capacity": "4 pints", "role": "waterskin"},
+            }),
+            skin_id,
+        ),
+    )
+    db.commit()
+
+    result = ensure_5e_equipment_archetypes(db, commit=True)
+    assert result["repaired"] == 1
+    row = next(item for item in get_items(db) if item["id"] == skin_id)
+    assert row["is_container"] is False
+    assert row["properties"]["vessel"]["contents"] == "water"
+    assert "container" not in row["properties"].get("tags", [])
+    db.close()
+
+
+def test_ensure_does_not_rewrite_custom_waterskin(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    skin_id = create_item(
+        db,
+        "Waterskin",
+        "Serina's enchanted skin.",
+        is_container=True,
+        properties={
+            "tags": ["container", "magic"],
+            "container": {"capacity": "4 pints", "role": "waterskin"},
+        },
+    )
+    result = ensure_5e_equipment_archetypes(db, commit=True)
+    assert result["repaired"] == 0
+    row = next(item for item in get_items(db) if item["id"] == skin_id)
+    assert row["is_container"] is True
+    assert "magic" in row["properties"]["tags"]
     db.close()
 
 
