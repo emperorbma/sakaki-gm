@@ -17,9 +17,9 @@ Archetypes answer “what kind of thing is this?” Instances answer “which ph
 
 | Term | Meaning |
 |------|---------|
-| **Archetype** | The reusable definition: name, base description, tags, default rules. What the Items tab calls the **catalog** today is this idea. |
+| **Archetype** | The reusable definition: name, base description, tags, default rules. Desk tab: **Archetypes**. |
 | **Instance** | A concrete copy in the object graph (character inventory, place, bag, or map drop). Play state and divergent flavor hang here. |
-| **Catalog (UI alias)** | Current desk label for the archetype list. Keep or rename in the UI later; the model word is archetype. |
+| **Catalog (legacy alias)** | Older name for the archetype list; UI now says Archetypes. |
 
 ## Problem with the current model
 
@@ -45,7 +45,7 @@ Keep the object graph. Split **archetype** from **owned instance**.
 - Holds the reusable name, base description, tags (including container / weapon / armor / food, etc.), default rules text, and **default property sets** for those kinds. Those defaults apply to every linked instance for any property the instance has **not** overridden.
 - Never appears in a character inventory as the contained object for ordinary gear.
 - Unique artifacts **may omit** an archetype entirely.
-- The Items tab continues to edit archetypes (today’s “catalog”).
+- The Archetypes tab edits these definitions (formerly “Item Catalog”).
 
 ### Owned instance (required wherever a copy exists)
 

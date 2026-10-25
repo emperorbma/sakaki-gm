@@ -188,7 +188,7 @@ class CharactersModule:
         notebook.add(catalog_tab, text="Inventory")
         ttk.Label(
             catalog_tab,
-            text="Expand containers to see their contents. Add items to the selected container or its parent.",
+            text="Owned copies are instances. Expand containers to see contents; drag an archetype to spawn a new copy.",
             wraplength=760,
         ).pack(anchor="w", padx=10, pady=(10, 4))
         inventory_tree = ttk.Treeview(
@@ -202,7 +202,7 @@ class CharactersModule:
         inventory_body.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
         catalog_source = ttk.LabelFrame(
             inventory_body,
-            text="Drag items into inventory",
+            text="Drag archetypes into inventory",
         )
         catalog_source.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
         catalog_list = tk.Listbox(
@@ -330,7 +330,7 @@ class CharactersModule:
             if item_id is None:
                 messagebox.showerror(
                     "Inventory",
-                    "Choose an item from the campaign Items catalog first.",
+                    "Choose an archetype from the campaign list first.",
                     parent=editor,
                 )
                 return None
@@ -418,7 +418,7 @@ class CharactersModule:
             if items_by_id[item_id]["is_container"]:
                 messagebox.showerror(
                     "Inventory",
-                    "A container-tagged catalog item creates a new container. Add it separately.",
+                    "A container archetype creates a new container instance. Add it separately.",
                     parent=editor,
                 )
                 return

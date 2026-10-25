@@ -15,10 +15,16 @@ class ItemsModule:
 
         header = ttk.Frame(self.frame)
         header.pack(fill=tk.X, padx=12, pady=(12, 4))
-        ttk.Label(header, text="Item Catalog", font=("Georgia", 14, "bold")).pack(side=tk.LEFT)
+        ttk.Label(header, text="Item Archetypes", font=("Georgia", 14, "bold")).pack(
+            side=tk.LEFT
+        )
         ttk.Label(
             self.frame,
-            text="Define reusable item objects. Items tagged as containers create a new container object whenever added to an inventory.",
+            text=(
+                "Reusable definitions. Owned copies in inventories and on the map "
+                "are instances that take these defaults unless a copy overrides them. "
+                "Container archetypes spawn a new container instance when added."
+            ),
         ).pack(anchor="w", padx=12, pady=(0, 8))
 
         body = ttk.Frame(self.frame)
@@ -38,7 +44,7 @@ class ItemsModule:
         self.is_container = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             editor,
-            text="Container (creates an instance with its own contents)",
+            text="Container archetype (creates a container instance with its own contents)",
             variable=self.is_container,
         ).pack(anchor="w", pady=(0, 8))
 
@@ -89,7 +95,11 @@ class ItemsModule:
         name = self.name.get().strip()
         description = self.description.get("1.0", "end").strip()
         if not name:
-            messagebox.showerror("Item", "Item name cannot be empty.", parent=self.frame)
+            messagebox.showerror(
+                "Archetype",
+                "Archetype name cannot be empty.",
+                parent=self.frame,
+            )
             return
         item_id = self._selected_id
         try:
@@ -108,8 +118,8 @@ class ItemsModule:
         except sqlite3.IntegrityError:
             self.db.rollback()
             messagebox.showerror(
-                "Item",
-                f"An item named {name} already exists.",
+                "Archetype",
+                f"An archetype named {name} already exists.",
                 parent=self.frame,
             )
             return
@@ -125,8 +135,8 @@ class ItemsModule:
         if item is None:
             return
         if not messagebox.askyesno(
-            "Delete item",
-            f"Delete {item['name']} from this campaign's catalog?",
+            "Delete archetype",
+            f"Delete {item['name']} from this campaign's archetypes?",
             parent=self.frame,
         ):
             return
@@ -135,8 +145,9 @@ class ItemsModule:
         except sqlite3.IntegrityError:
             self.db.rollback()
             messagebox.showerror(
-                "Item",
-                "This item is assigned to a character. Remove it from their inventory first.",
+                "Archetype",
+                "Owned instances still link to this archetype. "
+                "Remove those copies from inventories first.",
                 parent=self.frame,
             )
             return
