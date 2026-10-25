@@ -71,9 +71,13 @@ Keep the object graph. Split **archetype** from **owned instance**.
 
 ## Ask GM and proposals
 
-- Scene gear and inventory proposals should cite **instance** `object_id`s (and optional `record_id` from scratch).
-- `spend_use` should record the instance id, not only an archetype / catalog id.
-- Search tools may return archetypes; inspect of an owned item should return the instance, with archetype text merged or linked when `instance_of` exists.
+The model does **not** need the archetype/instance split. Prompts and tool results should show the **practical result** only: what is here, what it is called, how it reads now (including any local flavor or enchantment), quantity, and usable state. Do not teach `instance_of`, catalog vs copy, or migration vocabulary in the GM prompt.
+
+Under the hood:
+
+- Scene gear, place contents, and inventory proposals address the concrete copy (stable `object_id` / scratch `record_id`).
+- `spend_use` and `inventory_*` proposals bind to that copy id, never to a bare archetype id when an owned/dropped copy exists.
+- When packing text for the model, merge archetype defaults with instance overrides into one description. The reply cites that resolved object; the app maps the citation back to the instance row.
 
 ## Migration sketch
 
