@@ -23,7 +23,8 @@ class SkillsModule:
             self.frame,
             text=(
                 "Campaign skill list used for character proficiency and bottle-side "
-                "roll_check proposals. Add, rename, or reassign abilities here."
+                "roll_check proposals. Add, rename, reassign abilities, or edit "
+                "descriptions here."
             ),
             wraplength=780,
         ).pack(anchor="w", padx=12, pady=(0, 8))
@@ -52,7 +53,7 @@ class SkillsModule:
         self.skills_list.bind("<<TreeviewSelect>>", self._on_skill_select)
 
         editor = ttk.Frame(body)
-        editor.pack(side=tk.LEFT, fill=tk.Y, padx=(12, 0))
+        editor.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
         ttk.Label(editor, text="Name").pack(anchor="w")
         self.skill_name = tk.StringVar()
         ttk.Entry(editor, textvariable=self.skill_name, width=28, font=("Georgia", 11)).pack(
@@ -66,7 +67,12 @@ class SkillsModule:
             values=sorted(ABILITY_SCORES),
             state="readonly",
             width=10,
-        ).pack(anchor="w", pady=(2, 12))
+        ).pack(anchor="w", pady=(2, 10))
+        ttk.Label(editor, text="Description").pack(anchor="w")
+        self.skill_description = tk.Text(
+            editor, wrap=tk.WORD, font=("Georgia", 11), height=8
+        )
+        self.skill_description.pack(fill=tk.BOTH, expand=True, pady=(2, 10))
 
         buttons = ttk.Frame(editor)
         buttons.pack(fill=tk.X)
@@ -112,6 +118,7 @@ class SkillsModule:
         self._selected_skill_id = None
         self.skill_name.set("")
         self.skill_ability.set("dex")
+        self.skill_description.delete("1.0", tk.END)
         selection = self.skills_list.selection()
         if selection:
             self.skills_list.selection_remove(*selection)
@@ -130,6 +137,11 @@ class SkillsModule:
         self._selected_skill_id = skill_id
         self.skill_name.set(row["name"])
         self.skill_ability.set((row["ability"] or "dex").lower())
+        self.skill_description.delete("1.0", tk.END)
+        self.skill_description.insert("1.0", row["description"] or "")
+
+    def _description_text(self) -> str:
+        return self.skill_description.get("1.0", "end").strip()
 
     def add_skill(self):
         try:
@@ -137,6 +149,7 @@ class SkillsModule:
                 self.db,
                 self.skill_name.get(),
                 self.skill_ability.get(),
+                self._description_text(),
             )
         except ValueError as exc:
             messagebox.showerror("Skills", str(exc), parent=self.frame)
@@ -152,6 +165,7 @@ class SkillsModule:
                 self.db,
                 self.skill_name.get(),
                 self.skill_ability.get(),
+                self._description_text(),
                 skill_id=self._selected_skill_id,
             )
         except ValueError as exc:
