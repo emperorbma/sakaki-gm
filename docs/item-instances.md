@@ -117,7 +117,8 @@ Instances can carry **extended information** beyond name and free text. The exis
 - Embeddings or fuzzy “same item” matching.
 - Automatic detection of which current catalog rows are unique artifacts; prefer an explicit unique-create path plus optional manual “detach from archetype” later.
 - A full rules engine for every weapon/armor/food field; ship the property-set slots and seed container first, then grow the schemas as UI and proposals need them.
+- Snapshotting archetype values onto the instance at create time as a private full copy; keep live default→override resolution instead.
 
 ## Relationship to containers
 
-Containers are the first typed property set, not a separate inventory model. After this change, plain items and containers both follow “owned object in the graph,” with optional archetype-seeded property sets behind them.
+Containers are the first typed property set, not a separate inventory model. After this change, plain items and containers both follow “owned object in the graph,” with optional archetype defaults and instance overrides behind them.
