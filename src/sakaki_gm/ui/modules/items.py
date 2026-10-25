@@ -236,7 +236,13 @@ class ItemsModule:
 class InstanceCustomizeDialog(tk.Toplevel):
     """Edit owned instances: overrides, detach from archetype, or reattach."""
 
-    def __init__(self, parent, db, initial_archetype_id=None):
+    def __init__(
+        self,
+        parent,
+        db,
+        initial_archetype_id=None,
+        initial_instance_id=None,
+    ):
         super().__init__(parent)
         self.db = db
         self.title("Customize owned item copies")
@@ -247,6 +253,7 @@ class InstanceCustomizeDialog(tk.Toplevel):
         self._instances = []
         self._selected_id = None
         self._loading = False
+        self._initial_instance_id = initial_instance_id
 
         archetypes = get_items(db)
         self._archetypes_by_name = {item["name"]: item["id"] for item in archetypes}
@@ -268,7 +275,18 @@ class InstanceCustomizeDialog(tk.Toplevel):
         )
         self.filter_combo.pack(side=tk.LEFT, padx=8)
         self.filter_combo.bind("<<ComboboxSelected>>", lambda _e: self.reload_list())
-        if initial_archetype_id and initial_archetype_id in self._archetypes_by_id:
+        if initial_instance_id:
+            # Prefer showing the concrete copy's context when opened from inventory.
+            from sakaki_gm.item_db import archetype_id_for_instance, resolve_item
+
+            linked = archetype_id_for_instance(db, initial_instance_id)
+            if linked and linked in self._archetypes_by_id:
+                self.filter_var.set(self._archetypes_by_id[linked]["name"])
+            else:
+                resolved = resolve_item(db, initial_instance_id)
+                if resolved and resolved.get("archetype_id") is None:
+                    self.filter_var.set("(uniques only)")
+        elif initial_archetype_id and initial_archetype_id in self._archetypes_by_id:
             self.filter_var.set(self._archetypes_by_id[initial_archetype_id]["name"])
 
         body = ttk.Frame(self)
@@ -322,7 +340,8 @@ class InstanceCustomizeDialog(tk.Toplevel):
             command=self.attach_copy,
         ).pack(side=tk.LEFT)
 
-        self.reload_list()
+        keep = self._initial_instance_id
+        self.reload_list(keep_id=keep)
 
     def _filter_archetype_id(self):
         label = self.filter_var.get()

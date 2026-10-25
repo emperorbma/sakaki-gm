@@ -10,9 +10,11 @@ from sakaki_gm.character_db import create_character, delete_character, get_all_c
 from sakaki_gm.item_db import (
     get_character_inventory_tree,
     get_items,
+    resolve_item,
     save_character_inventory,
 )
 from sakaki_gm.skill_db import get_character_skills, get_skills, set_character_skills
+from sakaki_gm.ui.modules.items import InstanceCustomizeDialog
 
 TEXT_FIELDS = (
     ("spells", "Spells"),
@@ -188,7 +190,11 @@ class CharactersModule:
         notebook.add(catalog_tab, text="Inventory")
         ttk.Label(
             catalog_tab,
-            text="Owned copies are instances. Expand containers to see contents; drag an archetype to spawn a new copy.",
+            text=(
+                "Owned copies are instances (including inside containers). "
+                "Drag an archetype to spawn a new copy. Quantity and wear state "
+                "edit here; use Customize copy for name, description, detach, or reattach."
+            ),
             wraplength=760,
         ).pack(anchor="w", padx=10, pady=(10, 4))
         inventory_tree = ttk.Treeview(
@@ -737,6 +743,77 @@ class CharactersModule:
             inventory_controls,
             text="Update selected",
             command=update_catalog_item,
+        ).pack(side=tk.LEFT, padx=4)
+
+        def refresh_owned_copy_labels():
+            for row_id, node in list(inventory_node_data.items()):
+                if node.get("root"):
+                    continue
+                object_id = node.get("object_id") or row_id
+                if not str(object_id).startswith("item-instance:"):
+                    continue
+                if not inventory_tree.exists(row_id):
+                    continue
+                resolved = resolve_item(self.db, object_id)
+                if resolved is None:
+                    continue
+                node["name"] = resolved["name"]
+                node["description"] = resolved["description"]
+                object_properties = dict(node.get("object_properties") or {})
+                if resolved["archetype_id"]:
+                    object_properties["catalog_item_id"] = resolved["archetype_id"]
+                else:
+                    object_properties.pop("catalog_item_id", None)
+                node["object_properties"] = object_properties
+                inventory_tree.item(row_id, text=resolved["name"])
+
+        def customize_selected_copy():
+            selected = inventory_tree.selection()
+            if not selected:
+                messagebox.showerror(
+                    "Customize copy",
+                    "Select an owned item copy in the inventory tree.",
+                    parent=editor,
+                )
+                return
+            row_id = selected[0]
+            node = inventory_node_data[row_id]
+            if node.get("root"):
+                messagebox.showerror(
+                    "Customize copy",
+                    "Select an item inside the inventory, not the root.",
+                    parent=editor,
+                )
+                return
+            if node["object_type"] == "container":
+                messagebox.showinfo(
+                    "Customize copy",
+                    "Containers are separate objects. Select an item copy "
+                    "(including one nested in a container).",
+                    parent=editor,
+                )
+                return
+            object_id = node.get("object_id") or row_id
+            if not str(object_id).startswith("item-instance:"):
+                messagebox.showinfo(
+                    "Customize copy",
+                    "Save the character first so this entry becomes a real "
+                    "owned instance, then customize it.",
+                    parent=editor,
+                )
+                return
+            dialog = InstanceCustomizeDialog(
+                editor,
+                self.db,
+                initial_instance_id=object_id,
+            )
+            editor.wait_window(dialog)
+            refresh_owned_copy_labels()
+
+        ttk.Button(
+            inventory_controls,
+            text="Customize copy…",
+            command=customize_selected_copy,
         ).pack(side=tk.LEFT, padx=4)
         ttk.Button(
             inventory_controls,
