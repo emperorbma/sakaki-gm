@@ -112,8 +112,12 @@ def test_campaign_generate_skips_empty_spirits(tmp_path):
 def test_generator_on_eldenweave_snapshot_is_conservative(tmp_path):
     """Serina already rich — generator should add little/nothing relevant."""
     source = Path(
-        "/home/ubuntu/.cursor/projects/workspace/uploads/6175732bd8a9_a6fb.db"
+        "/home/ubuntu/.cursor/projects/workspace/uploads/6175732bd8a9_57d4.db"
     )
+    if not source.exists():
+        source = Path(
+            "/home/ubuntu/.cursor/projects/workspace/uploads/6175732bd8a9_a6fb.db"
+        )
     if not source.exists():
         return
     dest = tmp_path / "eldenweave.db"
@@ -125,12 +129,43 @@ def test_generator_on_eldenweave_snapshot_is_conservative(tmp_path):
     before = set(_names(get_character_inventory_tree(db, serina)))
     result = generate_character_inventory(db, serina, commit=True)
     after = set(_names(get_character_inventory_tree(db, serina)))
-    # Should not invent a second Traveler's Clothes or Arcane Focus pile.
-    assert "Traveler's Clothes" not in {
-        item["name"] for item in result["added"]
-    }
-    assert "Arcane Focus" not in {item["name"] for item in result["added"]}
+    added = {item["name"] for item in result["added"]}
+    # Skirt/focus/stick/scepter cover clothes, focus, and melee — no filler dupes.
+    assert "Traveler's Clothes" not in added
+    assert "Arcane Focus" not in added
+    assert "Dagger" not in added
     assert "Lunarglow Skirt" in after
-    # No removals.
     assert before <= after
+    db.close()
+
+
+def test_stick_or_scepter_covers_starter_dagger(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    ensure_5e_equipment_archetypes(db, commit=True)
+    character_id = create_character(
+        db, "Serina", {"name": "Serina", "class": "Wizard", "level": 2}
+    )
+    catalog = {
+        row["name"]: row["object_id"]
+        for row in db.execute(
+            "SELECT object_id, name FROM objects WHERE object_type='item'"
+        )
+    }
+    root = get_character_inventory_container(db, character_id)
+    stick = create_item_instance(db, catalog["Club"], commit=False)
+    db.execute(
+        "UPDATE objects SET name=?, properties=? WHERE object_id=?",
+        (
+            "Starbloom-Infused Lunar Stick",
+            json.dumps({"name": "Starbloom-Infused Lunar Stick"}, ensure_ascii=False),
+            stick,
+        ),
+    )
+    place_owned_copy_in_container(db, root, stick, commit=True)
+    result = generate_character_inventory(db, character_id, commit=True)
+    assert "Dagger" not in {item["name"] for item in result["added"]}
+    assert any(
+        row["name"] == "Dagger" and row["reason"] == "already covered"
+        for row in result["skipped"]
+    )
     db.close()
