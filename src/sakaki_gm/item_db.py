@@ -146,6 +146,348 @@ def create_item_instance(
     return instance_id
 
 
+def list_item_instances(db, archetype_id: str | None = None) -> list[dict]:
+    """Return owned item instances, optionally filtered by archetype."""
+    if archetype_id:
+        rows = db.execute(
+            """
+            SELECT instance.object_id, instance.name, instance.description,
+                   instance.properties, link.to_object_id AS archetype_id
+            FROM objects AS instance
+            JOIN object_links AS link
+              ON link.from_object_id = instance.object_id
+             AND link.relation = 'instance_of'
+            WHERE instance.object_type = ?
+              AND link.to_object_id = ?
+            ORDER BY instance.name COLLATE NOCASE, instance.object_id
+            """,
+            (ITEM_INSTANCE_TYPE, archetype_id),
+        ).fetchall()
+        # Also include already-detached uniques that used to be that name? No —
+        # filter is by live instance_of only.
+    else:
+        rows = db.execute(
+            """
+            SELECT instance.object_id, instance.name, instance.description,
+                   instance.properties,
+                   (
+                       SELECT link.to_object_id
+                       FROM object_links AS link
+                       WHERE link.from_object_id = instance.object_id
+                         AND link.relation = 'instance_of'
+                       ORDER BY link.id
+                       LIMIT 1
+                   ) AS archetype_id
+            FROM objects AS instance
+            WHERE instance.object_type = ?
+            ORDER BY instance.name COLLATE NOCASE, instance.object_id
+            """,
+            (ITEM_INSTANCE_TYPE,),
+        ).fetchall()
+    results = []
+    for row in rows:
+        resolved = resolve_item(db, row["object_id"]) or {}
+        results.append({
+            "id": row["object_id"],
+            "name": resolved.get("name", row["name"]),
+            "description": resolved.get("description", row["description"]),
+            "properties": resolved.get("properties", {}),
+            "archetype_id": row["archetype_id"],
+            "locations": item_instance_locations(db, row["object_id"]),
+            "is_unique": row["archetype_id"] is None,
+        })
+    return results
+
+
+def item_instance_locations(db, instance_id: str) -> list[str]:
+    """Human-readable containment paths for an owned instance."""
+    parents = db.execute(
+        """
+        SELECT parent.object_id, parent.name, parent.object_type
+        FROM object_links AS link
+        JOIN objects AS parent ON parent.object_id = link.from_object_id
+        WHERE link.relation = 'contains' AND link.to_object_id = ?
+        ORDER BY link.id
+        """,
+        (instance_id,),
+    ).fetchall()
+    paths = []
+    for parent in parents:
+        path = [parent["name"]]
+        current = parent["object_id"]
+        seen = {instance_id, current}
+        while True:
+            row = db.execute(
+                """
+                SELECT grand.object_id, grand.name, grand.object_type,
+                       link.properties
+                FROM object_links AS link
+                JOIN objects AS grand ON grand.object_id = link.from_object_id
+                WHERE link.relation = 'contains' AND link.to_object_id = ?
+                ORDER BY link.id
+                LIMIT 1
+                """,
+                (current,),
+            ).fetchone()
+            if row is None or row["object_id"] in seen:
+                break
+            seen.add(row["object_id"])
+            path.append(row["name"])
+            current = row["object_id"]
+            if row["object_type"] == "character":
+                break
+        paths.append(" > ".join(reversed(path)))
+    return paths
+
+
+def update_item_instance(
+    db,
+    instance_id: str,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    property_overrides: dict | None = None,
+    commit: bool = True,
+) -> None:
+    """Persist per-copy fields on an owned instance.
+
+    While linked to an archetype, name/description are stored as overrides so
+    clearing them later can fall back to defaults. Detached uniques store the
+    values on the object row itself.
+    """
+    row = db.execute(
+        "SELECT object_id, name, description, properties, object_type "
+        "FROM objects WHERE object_id=? AND object_type=?",
+        (instance_id, ITEM_INSTANCE_TYPE),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown item instance {instance_id!r}.")
+    overrides = _parse_properties(row["properties"])
+    archetype_id = archetype_id_for_instance(db, instance_id)
+    object_name = row["name"]
+    object_description = row["description"]
+    if archetype_id:
+        if name is not None:
+            name = name.strip()
+            if not name:
+                raise ValueError("Instance name cannot be empty.")
+            overrides["name"] = name
+            object_name = name
+        if description is not None:
+            overrides["description"] = description
+            object_description = description
+    else:
+        if name is not None:
+            name = name.strip()
+            if not name:
+                raise ValueError("Instance name cannot be empty.")
+            object_name = name
+            overrides.pop("name", None)
+        if description is not None:
+            object_description = description
+            overrides.pop("description", None)
+    if property_overrides is not None:
+        for key, value in property_overrides.items():
+            if key in {"name", "description"}:
+                continue
+            overrides[key] = value
+    db.execute(
+        """
+        UPDATE objects
+        SET name=?, description=?, properties=?
+        WHERE object_id=? AND object_type=?
+        """,
+        (
+            object_name,
+            object_description,
+            json.dumps(overrides, ensure_ascii=False),
+            instance_id,
+            ITEM_INSTANCE_TYPE,
+        ),
+    )
+    if commit:
+        db.commit()
+
+
+def detach_item_instance(db, instance_id: str, *, commit: bool = True) -> dict:
+    """Bake resolved values onto the instance and remove instance_of.
+
+    The copy becomes a unique artifact: further archetype edits no longer apply.
+    """
+    resolved = resolve_item(db, instance_id)
+    if resolved is None:
+        raise ValueError(f"Unknown item instance {instance_id!r}.")
+    if resolved["object_type"] != ITEM_INSTANCE_TYPE:
+        raise ValueError(f"Object {instance_id!r} is not an item instance.")
+    if not resolved["archetype_id"]:
+        return resolved
+    baked = dict(resolved["properties"])
+    # Name/description live on the row for uniques; drop override keys.
+    baked.pop("name", None)
+    baked.pop("description", None)
+    db.execute(
+        """
+        UPDATE objects
+        SET name=?, description=?, properties=?
+        WHERE object_id=? AND object_type=?
+        """,
+        (
+            resolved["name"],
+            resolved["description"],
+            json.dumps(baked, ensure_ascii=False),
+            instance_id,
+            ITEM_INSTANCE_TYPE,
+        ),
+    )
+    db.execute(
+        """
+        DELETE FROM object_links
+        WHERE relation='instance_of' AND from_object_id=?
+        """,
+        (instance_id,),
+    )
+    if commit:
+        db.commit()
+    return resolve_item(db, instance_id)
+
+
+def detach_instances_of_archetype(db, archetype_id: str) -> list[str]:
+    """Detach every owned copy of an archetype. Returns detached instance ids."""
+    instances = list_item_instances(db, archetype_id=archetype_id)
+    detached = []
+    with db:
+        for item in instances:
+            detach_item_instance(db, item["id"], commit=False)
+            detached.append(item["id"])
+    return detached
+
+
+def _override_diff(base: dict, current: dict) -> dict:
+    """Keep only keys (and nested keys) that differ from archetype defaults."""
+    diff = {}
+    for key, value in current.items():
+        if key not in base:
+            diff[key] = value
+            continue
+        base_value = base[key]
+        if isinstance(value, dict) and isinstance(base_value, dict):
+            nested = _override_diff(base_value, value)
+            if nested:
+                diff[key] = nested
+        elif value != base_value:
+            diff[key] = value
+    return diff
+
+
+def attach_item_instance(
+    db,
+    instance_id: str,
+    archetype_id: str,
+    *,
+    commit: bool = True,
+) -> dict:
+    """Link an owned instance to an archetype, keeping only true overrides.
+
+    Replaces any existing instance_of. Values that still match the archetype
+    are cleared so live defaults apply again; divergent name/description/
+    property keys remain as overrides.
+    """
+    row = db.execute(
+        "SELECT object_id, name, description, properties, object_type "
+        "FROM objects WHERE object_id=? AND object_type=?",
+        (instance_id, ITEM_INSTANCE_TYPE),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown item instance {instance_id!r}.")
+    archetype = db.execute(
+        "SELECT object_id, name, description, properties "
+        "FROM objects WHERE object_id=? AND object_type='item'",
+        (archetype_id,),
+    ).fetchone()
+    if archetype is None:
+        raise ValueError(f"Unknown catalog item object: {archetype_id}")
+
+    # Resolve as if unique first (current stored state), then diff vs archetype.
+    current_props = _parse_properties(row["properties"])
+    current_name = str(current_props.get("name", row["name"]))
+    current_description = str(
+        current_props.get("description", row["description"] or "")
+    )
+    current_kind = {
+        key: value
+        for key, value in current_props.items()
+        if key not in {"name", "description"}
+    }
+    base_props = _parse_properties(archetype["properties"])
+    overrides = _override_diff(base_props, current_kind)
+    if current_name != archetype["name"]:
+        overrides["name"] = current_name
+    if current_description != (archetype["description"] or ""):
+        overrides["description"] = current_description
+
+    db.execute(
+        "DELETE FROM object_links WHERE relation='instance_of' AND from_object_id=?",
+        (instance_id,),
+    )
+    db.execute(
+        """
+        INSERT INTO object_links (
+            relation, from_object_id, to_object_id, properties, notes
+        ) VALUES ('instance_of', ?, ?, '{}', '')
+        """,
+        (instance_id, archetype_id),
+    )
+    db.execute(
+        """
+        UPDATE objects
+        SET name=?, description=?, properties=?
+        WHERE object_id=? AND object_type=?
+        """,
+        (
+            archetype["name"],
+            "",
+            json.dumps(overrides, ensure_ascii=False),
+            instance_id,
+            ITEM_INSTANCE_TYPE,
+        ),
+    )
+    if commit:
+        db.commit()
+    return resolve_item(db, instance_id)
+
+
+def create_unique_item_instance(
+    db,
+    name: str,
+    description: str = "",
+    *,
+    properties: dict | None = None,
+    commit: bool = True,
+) -> str:
+    """Create an owned unique with no archetype."""
+    name = name.strip()
+    if not name:
+        raise ValueError("Instance name cannot be empty.")
+    instance_id = f"{ITEM_INSTANCE_PREFIX}{uuid.uuid4().hex}"
+    db.execute(
+        """
+        INSERT INTO objects (
+            object_id, name, object_type, geography_kind, description, properties
+        ) VALUES (?, ?, ?, 'unspecified', ?, ?)
+        """,
+        (
+            instance_id,
+            name,
+            ITEM_INSTANCE_TYPE,
+            description.strip(),
+            json.dumps(properties or {}, ensure_ascii=False),
+        ),
+    )
+    if commit:
+        db.commit()
+    return instance_id
+
+
 def migrate_catalog_contains_to_instances(db) -> int:
     """Retarget contains links from catalog items to owned item instances.
 

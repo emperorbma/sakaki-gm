@@ -17,9 +17,9 @@ Archetypes answer “what kind of thing is this?” Instances answer “which ph
 
 | Term | Meaning |
 |------|---------|
-| **Archetype** | The reusable definition: name, base description, tags, default rules. What the Items tab calls the **catalog** today is this idea. |
+| **Archetype** | The reusable definition: name, base description, tags, default rules. Desk tab: **Archetypes**. |
 | **Instance** | A concrete copy in the object graph (character inventory, place, bag, or map drop). Play state and divergent flavor hang here. |
-| **Catalog (UI alias)** | Current desk label for the archetype list. Keep or rename in the UI later; the model word is archetype. |
+| **Catalog (legacy alias)** | Older name for the archetype list; UI now says Archetypes. |
 
 ## Problem with the current model
 
@@ -45,7 +45,7 @@ Keep the object graph. Split **archetype** from **owned instance**.
 - Holds the reusable name, base description, tags (including container / weapon / armor / food, etc.), default rules text, and **default property sets** for those kinds. Those defaults apply to every linked instance for any property the instance has **not** overridden.
 - Never appears in a character inventory as the contained object for ordinary gear.
 - Unique artifacts **may omit** an archetype entirely.
-- The Items tab continues to edit archetypes (today’s “catalog”).
+- The Archetypes tab edits these definitions (formerly “Item Catalog”).
 
 ### Owned instance (required wherever a copy exists)
 
@@ -62,7 +62,7 @@ Keep the object graph. Split **archetype** from **owned instance**.
 - Full mechanical text lives on the instance description/properties.
 - May still be listed in Documents or notes for lore; the owned object is the authority for play state.
 - Do not force an archetype “just so the Items tab has something to drag.”
-- **Item customization utility (needed):** a desk tool to edit one owned instance — rename, description, kind property sets, and other overrides — whether or not it still links to an archetype. Non-uniques use it to diverge a copy (enchanted blade, spent charges) while defaults keep flowing from the archetype for unset keys; uniques use it to author the full set with no archetype (or to detach / “make unique”). Catalog edit alone only changes defaults for everyone; this utility edits the concrete copy the loadout and Ask GM resolve.
+- **Item customization utility:** Archetypes tab → **Customize owned copies…** (and **Detach all copies** on a selected archetype). Edit one owned instance’s name/description; **Detach (make unique)** bakes resolved values and clears `instance_of`; **Attach to archetype** re-links and keeps only true overrides. Non-uniques diverge a copy while defaults keep flowing for unset keys; uniques (or reattached copies) are first-class.
 
 ### Stackable commons vs divergent copies
 
@@ -128,7 +128,7 @@ Exact packer details can wait for implementation. The cheap path is enough for A
 - Automatic detection of which current catalog rows are unique artifacts; prefer an explicit unique-create path plus optional manual “detach from archetype” later (via the customization utility).
 - A full rules engine for every weapon/armor/food field; ship the property-set slots and seed container first, then grow the schemas as UI and proposals need them.
 - Snapshotting archetype values onto the instance at create time as a private full copy; keep live default→override resolution instead.
-- The item customization utility UI itself (needed next for editing overrides on any owned copy, unique or not).
+- Full typed property-set editors inside the customize dialog (name/description + detach/reattach ship first).
 
 ## Relationship to containers
 
