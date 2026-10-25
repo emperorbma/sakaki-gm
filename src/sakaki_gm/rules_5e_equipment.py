@@ -2,13 +2,20 @@
 
 Names and mechanical summaries follow common 5e SRD-style gear. Installing
 adds missing archetypes only — existing rows (including Eldenweave uniques'
-former catalog names) are left alone.
+former catalog names) are left alone, except a narrow Waterskin repair that
+reclassifies the stock container tagging to a vessel.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
+
+_WATERSKIN_NAME = "Waterskin"
+_LEGACY_WATERSKIN_CONTAINER = {
+    "tags": ["container"],
+    "container": {"capacity": "4 pints", "role": "waterskin"},
+}
 
 # Each entry: name, description, properties (tags + typed sets).
 DEFAULT_5E_EQUIPMENT: tuple[dict, ...] = (
@@ -724,8 +731,10 @@ DEFAULT_5E_EQUIPMENT: tuple[dict, ...] = (
         "name": "Waterskin",
         "description": "Holds 4 pints of liquid.",
         "properties": {
-            "tags": ["container"],
-            "container": {"capacity": "4 pints", "role": "waterskin"},
+            # Vessel, not an inventory container: capacity is liquid volume,
+            # not a nestable bag for arbitrary gear.
+            "tags": ["gear", "vessel"],
+            "vessel": {"capacity": "4 pints", "contents": "water"},
         },
     },
     {
@@ -877,10 +886,52 @@ DEFAULT_5E_EQUIPMENT: tuple[dict, ...] = (
 )
 
 
+def _waterskin_entry() -> dict:
+    for entry in DEFAULT_5E_EQUIPMENT:
+        if entry["name"] == _WATERSKIN_NAME:
+            return entry
+    raise RuntimeError("Waterskin missing from DEFAULT_5E_EQUIPMENT")
+
+
+def _is_legacy_stock_waterskin(properties: dict) -> bool:
+    """True only for the original 5e seed shape (safe to rewrite)."""
+    return properties == _LEGACY_WATERSKIN_CONTAINER
+
+
+def _repair_stock_waterskin(db) -> list[str]:
+    """Reclassify stock Waterskin archetypes from container to vessel."""
+    entry = _waterskin_entry()
+    desired = entry.get("properties") or {}
+    repaired = []
+    rows = db.execute(
+        """
+        SELECT object_id, properties
+        FROM objects
+        WHERE object_type='item' AND name=? COLLATE NOCASE
+        """,
+        (_WATERSKIN_NAME,),
+    ).fetchall()
+    for row in rows:
+        try:
+            props = json.loads(row["properties"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(props, dict) or not _is_legacy_stock_waterskin(props):
+            continue
+        db.execute(
+            "UPDATE objects SET properties=? WHERE object_id=?",
+            (json.dumps(desired, ensure_ascii=False), row["object_id"]),
+        )
+        repaired.append(row["object_id"])
+    return repaired
+
+
 def ensure_5e_equipment_archetypes(db, *, commit: bool = False) -> dict:
     """Insert missing 5e equipment archetypes. Does not overwrite existing names.
 
-    Returns ``{"added": int, "skipped": int, "ids": [object_id, ...]}``.
+    Also repairs stock Waterskin rows still tagged as inventory containers.
+
+    Returns ``{"added": int, "skipped": int, "repaired": int, "ids": [...]}``.
     Pass ``commit=True`` when the caller will not commit (e.g. Items tab).
     """
     existing = {
@@ -913,6 +964,12 @@ def ensure_5e_equipment_archetypes(db, *, commit: bool = False) -> dict:
         )
         existing[key] = object_id
         added_ids.append(object_id)
-    if commit and added_ids:
+    repaired_ids = _repair_stock_waterskin(db)
+    if commit and (added_ids or repaired_ids):
         db.commit()
-    return {"added": len(added_ids), "skipped": skipped, "ids": added_ids}
+    return {
+        "added": len(added_ids),
+        "skipped": skipped,
+        "repaired": len(repaired_ids),
+        "ids": added_ids,
+    }
