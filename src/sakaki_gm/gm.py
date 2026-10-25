@@ -6,10 +6,18 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from sakaki_gm.checks import (
+    ability_check_bonus,
+    attack_bonus,
+    format_check_result,
+    perform_check,
+    skill_check_bonus,
+)
 from sakaki_gm.item_db import (
     get_character_inventory_container,
     get_character_items,
     get_items,
+    resolve_item,
 )
 from sakaki_gm.object_graph_db import get_navigation_exits
 from sakaki_gm.quest_db import get_quest_characters, get_quests
@@ -26,8 +34,10 @@ SUPPORTED_PROPOSAL_OPS = frozenset({
     "inventory_remove",
     "note_append",
     "link_create",
+    "roll_check",
 })
 ALLOWED_LINK_RELATIONS = frozenset({"located_at", "contains"})
+ROLL_CHECK_KINDS = frozenset({"skill", "ability", "attack"})
 
 JSON_CONTRACT = """Reply with one JSON object and no other text:
 {
@@ -44,6 +54,14 @@ JSON_CONTRACT = """Reply with one JSON object and no other text:
       "item_object_id": "catalog-item:4",
       "use": "detect_magic",
       "summary": "Ward Detect Magic spent until long rest"
+    },
+    {
+      "op": "roll_check",
+      "character": "Exact Name",
+      "check": "skill",
+      "skill": "Stealth",
+      "dc": 15,
+      "summary": "Slip past the wraith"
     }
   ]
 }
@@ -52,7 +70,12 @@ Hit points are hp_current and hp_max. For world.events, a string is appended and
 cited_record_ids lists scratch record_id values you relied on; use [] if none.
 proposals are suggested writes that need approval; never put them inside updates.
 Supported proposal ops: spend_use, inventory_add, inventory_update, inventory_remove,
-note_append, link_create (located_at or contains only).
+note_append, link_create (located_at or contains only), roll_check.
+roll_check: you decide that a check is needed; the app rolls and scores it from
+bottle stats and item property sets (no LLM math). check is skill, ability, or
+attack. skill needs skill+dc; ability needs ability+dc; attack needs
+item_object_id (owned weapon copy or archetype) and ac (or dc), optional
+proficient/advantage/disadvantage.
 """
 
 
@@ -609,6 +632,9 @@ def normalize_proposals(value) -> list[dict]:
             "to_object_id",
             "notes",
             "equipment_location",
+            "check",
+            "skill",
+            "ability",
         ):
             raw = item.get(key)
             if isinstance(raw, str) and raw.strip():
@@ -627,6 +653,15 @@ def normalize_proposals(value) -> list[dict]:
             proposal["quantity"] = quantity
         if isinstance(item.get("attuned"), bool):
             proposal["attuned"] = item["attuned"]
+        for flag in ("proficient", "advantage", "disadvantage"):
+            if isinstance(item.get(flag), bool):
+                proposal[flag] = item[flag]
+        for key in ("dc", "ac"):
+            value = item.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                proposal[key] = value
+            elif isinstance(value, str) and value.strip().lstrip("-").isdigit():
+                proposal[key] = int(value.strip())
         if not _proposal_required_fields(proposal):
             continue
         proposals.append(proposal)
@@ -647,6 +682,19 @@ def _proposal_required_fields(proposal: dict) -> bool:
             and "from_object_id" in proposal
             and "to_object_id" in proposal
         )
+    if op == "roll_check":
+        if "character" not in proposal:
+            return False
+        kind = (proposal.get("check") or "").casefold()
+        if kind not in ROLL_CHECK_KINDS:
+            return False
+        proposal["check"] = kind
+        if kind == "skill":
+            return "skill" in proposal and ("dc" in proposal or "ac" in proposal)
+        if kind == "ability":
+            return "ability" in proposal and ("dc" in proposal or "ac" in proposal)
+        # attack
+        return "item_object_id" in proposal and ("dc" in proposal or "ac" in proposal)
     return False
 
 
@@ -702,6 +750,13 @@ def proposal_summary_lines(proposals: list[dict]) -> list[str]:
                 f"link_create: {proposal['relation']} "
                 f"{proposal['from_object_id']} → {proposal['to_object_id']}"
             )
+        elif op == "roll_check":
+            kind = proposal.get("check", "check")
+            detail = proposal.get("skill") or proposal.get("ability") or proposal.get(
+                "item_object_id", ""
+            )
+            target = proposal.get("dc", proposal.get("ac"))
+            lines.append(f"roll_check: {proposal['character']} {kind} {detail} vs {target}")
         else:
             lines.append(op)
     return lines
@@ -780,6 +835,7 @@ def apply_proposals(db, proposals: list[dict], *, scratch=None) -> list:
         "inventory_remove": _apply_inventory_remove,
         "note_append": _apply_note_append,
         "link_create": _apply_link_create,
+        "roll_check": _apply_roll_check,
     }
     for proposal in normalize_proposals(proposals):
         conflict = _revision_conflict(db, scratch, proposal)
@@ -912,6 +968,145 @@ def _find_inventory_item_link(db, character_id: int, item_object_id: str):
         """,
         (root_id, item_object_id, item_object_id),
     ).fetchone()
+
+
+def _character_data(row) -> dict:
+    try:
+        data = json.loads(row["data"])
+    except (TypeError, json.JSONDecodeError):
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def _resolve_owned_weapon(db, character_id: int, item_object_id: str) -> dict | None:
+    """Return resolved weapon property set for an owned copy or archetype id."""
+    owned = get_character_items(db, character_id)
+    match = None
+    for item in owned:
+        if item["id"] == item_object_id or item.get("archetype_id") == item_object_id:
+            match = item
+            break
+    name = item_object_id
+    object_id = item_object_id
+    if match is not None:
+        name = match.get("name") or name
+        object_id = match["id"]
+        props = match.get("properties") or {}
+        live = resolve_item(db, match["id"])
+        if live is not None:
+            name = live.get("name") or name
+            props = live.get("properties") or props
+    else:
+        resolved = resolve_item(db, item_object_id)
+        if resolved is None:
+            # Fall back to catalog archetype row even if not currently owned.
+            row = db.execute(
+                "SELECT name, properties FROM objects "
+                "WHERE object_id=? AND object_type='item'",
+                (item_object_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            name = row["name"]
+            try:
+                props = json.loads(row["properties"] or "{}")
+            except json.JSONDecodeError:
+                props = {}
+        else:
+            name = resolved.get("name") or name
+            props = resolved.get("properties") or {}
+    if not isinstance(props, dict):
+        props = {}
+    weapon = props.get("weapon")
+    if not isinstance(weapon, dict):
+        return None
+    return {"name": name, "object_id": object_id, "weapon": weapon}
+
+
+def _apply_roll_check(db, proposal: dict) -> str:
+    """LLM requests the check; bottle stats + gear resolve the roll locally."""
+    name = proposal["character"]
+    row = _character_row(db, name)
+    if row is None:
+        return f"Skipped roll_check for unknown character: {name}"
+    data = _character_data(row)
+    kind = proposal["check"]
+    target = proposal.get("dc", proposal.get("ac"))
+    if target is None:
+        return f"Skipped roll_check for {name}: missing dc/ac"
+    advantage = bool(proposal.get("advantage"))
+    disadvantage = bool(proposal.get("disadvantage"))
+    label = proposal.get("summary") or kind
+    damage_expression = None
+
+    if kind == "skill":
+        skill_name = proposal["skill"]
+        skill_row = None
+        for candidate in get_character_skills(db, row["id"]):
+            if (candidate["name"] or "").casefold() == skill_name.casefold():
+                skill_row = candidate
+                break
+        if skill_row is None:
+            return f"Skipped roll_check: unknown skill {skill_name!r}"
+        details = skill_check_bonus(data, skill_row)
+        if details is None:
+            return f"Skipped roll_check: cannot score skill {skill_name!r}"
+        bonus = details["bonus"]
+        label = proposal.get("summary") or f"{details['skill']} ({details['ability']})"
+    elif kind == "ability":
+        details = ability_check_bonus(data, proposal["ability"])
+        if details is None:
+            return f"Skipped roll_check: bad ability {proposal['ability']!r}"
+        bonus = details["bonus"]
+        label = proposal.get("summary") or f"{details['ability'].upper()} check"
+    else:
+        weapon_info = _resolve_owned_weapon(db, row["id"], proposal["item_object_id"])
+        if weapon_info is None:
+            return (
+                f"Skipped roll_check: {name} has no weapon "
+                f"{proposal['item_object_id']!r}"
+            )
+        details = attack_bonus(
+            data,
+            weapon_info["weapon"],
+            proficient=bool(proposal.get("proficient", False)),
+        )
+        if details is None:
+            return f"Skipped roll_check: cannot score attack for {name}"
+        bonus = details["bonus"]
+        damage_expression = weapon_info["weapon"].get("damage")
+        label = (
+            proposal.get("summary")
+            or f"attack with {weapon_info['name']}"
+        )
+
+    result = perform_check(
+        kind=kind,
+        bonus=bonus,
+        target=int(target),
+        advantage=advantage,
+        disadvantage=disadvantage,
+        damage_expression=damage_expression if kind == "attack" else None,
+    )
+    # Persist last bottle-resolved check on the character for follow-up turns.
+    history = data.get("check_results")
+    if not isinstance(history, list):
+        history = []
+    history.append({
+        "kind": kind,
+        "label": label,
+        "total": result["total"],
+        "target": result.get("target"),
+        "success": result.get("success"),
+        "summary": proposal.get("summary"),
+        "rolled_at": datetime.now(timezone.utc).isoformat(),
+    })
+    data["check_results"] = history[-20:]
+    db.execute(
+        "UPDATE characters SET data=? WHERE id=?",
+        (json.dumps(data, ensure_ascii=False), row["id"]),
+    )
+    return format_check_result(result, character=name, label=label)
 
 
 def _apply_spend_use(db, proposal: dict) -> str:
