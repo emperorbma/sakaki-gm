@@ -103,6 +103,15 @@ Instances can carry **extended information** beyond name and free text. The exis
 - An archetype may declare **more than one** set when that makes sense (a flask that is both container and food vessel; a shield with armor and weapon-ish bash notes). Resolved views expose whichever sets the archetype declares, with instance overrides applied.
 - Ask GM still only sees that **resolved** practical result, not which keys came from archetype vs override.
 
+### Query / pack efficiency
+
+Exact packer details can wait for implementation. The cheap path is enough for Ask GM:
+
+- Resolve only the **rows already selected** for the scene pack, place contents, inventory list, or an `inspect_object` hit — not the whole catalog.
+- For each selected instance with `instance_of`, load that one archetype (or batch-fetch the small set of archetype ids in the pack) and merge overrides in process memory before serializing prompt text.
+- Cache archetype rows for the turn or scratch lifetime if the same template appears on many copies (coins, identical bolts).
+- Do not push default→override vocabulary into the model; the merge stays in Sakaki before `build_messages` / tool results.
+
 ## Migration sketch
 
 1. For every `contains` link whose `to_object_id` is `object_type='item'` and is not already an instance (character inventory **or** place/map containment), create `item-instance:{…}`, set name/description only when they already differ from the archetype (otherwise leave unset so defaults apply), add `instance_of` → archetype id, retarget the contains link to the instance, preserve link properties.
