@@ -321,7 +321,7 @@ def test_v10_migration_adds_geography_metadata_then_promotes_objects(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 15
         assert db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='encounter_tables'"

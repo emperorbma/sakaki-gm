@@ -1,6 +1,6 @@
 # Item archetypes and instances
 
-Status: agreed direction, not implemented. Common items should be **instances** (copies) of an **archetype**. Unique artifacts may exist **only as instances**, with no archetype.
+Status: implementing. Owned loadouts migrate to **instances** (copies) of an **archetype** on schema v15. Unique artifacts may exist **only as instances**, with no archetype.
 
 ## Why instances
 
@@ -62,6 +62,7 @@ Keep the object graph. Split **archetype** from **owned instance**.
 - Full mechanical text lives on the instance description/properties.
 - May still be listed in Documents or notes for lore; the owned object is the authority for play state.
 - Do not force an archetype “just so the Items tab has something to drag.”
+- **Item customization utility (needed):** a desk tool to edit one owned instance — rename, description, kind property sets, and other overrides — whether or not it still links to an archetype. Non-uniques use it to diverge a copy (enchanted blade, spent charges) while defaults keep flowing from the archetype for unset keys; uniques use it to author the full set with no archetype (or to detach / “make unique”). Catalog edit alone only changes defaults for everyone; this utility edits the concrete copy the loadout and Ask GM resolve.
 
 ### Stackable commons vs divergent copies
 
@@ -124,9 +125,10 @@ Exact packer details can wait for implementation. The cheap path is enough for A
 
 - A second item database or JSON inventory blob on the character sheet.
 - Embeddings or fuzzy “same item” matching.
-- Automatic detection of which current catalog rows are unique artifacts; prefer an explicit unique-create path plus optional manual “detach from archetype” later.
+- Automatic detection of which current catalog rows are unique artifacts; prefer an explicit unique-create path plus optional manual “detach from archetype” later (via the customization utility).
 - A full rules engine for every weapon/armor/food field; ship the property-set slots and seed container first, then grow the schemas as UI and proposals need them.
 - Snapshotting archetype values onto the instance at create time as a private full copy; keep live default→override resolution instead.
+- The item customization utility UI itself (needed next for editing overrides on any owned copy, unique or not).
 
 ## Relationship to containers
 

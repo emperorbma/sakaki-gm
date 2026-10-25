@@ -3,6 +3,193 @@ import json
 import sqlite3
 import uuid
 
+ITEM_INSTANCE_TYPE = "item_instance"
+ITEM_INSTANCE_PREFIX = "item-instance:"
+
+
+def _parse_properties(raw) -> dict:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def is_item_instance_id(object_id: str) -> bool:
+    return str(object_id).startswith(ITEM_INSTANCE_PREFIX)
+
+
+def archetype_id_for_instance(db, instance_id: str) -> str | None:
+    row = db.execute(
+        """
+        SELECT to_object_id
+        FROM object_links
+        WHERE relation='instance_of' AND from_object_id=?
+        ORDER BY id
+        LIMIT 1
+        """,
+        (instance_id,),
+    ).fetchone()
+    return row["to_object_id"] if row else None
+
+
+def resolve_item(db, object_id: str) -> dict | None:
+    """Return the practical item view: archetype defaults with instance overrides."""
+    row = db.execute(
+        "SELECT object_id, name, description, object_type, properties "
+        "FROM objects WHERE object_id=?",
+        (object_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    overrides = _parse_properties(row["properties"])
+    archetype = None
+    archetype_id = None
+    if row["object_type"] == ITEM_INSTANCE_TYPE:
+        archetype_id = archetype_id_for_instance(db, object_id)
+        if archetype_id:
+            archetype = db.execute(
+                "SELECT object_id, name, description, properties "
+                "FROM objects WHERE object_id=? AND object_type='item'",
+                (archetype_id,),
+            ).fetchone()
+    base_props = _parse_properties(archetype["properties"]) if archetype else {}
+    # Name/description overrides live as explicit keys; otherwise use archetype.
+    if "name" in overrides:
+        name = str(overrides["name"])
+    elif archetype is not None:
+        name = archetype["name"]
+    else:
+        name = row["name"]
+    if "description" in overrides:
+        description = str(overrides["description"])
+    elif archetype is not None:
+        description = archetype["description"]
+    else:
+        description = row["description"]
+    prop_overrides = {
+        key: value
+        for key, value in overrides.items()
+        if key not in {"name", "description"}
+    }
+    return {
+        "id": row["object_id"],
+        "object_id": row["object_id"],
+        "object_type": row["object_type"],
+        "name": name,
+        "description": description,
+        "properties": _deep_merge(base_props, prop_overrides),
+        "archetype_id": archetype_id,
+        "is_container": "container"
+        in _deep_merge(base_props, prop_overrides).get("tags", []),
+    }
+
+
+def create_item_instance(
+    db,
+    archetype_id: str,
+    *,
+    overrides: dict | None = None,
+    commit: bool = False,
+) -> str:
+    archetype = db.execute(
+        "SELECT object_id, name, description, properties "
+        "FROM objects WHERE object_id=? AND object_type='item'",
+        (archetype_id,),
+    ).fetchone()
+    if archetype is None:
+        raise sqlite3.IntegrityError(f"Unknown catalog item object: {archetype_id}")
+    instance_id = f"{ITEM_INSTANCE_PREFIX}{uuid.uuid4().hex}"
+    props = dict(overrides or {})
+    db.execute(
+        """
+        INSERT INTO objects (
+            object_id, name, object_type, geography_kind, description, properties
+        ) VALUES (?, ?, ?, 'unspecified', ?, ?)
+        """,
+        (
+            instance_id,
+            archetype["name"],
+            ITEM_INSTANCE_TYPE,
+            "",
+            json.dumps(props, ensure_ascii=False),
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO object_links (
+            relation, from_object_id, to_object_id, properties, notes
+        ) VALUES ('instance_of', ?, ?, '{}', '')
+        """,
+        (instance_id, archetype_id),
+    )
+    if commit:
+        db.commit()
+    return instance_id
+
+
+def migrate_catalog_contains_to_instances(db) -> int:
+    """Retarget contains links from catalog items to owned item instances.
+
+    Idempotent: links that already point at item_instance rows are left alone.
+    Shared catalog rows (e.g. Spellbook on many characters) become one instance
+    per contains link.
+    """
+    rows = db.execute(
+        """
+        SELECT link.id AS link_id, link.from_object_id, link.to_object_id,
+               link.properties, item.name, item.description
+        FROM object_links AS link
+        JOIN objects AS item ON item.object_id = link.to_object_id
+        WHERE link.relation = 'contains'
+          AND item.object_type = 'item'
+        ORDER BY link.id
+        """
+    ).fetchall()
+    converted = 0
+    for row in rows:
+        instance_id = f"{ITEM_INSTANCE_PREFIX}{uuid.uuid4().hex}"
+        db.execute(
+            """
+            INSERT INTO objects (
+                object_id, name, object_type, geography_kind, description, properties
+            ) VALUES (?, ?, ?, 'unspecified', '', '{}')
+            """,
+            (instance_id, row["name"], ITEM_INSTANCE_TYPE),
+        )
+        db.execute(
+            """
+            INSERT INTO object_links (
+                relation, from_object_id, to_object_id, properties, notes
+            ) VALUES ('instance_of', ?, ?, '{}', '')
+            """,
+            (instance_id, row["to_object_id"]),
+        )
+        db.execute(
+            "UPDATE object_links SET to_object_id=? WHERE id=?",
+            (instance_id, row["link_id"]),
+        )
+        converted += 1
+    return converted
+
 
 def get_items(db):
     rows = db.execute(
@@ -18,7 +205,7 @@ def get_items(db):
             "id": row["id"],
             "name": row["name"],
             "description": row["description"],
-            "is_container": "container" in json.loads(row["properties"]).get(
+            "is_container": "container" in _parse_properties(row["properties"]).get(
                 "tags", []
             ),
         }
@@ -106,6 +293,9 @@ def get_character_items(db, character_id: int):
                         "name": child["name"],
                         "description": child["description"],
                         "is_container": True,
+                        "archetype_id": child["object_properties"].get(
+                            "catalog_item_id"
+                        ),
                         "quantity": child["properties"].get("quantity", 1),
                         "attuned": int(
                             bool(child["properties"].get("attuned", False))
@@ -116,12 +306,15 @@ def get_character_items(db, character_id: int):
                         "container_path": " > ".join(path),
                     })
                 collect(child, (*path, child["name"]))
-            elif child["object_type"] == "item":
+            elif child["object_type"] in ("item", ITEM_INSTANCE_TYPE):
                 assignments.append({
                     "id": child["object_id"],
                     "name": child["name"],
                     "description": child["description"],
                     "is_container": False,
+                    "archetype_id": child["object_properties"].get(
+                        "catalog_item_id"
+                    ),
                     "quantity": child["properties"].get("quantity", 1),
                     "attuned": int(bool(child["properties"].get("attuned", False))),
                     "equipment_location": child["properties"].get(
@@ -150,8 +343,18 @@ def get_character_inventory_tree(db, character_id: int):
     ):
         links.setdefault(row["from_object_id"], []).append({
             "object_id": row["to_object_id"],
-            "properties": json.loads(row["properties"]),
+            "properties": _parse_properties(row["properties"]),
         })
+    instance_of = {
+        row["from_object_id"]: row["to_object_id"]
+        for row in db.execute(
+            """
+            SELECT from_object_id, to_object_id
+            FROM object_links WHERE relation='instance_of'
+            ORDER BY id
+            """
+        )
+    }
 
     def build(object_id: str, ancestors: frozenset[str]):
         if object_id in ancestors:
@@ -160,12 +363,27 @@ def get_character_inventory_tree(db, character_id: int):
         if obj is None:
             raise ValueError(f"Containment references missing object {object_id!r}.")
         branch = ancestors | {object_id}
+        object_properties = _parse_properties(obj["properties"])
+        name = obj["name"]
+        description = obj["description"]
+        archetype_id = instance_of.get(object_id)
+        if obj["object_type"] == ITEM_INSTANCE_TYPE:
+            resolved = resolve_item(db, object_id)
+            if resolved is not None:
+                name = resolved["name"]
+                description = resolved["description"]
+                object_properties = dict(resolved["properties"])
+                if resolved["archetype_id"]:
+                    object_properties["catalog_item_id"] = resolved["archetype_id"]
+                    archetype_id = resolved["archetype_id"]
+        elif obj["object_type"] == "container" and archetype_id:
+            object_properties.setdefault("catalog_item_id", archetype_id)
         result = {
             "object_id": object_id,
-            "name": obj["name"],
+            "name": name,
             "object_type": obj["object_type"],
-            "description": obj["description"],
-            "object_properties": json.loads(obj["properties"]),
+            "description": description,
+            "object_properties": object_properties,
             "properties": {},
             "children": [],
         }
@@ -200,35 +418,78 @@ def set_character_items(db, character_id: int, assignments) -> None:
             raise sqlite3.IntegrityError(f"Unknown catalog item object: {item_id}")
         normalized.append((
             item_id,
-            json.dumps({
+            {
                 "quantity": quantity,
                 "attuned": bool(attuned),
                 "equipment_location": equipment_location.strip(),
-            }, ensure_ascii=False),
+            },
         ))
 
     with db:
+        old_instances = [
+            row["to_object_id"]
+            for row in db.execute(
+                """
+                SELECT object_links.to_object_id
+                FROM object_links
+                JOIN objects ON objects.object_id = object_links.to_object_id
+                WHERE object_links.relation='contains'
+                  AND object_links.from_object_id=?
+                  AND objects.object_type=?
+                """,
+                (container_id, ITEM_INSTANCE_TYPE),
+            )
+        ]
         db.execute(
             """
             DELETE FROM object_links
             WHERE relation='contains' AND from_object_id=?
               AND to_object_id IN (
-                  SELECT object_id FROM objects WHERE object_type='item'
+                  SELECT object_id FROM objects
+                  WHERE object_type IN ('item', ?)
               )
             """,
-            (container_id,),
+            (container_id, ITEM_INSTANCE_TYPE),
         )
-        db.executemany(
-            """
-            INSERT INTO object_links (
-                relation, from_object_id, to_object_id, properties
-            ) VALUES ('contains', ?, ?, ?)
-            """,
-            [
-                (container_id, item_id, properties)
-                for item_id, properties in normalized
-            ],
-        )
+        for instance_id in old_instances:
+            _delete_orphan_item_instance(db, instance_id)
+        for archetype_id, properties in normalized:
+            instance_id = create_item_instance(db, archetype_id)
+            db.execute(
+                """
+                INSERT INTO object_links (
+                    relation, from_object_id, to_object_id, properties
+                ) VALUES ('contains', ?, ?, ?)
+                """,
+                (
+                    container_id,
+                    instance_id,
+                    json.dumps(properties, ensure_ascii=False),
+                ),
+            )
+
+
+def _delete_orphan_item_instance(db, instance_id: str) -> None:
+    if not is_item_instance_id(instance_id):
+        return
+    remaining = db.execute(
+        """
+        SELECT 1 FROM object_links
+        WHERE to_object_id=? OR (from_object_id=? AND relation!='instance_of')
+        LIMIT 1
+        """,
+        (instance_id, instance_id),
+    ).fetchone()
+    if remaining is not None:
+        return
+    db.execute(
+        "DELETE FROM object_links WHERE relation='instance_of' AND from_object_id=?",
+        (instance_id,),
+    )
+    db.execute(
+        "DELETE FROM objects WHERE object_id=? AND object_type=?",
+        (instance_id, ITEM_INSTANCE_TYPE),
+    )
 
 
 def save_character_inventory(db, character_id: int, children) -> None:
@@ -236,6 +497,7 @@ def save_character_inventory(db, character_id: int, children) -> None:
     nodes = []
     links = []
     seen_objects = set()
+    kept_instances = set()
 
     def collect(parent_id: str, entries):
         for entry in entries:
@@ -281,13 +543,7 @@ def save_character_inventory(db, character_id: int, children) -> None:
                     properties.setdefault("role", "container")
                 links.append(("contains", parent_id, object_id, properties))
                 collect(object_id, entry.get("children", []))
-            elif object_type == "item":
-                item = db.execute(
-                    "SELECT 1 FROM objects WHERE object_id=? AND object_type='item'",
-                    (object_id,),
-                ).fetchone()
-                if item is None:
-                    raise ValueError(f"Unknown catalog item {object_id!r}.")
+            elif object_type in ("item", ITEM_INSTANCE_TYPE):
                 properties = dict(entry.get("properties", {}))
                 quantity = int(properties.get("quantity", 1))
                 if quantity < 1:
@@ -297,14 +553,38 @@ def save_character_inventory(db, character_id: int, children) -> None:
                 properties["equipment_location"] = str(
                     properties.get("equipment_location", "")
                 ).strip()
-                links.append(("contains", parent_id, object_id, properties))
+                object_properties = dict(entry.get("object_properties", {}))
+                is_new = entry.get("new_item", False) or str(object_id).startswith(
+                    "new-item:"
+                )
+                existing_instance = db.execute(
+                    "SELECT 1 FROM objects WHERE object_id=? AND object_type=?",
+                    (object_id, ITEM_INSTANCE_TYPE),
+                ).fetchone()
+                if existing_instance is not None:
+                    kept_instances.add(object_id)
+                    links.append(("contains", parent_id, object_id, properties))
+                    continue
+                archetype_id = object_properties.get("catalog_item_id")
+                if archetype_id is None and not is_new:
+                    # Legacy UI/API: contains pointed at the catalog row itself.
+                    catalog = db.execute(
+                        "SELECT 1 FROM objects WHERE object_id=? AND object_type='item'",
+                        (object_id,),
+                    ).fetchone()
+                    if catalog is not None:
+                        archetype_id = object_id
+                if archetype_id is None:
+                    raise ValueError(f"Unknown catalog item {object_id!r}.")
+                instance_id = create_item_instance(db, archetype_id)
+                kept_instances.add(instance_id)
+                links.append(("contains", parent_id, instance_id, properties))
             else:
                 raise ValueError(
                     f"Unsupported object type {object_type!r} in inventory."
                 )
 
-    collect(root_id, children)
-
+    existing_instances = set()
     existing_containers = set()
     pending = [root_id]
     inspected = set()
@@ -327,17 +607,23 @@ def save_character_inventory(db, character_id: int, children) -> None:
             if row["object_type"] == "container" and child_id != root_id:
                 existing_containers.add(child_id)
                 pending.append(child_id)
+            elif row["object_type"] == ITEM_INSTANCE_TYPE:
+                existing_instances.add(child_id)
+                pending.append(child_id)
 
-    desired_containers = {
-        node[0] for node in nodes
-    } | {
-        link[2] for link in links
-        if db.execute(
-            "SELECT 1 FROM objects WHERE object_id=? AND object_type='container'",
-            (link[2],),
-        ).fetchone()
-    }
     with db:
+        collect(root_id, children)
+        desired_containers = {
+            node[0] for node in nodes
+        } | {
+            child_id
+            for relation, _parent_id, child_id, _properties in links
+            if relation == "contains"
+            and db.execute(
+                "SELECT 1 FROM objects WHERE object_id=? AND object_type='container'",
+                (child_id,),
+            ).fetchone()
+        }
         db.executemany(
             """
             INSERT INTO objects (
@@ -397,6 +683,8 @@ def save_character_inventory(db, character_id: int, children) -> None:
             ).fetchone()
             if references is None:
                 db.execute("DELETE FROM objects WHERE object_id=?", (container_id,))
+        for instance_id in existing_instances - kept_instances:
+            _delete_orphan_item_instance(db, instance_id)
 
 
 def get_character_inventory_container(db, character_id: int) -> str:

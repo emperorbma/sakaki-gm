@@ -354,16 +354,10 @@ class CharactersModule:
             item_id, count = selection
             catalog_item = items_by_id[item_id]
             is_container = catalog_item["is_container"]
-            if not is_container and inventory_tree.exists(item_id):
-                messagebox.showerror(
-                    "Inventory",
-                    "This character already has that catalog item. Update its quantity instead.",
-                    parent=editor,
-                )
-                return
             row_id = (
                 f"new-container:{uuid.uuid4().hex}"
-                if is_container else item_id
+                if is_container
+                else f"new-item:{uuid.uuid4().hex}"
             )
             props = {
                 "quantity": count,
@@ -376,13 +370,13 @@ class CharactersModule:
                 "name": catalog_item["name"],
                 "description": catalog_item["description"],
                 "properties": props,
+                "object_properties": {"catalog_item_id": item_id},
                 "children": [],
             }
             if is_container:
-                node_data.update({
-                    "new_container": True,
-                    "object_properties": {"catalog_item_id": item_id},
-                })
+                node_data["new_container"] = True
+            else:
+                node_data["new_item"] = True
             parent_id = selected_parent()
             inventory_tree.insert(
                 parent_id,
@@ -413,7 +407,8 @@ class CharactersModule:
                 return
             item_id, count = selection
             old_row_id = selected[0]
-            if inventory_node_data[old_row_id]["object_type"] != "item":
+            old_type = inventory_node_data[old_row_id]["object_type"]
+            if old_type not in ("item", "item_instance"):
                 messagebox.showerror(
                     "Inventory",
                     "Containers are separate objects. Remove this one and add the desired container instead.",
@@ -427,17 +422,10 @@ class CharactersModule:
                     parent=editor,
                 )
                 return
-            row_id = item_id
-            if row_id != old_row_id and inventory_tree.exists(row_id):
-                messagebox.showerror(
-                    "Inventory",
-                    "This character already has that catalog item.",
-                    parent=editor,
-                )
-                return
             parent_id = inventory_tree.parent(old_row_id)
             inventory_tree.delete(old_row_id)
             inventory_node_data.pop(old_row_id, None)
+            row_id = f"new-item:{uuid.uuid4().hex}"
             inventory_tree.insert(
                 parent_id,
                 tk.END,
@@ -452,7 +440,10 @@ class CharactersModule:
             inventory_node_data[row_id] = {
                 "object_id": row_id,
                 "object_type": "item",
+                "new_item": True,
+                "name": items_by_id[item_id]["name"],
                 "description": items_by_id[item_id]["description"],
+                "object_properties": {"catalog_item_id": item_id},
                 "properties": {
                     "quantity": count,
                     "attuned": bool(attuned.get()),
@@ -467,9 +458,9 @@ class CharactersModule:
                 return
             node = inventory_node_data[selected[0]]
             catalog_item_id = node.get("object_properties", {}).get(
-                "catalog_item_id", node["object_id"]
+                "catalog_item_id"
             )
-            catalog_item = items_by_id.get(catalog_item_id)
+            catalog_item = items_by_id.get(catalog_item_id) if catalog_item_id else None
             if catalog_item is None:
                 return
             values = inventory_tree.item(selected[0], "values")
@@ -676,8 +667,6 @@ class CharactersModule:
                     return
                 target_parent = target[0]
                 catalog_item = items_by_id[item_id]
-                if not catalog_item["is_container"] and inventory_tree.exists(item_id):
-                    return
                 item_name.set(catalog_item["name"])
                 quantity.set(1)
                 attuned.set(False)

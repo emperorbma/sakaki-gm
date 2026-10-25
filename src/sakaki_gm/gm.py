@@ -870,6 +870,7 @@ def _catalog_item_exists(db, item_object_id: str) -> bool:
 
 
 def _find_inventory_item_link(db, character_id: int, item_object_id: str):
+    """Find a contains link by owned instance id or by archetype catalog id."""
     root_id = get_character_inventory_container(db, character_id)
     return db.execute(
         """
@@ -881,15 +882,22 @@ def _find_inventory_item_link(db, character_id: int, item_object_id: str):
             JOIN inv ON object_links.from_object_id = inv.object_id
             WHERE object_links.relation = 'contains'
         )
-        SELECT object_links.id, object_links.from_object_id, object_links.properties
+        SELECT object_links.id, object_links.from_object_id,
+               object_links.to_object_id, object_links.properties
         FROM object_links
         JOIN inv ON object_links.from_object_id = inv.object_id
         WHERE object_links.relation = 'contains'
-          AND object_links.to_object_id = ?
+          AND (
+              object_links.to_object_id = ?
+              OR object_links.to_object_id IN (
+                  SELECT from_object_id FROM object_links
+                  WHERE relation = 'instance_of' AND to_object_id = ?
+              )
+          )
         ORDER BY object_links.id
         LIMIT 1
         """,
-        (root_id, item_object_id),
+        (root_id, item_object_id, item_object_id),
     ).fetchone()
 
 
@@ -929,6 +937,8 @@ def _apply_spend_use(db, proposal: dict) -> str:
 
 
 def _apply_inventory_add(db, proposal: dict) -> str:
+    from sakaki_gm.item_db import create_item_instance
+
     name = proposal["character"]
     item_id = proposal["item_object_id"]
     row = _character_row(db, name)
@@ -936,23 +946,22 @@ def _apply_inventory_add(db, proposal: dict) -> str:
         return f"Skipped inventory_add for unknown character: {name}"
     if not _catalog_item_exists(db, item_id):
         return f"Skipped inventory_add: unknown item {item_id!r}"
-    if _find_inventory_item_link(db, row["id"], item_id) is not None:
-        return f"Skipped inventory_add: {name} already has {item_id}"
     root_id = get_character_inventory_container(db, row["id"])
     properties = {
         "quantity": proposal.get("quantity", 1),
         "attuned": bool(proposal.get("attuned", False)),
         "equipment_location": proposal.get("equipment_location", ""),
     }
+    instance_id = create_item_instance(db, item_id)
     db.execute(
         """
         INSERT INTO object_links (
             relation, from_object_id, to_object_id, properties, notes
         ) VALUES ('contains', ?, ?, ?, '')
         """,
-        (root_id, item_id, json.dumps(properties, ensure_ascii=False)),
+        (root_id, instance_id, json.dumps(properties, ensure_ascii=False)),
     )
-    return f"Added {item_id} to {name}'s inventory"
+    return f"Added {instance_id} to {name}'s inventory"
 
 
 def _apply_inventory_update(db, proposal: dict) -> str:
@@ -984,6 +993,8 @@ def _apply_inventory_update(db, proposal: dict) -> str:
 
 
 def _apply_inventory_remove(db, proposal: dict) -> str:
+    from sakaki_gm.item_db import _delete_orphan_item_instance
+
     name = proposal["character"]
     item_id = proposal["item_object_id"]
     row = _character_row(db, name)
@@ -992,8 +1003,10 @@ def _apply_inventory_remove(db, proposal: dict) -> str:
     link = _find_inventory_item_link(db, row["id"], item_id)
     if link is None:
         return f"Skipped inventory_remove: {name} does not have {item_id}"
+    instance_id = link["to_object_id"]
     db.execute("DELETE FROM object_links WHERE id=?", (link["id"],))
-    return f"Removed {item_id} from {name}'s inventory"
+    _delete_orphan_item_instance(db, instance_id)
+    return f"Removed {instance_id} from {name}'s inventory"
 
 
 def _apply_note_append(db, proposal: dict) -> str:
