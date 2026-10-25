@@ -986,9 +986,10 @@ class CharactersModule:
         ttk.Label(
             spells_tab,
             text=(
-                "Spellbook loadout links catalog spells. Prepared applies only to "
-                "Vancian spells; mana spells are cast from the loadout without "
-                "preparation (hybrid campaigns mix both)."
+                "Spellbook loadout links catalog spells. Prepared is a count of "
+                "Vancian preparations (0/1 for typical 5e lists; higher when the "
+                "same title fills multiple slots). Mana spells ignore prepared "
+                "(hybrid campaigns mix both)."
             ),
             wraplength=720,
         ).pack(anchor="w", padx=10, pady=(10, 6))
@@ -998,9 +999,9 @@ class CharactersModule:
             get_character_spells(self.db, existing_id)
             if existing_id is not None else []
         )
-        # spell_id -> {"prepared": bool}
+        # spell_id -> {"prepared": int count}
         spell_loadout = {
-            int(row["id"]): {"prepared": bool(row["prepared"])}
+            int(row["id"]): {"prepared": max(0, int(row["prepared"] or 0))}
             for row in saved_spell_rows
         }
 
@@ -1050,10 +1051,8 @@ class CharactersModule:
             for row in ordered:
                 spell_id = int(row["id"])
                 mode = spell_casting_mode(row)
-                prepared = spell_loadout[spell_id]["prepared"]
-                prepared_label = (
-                    "Yes" if prepared else "No"
-                ) if mode == "vancian" else "—"
+                prepared = int(spell_loadout[spell_id]["prepared"] or 0)
+                prepared_label = str(prepared) if mode == "vancian" else "—"
                 school = (row["school"] or "").strip()
                 spells_tree.insert(
                     "",
@@ -1105,7 +1104,7 @@ class CharactersModule:
                     return
                 chosen = available[selection[0]]
                 spell_catalog_by_id[int(chosen["id"])] = chosen
-                spell_loadout[int(chosen["id"])] = {"prepared": False}
+                spell_loadout[int(chosen["id"])] = {"prepared": 0}
                 refresh_spell_loadout_view()
                 picker.destroy()
 
@@ -1124,7 +1123,7 @@ class CharactersModule:
             spell_loadout.pop(int(selected[0]), None)
             refresh_spell_loadout_view()
 
-        def toggle_prepared_selected():
+        def adjust_prepared_selected(delta: int):
             selected = spells_tree.selection()
             if not selected:
                 return
@@ -1133,15 +1132,15 @@ class CharactersModule:
             if row is None or not spell_uses_prepared(row):
                 messagebox.showinfo(
                     "Spells",
-                    "Prepared only applies to Vancian spells. Mana spells are "
-                    "available whenever they are in the loadout.",
+                    "Prepared counts only apply to Vancian spells. Mana spells "
+                    "are available whenever they are in the loadout.",
                     parent=editor,
                 )
                 return
             current = spell_loadout.get(spell_id)
             if current is None:
                 return
-            current["prepared"] = not current["prepared"]
+            current["prepared"] = max(0, int(current["prepared"] or 0) + delta)
             refresh_spell_loadout_view()
             spells_tree.selection_set(str(spell_id))
 
@@ -1154,8 +1153,15 @@ class CharactersModule:
             spell_buttons, text="Remove", command=remove_selected_spell
         ).pack(side=tk.LEFT, padx=6)
         ttk.Button(
-            spell_buttons, text="Toggle prepared", command=toggle_prepared_selected
-        ).pack(side=tk.LEFT)
+            spell_buttons,
+            text="Prepared −",
+            command=lambda: adjust_prepared_selected(-1),
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Button(
+            spell_buttons,
+            text="Prepared +",
+            command=lambda: adjust_prepared_selected(1),
+        ).pack(side=tk.LEFT, padx=6)
 
         ttk.Label(
             spells_tab,
