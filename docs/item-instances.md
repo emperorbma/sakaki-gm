@@ -42,7 +42,7 @@ Keep the object graph. Split **archetype** from **owned instance**.
 ### Archetype (optional)
 
 - Remains an `objects` row with `object_type='item'` for now (or a clearer kind such as `item_archetype` if a migration prefers renaming).
-- Holds the reusable name, base description, tags (including container), and default rules text.
+- Holds the reusable name, base description, tags (including container / weapon / armor / food, etc.), default rules text, and **initial property sets** for those kinds.
 - Never appears in a character inventory as the contained object for ordinary gear.
 - Unique artifacts **may omit** an archetype entirely.
 - The Items tab continues to edit archetypes (today’s “catalog”).
@@ -52,7 +52,7 @@ Keep the object graph. Split **archetype** from **owned instance**.
 - A distinct `objects` row that a `contains` link points at — from a character inventory container **or** from a place / map location / chest.
 - Suggested id prefix: `item-instance:{uuid}` (containers may keep `inventory-container:{uuid}`).
 - Suggested link: `instance_of` from instance → archetype when an archetype exists.
-- Instance `properties` (or dedicated fields) hold per-copy state that is not just quantity on the link: charges spent, renamed title, unique description overrides, enchantments, artifact-only rules text.
+- Instance `properties` hold per-copy state and **extended property sets** copied (then optionally diverged) from the archetype: charges spent, renamed title, unique description overrides, enchantments, artifact-only rules text, plus kind-specific blocks (weapon, armor, food, container, …).
 - Link properties still hold `quantity` (for stackable commons that have not diverged), `attuned`, and `equipment_location`.
 - Moving a copy (pick up / drop) retargets or recreates the `contains` edge to the **same instance** so flavor travels with the object.
 
@@ -77,14 +77,29 @@ Under the hood:
 
 - Scene gear, place contents, and inventory proposals address the concrete copy (stable `object_id` / scratch `record_id`).
 - `spend_use` and `inventory_*` proposals bind to that copy id, never to a bare archetype id when an owned/dropped copy exists.
-- When packing text for the model, merge archetype defaults with instance overrides into one description. The reply cites that resolved object; the app maps the citation back to the instance row.
+- When packing text for the model, merge archetype defaults with instance overrides (including kind property sets) into one practical description. The reply cites that resolved object; the app maps the citation back to the instance row.
+
+## Extended property sets
+
+Instances can carry **extended information** beyond name and free text. The existing case is **container** behavior: a container-tagged archetype seeds an inventory-container instance (`instance_of` + object properties / contains graph). The same pattern generalizes to other kinds.
+
+- **Archetype** holds the **initial property set(s)** for its relevant types — e.g. `container`, `weapon`, `armor`, `food` (and later others as needed). Tags or an explicit kind list on the archetype say which sets apply.
+- **Instance** receives a copy of those sets at spawn (from archetype, or authored directly for unique artifacts). Play may then diverge only this copy: a sword gains an enchantment block, a ration stack stays plain food properties, a bag keeps container capacity.
+- Keep **contains-link** properties for placement facts (`quantity`, `attuned`, `equipment_location`). Keep **object/instance** properties for what the thing *is* and *does* (damage die, AC bonus, spoilage, capacity, charges).
+- Examples of set content (illustrative, not a frozen schema yet):
+  - **container** — capacity / role (already partly present via tags + inventory-container instances).
+  - **weapon** — damage, properties (finesse, reach), range, proficiency group.
+  - **armor** — category, AC formula, stealth disadvantage, strength requirement.
+  - **food** — portions, restorative effect, spoilage or duration notes.
+- An archetype may declare **more than one** set when that makes sense (a flask that is both container and food vessel; a shield with armor and weapon-ish bash notes). The instance keeps whichever sets it actually has after copy/override.
+- Ask GM still only sees the merged practical result of those sets, not the storage layout.
 
 ## Migration sketch
 
-1. For every `contains` link whose `to_object_id` is `object_type='item'` and is not already an instance (character inventory **or** place/map containment), create `item-instance:{…}`, copy name/description from the archetype row, add `instance_of` → archetype id, retarget the contains link to the instance, preserve link properties.
-2. Leave existing catalog rows in place as archetypes.
-3. Mark known one-offs (or a new “unique / no archetype” create path) by clearing or never creating `instance_of`.
-4. Update Items UI: list = archetypes (catalog alias); character inventory and place contents always edit instances; allow “create unique item” and “drop / pick up” without rewriting the archetype.
+1. For every `contains` link whose `to_object_id` is `object_type='item'` and is not already an instance (character inventory **or** place/map containment), create `item-instance:{…}`, copy name/description **and initial property sets** from the archetype row, add `instance_of` → archetype id, retarget the contains link to the instance, preserve link properties.
+2. Leave existing catalog rows in place as archetypes; promote today’s container tag into the typed property-set pattern without breaking current inventory-container rows.
+3. Mark known one-offs (or a new “unique / no archetype” create path) by clearing or never creating `instance_of`; unique instances may still declare weapon/armor/food/container sets directly.
+4. Update Items UI: list = archetypes (catalog alias); edit initial property sets by kind on the archetype; character inventory and place contents always edit instances; allow “create unique item” and “drop / pick up” without rewriting the archetype.
 5. Update `set_character_items` / `save_character_inventory` / GM `inventory_*` proposals to create or address instances; place drops should move or spawn instances, not link places straight to catalog rows.
 
 ## Leave out for now
@@ -92,7 +107,8 @@ Under the hood:
 - A second item database or JSON inventory blob on the character sheet.
 - Embeddings or fuzzy “same item” matching.
 - Automatic detection of which current catalog rows are unique artifacts; prefer an explicit unique-create path plus optional manual “detach from archetype” later.
+- A full rules engine for every weapon/armor/food field; ship the property-set slots and seed container first, then grow the schemas as UI and proposals need them.
 
 ## Relationship to containers
 
-Keep the existing container-instance pattern. After this change, plain items and containers both follow “owned object in the graph,” with an optional archetype behind them.
+Containers are the first typed property set, not a separate inventory model. After this change, plain items and containers both follow “owned object in the graph,” with optional archetype-seeded property sets behind them.
