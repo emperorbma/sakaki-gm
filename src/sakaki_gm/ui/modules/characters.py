@@ -291,9 +291,13 @@ class CharactersModule:
 
         inventory_controls = ttk.Frame(catalog_tab)
         inventory_controls.pack(fill=tk.X, padx=10, pady=(0, 10))
+        field_row = ttk.Frame(inventory_controls)
+        field_row.pack(fill=tk.X, pady=(0, 4))
+        action_row = ttk.Frame(inventory_controls)
+        action_row.pack(fill=tk.X)
         item_name = tk.StringVar()
         item_combo = ttk.Combobox(
-            inventory_controls,
+            field_row,
             textvariable=item_name,
             values=list(item_ids),
             state="readonly",
@@ -302,22 +306,22 @@ class CharactersModule:
         item_combo.pack(side=tk.LEFT, padx=(0, 6))
         quantity = tk.IntVar(value=1)
         ttk.Spinbox(
-            inventory_controls,
+            field_row,
             from_=1,
             to=9999,
             textvariable=quantity,
             width=7,
         ).pack(side=tk.LEFT)
         equipment_location = tk.StringVar()
-        ttk.Label(inventory_controls, text="Location").pack(side=tk.LEFT, padx=(8, 3))
+        ttk.Label(field_row, text="Location").pack(side=tk.LEFT, padx=(8, 3))
         ttk.Entry(
-            inventory_controls,
+            field_row,
             textvariable=equipment_location,
             width=16,
         ).pack(side=tk.LEFT)
         attuned = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            inventory_controls,
+            field_row,
             text="Attuned",
             variable=attuned,
         ).pack(side=tk.LEFT, padx=8)
@@ -527,12 +531,12 @@ class CharactersModule:
                 inventory_tree.delete(selected_id)
 
         remove_drop_target = ttk.Label(
-            inventory_controls,
-            text="Drop here to remove from inventory",
+            action_row,
+            text="Drop here to remove",
             relief=tk.GROOVE,
             padding=(8, 4),
         )
-        remove_drop_target.pack(side=tk.RIGHT, padx=6)
+        remove_drop_target.pack(side=tk.RIGHT, padx=(6, 0))
 
         drag = {"source": None, "target": None, "highlight": None}
         drag_ghost = ttk.Label(editor, relief=tk.SOLID, padding=(6, 3))
@@ -795,20 +799,20 @@ class CharactersModule:
             editor.wait_window(dialog)
             refresh_owned_copy_labels()
 
-        # Frequent actions stay as buttons; less common ones live under More.
+        # Fields above; frequent actions here; less common ones under More.
         ttk.Button(
-            inventory_controls,
-            text="Add from archetype",
+            action_row,
+            text="Add",
             command=add_catalog_item,
-        ).pack(side=tk.LEFT, padx=4)
+        ).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(
-            inventory_controls,
-            text="Update selected",
+            action_row,
+            text="Update",
             command=update_catalog_item,
         ).pack(side=tk.LEFT, padx=4)
         ttk.Button(
-            inventory_controls,
-            text="Remove selected",
+            action_row,
+            text="Remove",
             command=remove_selected,
         ).pack(side=tk.LEFT, padx=4)
         more_menu = tk.Menu(editor, tearoff=0)
@@ -817,7 +821,7 @@ class CharactersModule:
             label="Customize copy…",
             command=customize_selected_copy,
         )
-        more_button = ttk.Menubutton(inventory_controls, text="More")
+        more_button = ttk.Menubutton(action_row, text="More")
         more_button["menu"] = more_menu
         more_button.pack(side=tk.LEFT, padx=4)
 
