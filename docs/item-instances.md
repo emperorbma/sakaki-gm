@@ -126,7 +126,7 @@ Exact packer details can wait for implementation. The cheap path is enough for A
 - A second item database or JSON inventory blob on the character sheet.
 - Embeddings or fuzzy “same item” matching.
 - Automatic detection of which current catalog rows are unique artifacts; prefer an explicit unique-create path plus optional manual “detach from archetype” later (via the customization utility).
-- A full rules engine for every weapon/armor/food field; ship the property-set slots and seed container first, then grow the schemas as UI and proposals need them.
+- A full combat simulator. Bottle-side ``roll_check`` proposals already resolve skill/ability/attack math from property sets when the LLM decides a check is needed; expand coverage (saves, contested checks, multiattack) as play demands.
 - Snapshotting archetype values onto the instance at create time as a private full copy; keep live default→override resolution instead.
 - Full typed property-set editors inside the customize dialog (name/description + detach/reattach ship first).
 

@@ -291,6 +291,9 @@ class SettingsModule:
         items_module = getattr(self.main_app, "items_module", None)
         if items_module is not None:
             items_module.reload()
+        skills_module = getattr(self.main_app, "skills_module", None)
+        if skills_module is not None:
+            skills_module.reload()
         detail = (
             "Standard 5e rules loaded.\n"
             f"Equipment archetypes: {equipment['added']} added, "

@@ -24,18 +24,79 @@ DEFAULT_5E_SKILLS = (
 )
 
 
+ABILITY_SCORES = frozenset({"str", "dex", "con", "int", "wis", "cha"})
+
+
 def get_skills(db):
     return db.execute(
         "SELECT id, name, ability FROM campaign_skills ORDER BY name COLLATE NOCASE"
     ).fetchall()
 
 
+def _normalize_skill(name: str, ability: str) -> tuple[str, str]:
+    name = (name or "").strip()
+    ability = (ability or "").strip().lower()
+    if not name:
+        raise ValueError("Skill names cannot be empty.")
+    if ability and ability not in ABILITY_SCORES:
+        raise ValueError("Skill ability must be a standard ability score.")
+    return name, ability
+
+
+def upsert_campaign_skill(db, name: str, ability: str, *, skill_id: int | None = None) -> int:
+    """Create or update one campaign skill. Returns the skill id."""
+    name, ability = _normalize_skill(name, ability)
+    with db:
+        if skill_id is None:
+            conflict = db.execute(
+                "SELECT id FROM campaign_skills WHERE name=? COLLATE NOCASE",
+                (name,),
+            ).fetchone()
+            if conflict is not None:
+                raise ValueError(f"A skill named {name} already exists.")
+            cursor = db.execute(
+                "INSERT INTO campaign_skills (name, ability) VALUES (?, ?)",
+                (name, ability),
+            )
+            return int(cursor.lastrowid)
+        row = db.execute(
+            "SELECT id, name FROM campaign_skills WHERE id=?",
+            (skill_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown skill id {skill_id}.")
+        conflict = db.execute(
+            """
+            SELECT id FROM campaign_skills
+            WHERE name=? COLLATE NOCASE AND id!=?
+            """,
+            (name, skill_id),
+        ).fetchone()
+        if conflict is not None:
+            raise ValueError(f"A skill named {name} already exists.")
+        db.execute(
+            "UPDATE campaign_skills SET name=?, ability=? WHERE id=?",
+            (name, ability, skill_id),
+        )
+        return int(skill_id)
+
+
+def delete_campaign_skill(db, skill_id: int) -> None:
+    """Delete a campaign skill (character proficiency rows cascade)."""
+    with db:
+        deleted = db.execute(
+            "DELETE FROM campaign_skills WHERE id=?",
+            (skill_id,),
+        ).rowcount
+        if not deleted:
+            raise ValueError(f"Unknown skill id {skill_id}.")
+
+
 def replace_campaign_skills(db, definitions) -> None:
     normalized = [(name.strip(), ability.strip().lower()) for name, ability in definitions]
     if any(not name for name, _ability in normalized):
         raise ValueError("Skill names cannot be empty.")
-    if any(ability and ability not in {"str", "dex", "con", "int", "wis", "cha"}
-           for _name, ability in normalized):
+    if any(ability and ability not in ABILITY_SCORES for _name, ability in normalized):
         raise ValueError("Skill ability must be a standard ability score.")
     if len({name.casefold() for name, _ability in normalized}) != len(normalized):
         raise ValueError("Skill names must be unique.")
