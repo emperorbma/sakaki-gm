@@ -7,6 +7,11 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from sakaki_gm.character_db import create_character, delete_character, get_all_characters, update_character
+from sakaki_gm.inventory_generator import (
+    choose_kit_for_character,
+    generate_character_inventory,
+    generate_inventories_for_campaign,
+)
 from sakaki_gm.item_db import (
     get_character_inventory_tree,
     get_items,
@@ -56,6 +61,11 @@ class CharactersModule:
         ttk.Button(btn_frame, text="Import Files", command=self.import_files).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Refresh", command=self.refresh).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Delete", command=self.delete_selected).pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            btn_frame,
+            text="Fill starter kits",
+            command=self.fill_starter_kits,
+        ).pack(side=tk.LEFT, padx=5)
 
         self.refresh()
 
@@ -75,6 +85,32 @@ class CharactersModule:
                 role = f" — {char['campaign_role']}" if char.get("campaign_role") else ""
                 summary = f"{char['name']} — {char.get('class') or '?'} — HP: {hp}/{max_hp}{role}"
             self.tree.insert("", "end", iid=str(char["id"]), text=char["name"], values=(summary,))
+
+    def fill_starter_kits(self):
+        if not messagebox.askyesno(
+            "Fill starter kits",
+            "Add missing class kit gear for every character?\n\n"
+            "Spirits/cameos get nothing. Equivalents already owned are skipped "
+            "(skirt covers clothes, existing focus covers Arcane Focus, etc.).",
+            parent=self.frame,
+        ):
+            return
+        try:
+            summary = generate_inventories_for_campaign(self.db, commit=True)
+        except (sqlite3.Error, ValueError) as exc:
+            messagebox.showerror("Fill starter kits", str(exc), parent=self.frame)
+            return
+        lines = [
+            f"Added {summary['added']} item(s) across {summary['characters']} character(s); "
+            f"skipped {summary['skipped']} covered entries."
+        ]
+        for result in summary["results"]:
+            if not result["added"]:
+                continue
+            names = ", ".join(item["name"] for item in result["added"])
+            lines.append(f"• {result['character']} ({result['kit']}): {names}")
+        messagebox.showinfo("Fill starter kits", "\n".join(lines), parent=self.frame)
+        self.refresh()
 
     def new_character(self):
         self.open_editor(None)
@@ -866,6 +902,76 @@ class CharactersModule:
             text="Remove",
             command=remove_selected,
         ).pack(side=tk.LEFT, padx=4)
+        def reload_inventory_from_db():
+            if existing_id is None:
+                return
+            for child in inventory_tree.get_children(root_id):
+                inventory_tree.delete(child)
+            for key in list(inventory_node_data):
+                if key != root_id:
+                    inventory_node_data.pop(key, None)
+            fresh = get_character_inventory_tree(self.db, existing_id)
+            inventory_node_data[root_id] = {
+                "object_id": fresh["object_id"],
+                "object_type": "container",
+                "root": True,
+            }
+            inventory_tree.item(root_id, text=fresh["name"])
+            render_inventory(root_id, fresh.get("children") or [])
+
+        def fill_starter_kit():
+            if existing_id is None:
+                messagebox.showinfo(
+                    "Starter kit",
+                    "Save the character once before filling a starter kit.",
+                    parent=editor,
+                )
+                return
+            row = self.db.execute(
+                "SELECT data, campaign_role FROM characters WHERE id=?",
+                (existing_id,),
+            ).fetchone()
+            try:
+                data = json.loads(row["data"]) if row else {}
+            except (TypeError, json.JSONDecodeError):
+                data = {}
+            kit = choose_kit_for_character(
+                data if isinstance(data, dict) else {},
+                campaign_role=(row["campaign_role"] if row else "") or "",
+            )
+            if kit == "none":
+                if not messagebox.askyesno(
+                    "Starter kit",
+                    "This character looks like a spirit/cameo (no mundane kit).\n\n"
+                    "Force a basic adventuring kit anyway?",
+                    parent=editor,
+                ):
+                    return
+                kit = "basic"
+            elif not messagebox.askyesno(
+                "Starter kit",
+                f"Add missing {kit} kit gear for this character?\n\n"
+                "Existing equivalents are skipped (e.g. a skirt covers "
+                "Traveler's Clothes; a focus stand-in covers Arcane Focus).",
+                parent=editor,
+            ):
+                return
+            try:
+                result = generate_character_inventory(
+                    self.db, existing_id, kit=kit, commit=True
+                )
+            except (sqlite3.Error, ValueError) as exc:
+                messagebox.showerror("Starter kit", str(exc), parent=editor)
+                return
+            reload_inventory_from_db()
+            added = ", ".join(item["name"] for item in result["added"]) or "nothing new"
+            skipped = len(result["skipped"])
+            messagebox.showinfo(
+                "Starter kit",
+                f"Kit: {result['kit']}\nAdded: {added}\nSkipped covered: {skipped}",
+                parent=editor,
+            )
+
         more_menu = tk.Menu(editor, tearoff=0)
         more_menu.add_command(label="Add container", command=add_container)
         more_menu.add_command(label="New unique item…", command=add_unique_item)
@@ -873,6 +979,8 @@ class CharactersModule:
             label="Customize copy…",
             command=customize_selected_copy,
         )
+        more_menu.add_separator()
+        more_menu.add_command(label="Fill starter kit…", command=fill_starter_kit)
         more_button = ttk.Menubutton(action_row, text="More")
         more_button["menu"] = more_menu
         more_button.pack(side=tk.LEFT, padx=4)
