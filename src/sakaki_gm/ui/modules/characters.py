@@ -41,13 +41,32 @@ TEXT_FIELDS = (
 
 
 class CharactersModule:
+    # Roster views: finished/active sheets vs design scaffolds (e.g. Voryn roles).
+    LIST_CHARACTERS = "characters"
+    LIST_SCAFFOLDS = "scaffolds"
+
     def __init__(self, notebook, db, main_app):
         self.db = db
         self.main_app = main_app
         self.frame = ttk.Frame(notebook)
+        self.list_mode = self.LIST_CHARACTERS
 
         tree_frame = ttk.Frame(self.frame)
         tree_frame.pack(fill=tk.BOTH, expand=True, side=tk.LEFT, padx=10, pady=10)
+
+        mode_row = ttk.Frame(tree_frame)
+        mode_row.pack(fill=tk.X, pady=(0, 6))
+        self.list_heading = ttk.Label(
+            mode_row, text="Characters", font=("Georgia", 12, "bold")
+        )
+        self.list_heading.pack(side=tk.LEFT)
+        self.list_mode_button = ttk.Button(
+            mode_row,
+            text="Show scaffolds",
+            command=self.toggle_list_mode,
+        )
+        self.list_mode_button.pack(side=tk.RIGHT)
+
         self.tree = ttk.Treeview(tree_frame, columns=("Summary",), show="headings", height=25)
         self.tree.heading("Summary", text="Character Sheet")
         self.tree.column("Summary", width=420)
@@ -56,7 +75,10 @@ class CharactersModule:
 
         btn_frame = ttk.Frame(tree_frame)
         btn_frame.pack(pady=8)
-        ttk.Button(btn_frame, text="+ New Character", command=self.new_character).pack(side=tk.LEFT, padx=5)
+        self.new_button = ttk.Button(
+            btn_frame, text="+ New Character", command=self.new_character
+        )
+        self.new_button.pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Import from .md", command=self.open_importer).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Import Files", command=self.import_files).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Refresh", command=self.refresh).pack(side=tk.LEFT)
@@ -71,14 +93,55 @@ class CharactersModule:
 
     def set_db(self, db):
         self.db = db
+        self.list_mode = self.LIST_CHARACTERS
         self.refresh()
+
+    def showing_scaffolds(self) -> bool:
+        return self.list_mode == self.LIST_SCAFFOLDS
+
+    def toggle_list_mode(self):
+        if self.list_mode == self.LIST_CHARACTERS:
+            self.list_mode = self.LIST_SCAFFOLDS
+        else:
+            self.list_mode = self.LIST_CHARACTERS
+        self.refresh()
+
+    def _visible_characters(self):
+        want_scaffolds = self.showing_scaffolds()
+        visible = []
+        for char in get_all_characters(self.db):
+            if "error" in char:
+                # Keep parse errors on the active roster so they are not lost.
+                if not want_scaffolds:
+                    visible.append(char)
+                continue
+            is_scaffold = _is_stat_block_scaffold(char)
+            if is_scaffold == want_scaffolds:
+                visible.append(char)
+        return visible
 
     def refresh(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
-        for char in get_all_characters(self.db):
+        if self.showing_scaffolds():
+            self.list_heading.config(text="Design scaffolds")
+            self.tree.heading("Summary", text="Scaffold")
+            self.list_mode_button.config(text="Show characters")
+            self.new_button.config(text="+ New Scaffold")
+        else:
+            self.list_heading.config(text="Characters")
+            self.tree.heading("Summary", text="Character Sheet")
+            self.list_mode_button.config(text="Show scaffolds")
+            self.new_button.config(text="+ New Character")
+        for char in self._visible_characters():
             if "error" in char:
                 summary = "(error loading data)"
+            elif self.showing_scaffolds():
+                status = str(char.get("stat_block_status") or "Design scaffold")
+                role = f" — {char['campaign_role']}" if char.get("campaign_role") else ""
+                summary = (
+                    f"{char['name']} — {char.get('class') or 'role'}{role} — {status}"
+                )
             else:
                 hp = char.get("hp_current", char.get("hp", 0))
                 max_hp = char.get("hp_max", char.get("max_hp", hp))
@@ -87,16 +150,31 @@ class CharactersModule:
             self.tree.insert("", "end", iid=str(char["id"]), text=char["name"], values=(summary,))
 
     def fill_starter_kits(self):
+        if self.showing_scaffolds():
+            messagebox.showinfo(
+                "Fill starter kits",
+                "Starter kits run on the character roster, not design scaffolds.\n"
+                "Switch to Show characters first (or uncheck Design scaffold on a sheet).",
+                parent=self.frame,
+            )
+            return
+        targets = [
+            int(char["id"])
+            for char in self._visible_characters()
+            if "error" not in char
+        ]
         if not messagebox.askyesno(
             "Fill starter kits",
-            "Add missing class kit gear for every character?\n\n"
-            "Spirits/cameos get nothing. Equivalents already owned are skipped "
-            "(skirt covers clothes, existing focus covers Arcane Focus, etc.).",
+            "Add missing class kit gear for characters in this roster?\n\n"
+            "Design scaffolds are excluded. Spirits/cameos get nothing. "
+            "Equivalents already owned are skipped.",
             parent=self.frame,
         ):
             return
         try:
-            summary = generate_inventories_for_campaign(self.db, commit=True)
+            summary = generate_inventories_for_campaign(
+                self.db, character_ids=targets, commit=True
+            )
         except (sqlite3.Error, ValueError) as exc:
             messagebox.showerror("Fill starter kits", str(exc), parent=self.frame)
             return
@@ -113,9 +191,12 @@ class CharactersModule:
         self.refresh()
 
     def new_character(self):
-        self.open_editor(None)
+        if self.showing_scaffolds():
+            self.open_editor(None, as_scaffold=True)
+        else:
+            self.open_editor(None)
 
-    def open_editor(self, event=None):
+    def open_editor(self, event=None, *, as_scaffold: bool = False):
         existing_id = self._char_id_from(event)
         row = None
         if existing_id is not None:
@@ -134,9 +215,17 @@ class CharactersModule:
         default_prof = int(prof_row["value"]) if prof_row else 2
 
         saved = json.loads(row["data"]) if row else {}
-        stat_block_scaffold = _is_stat_block_scaffold(saved)
+        if existing_id is None and as_scaffold:
+            saved = {
+                "stat_block_status": DEFAULT_STAT_BLOCK_SCAFFOLD,
+                "name": "New Scaffold",
+            }
+        stat_block_scaffold = _is_stat_block_scaffold(saved) or (
+            existing_id is None and as_scaffold
+        )
         defaults = {
-            "name": "New Character", "class": "", "level": 1, "race": "",
+            "name": "New Scaffold" if as_scaffold else "New Character",
+            "class": "", "level": 1, "race": "",
             "background": "", "alignment": "", "experience": 0,
             "hp_current": 10, "hp_max": 10, "ac": 10, "ac_note": "",
             "speed": 30, "initiative": 0, "proficiency_bonus": default_prof,
