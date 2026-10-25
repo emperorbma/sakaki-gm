@@ -881,7 +881,7 @@ def ensure_5e_equipment_archetypes(db, *, commit: bool = False) -> dict:
     """Insert missing 5e equipment archetypes. Does not overwrite existing names.
 
     Returns ``{"added": int, "skipped": int, "ids": [object_id, ...]}``.
-    Pass ``commit=True`` when the caller will not commit (e.g. Archetypes UI).
+    Pass ``commit=True`` when the caller will not commit (e.g. Items tab).
     """
     existing = {
         row["name"].casefold(): row["object_id"]

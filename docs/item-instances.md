@@ -17,9 +17,9 @@ Archetypes answer “what kind of thing is this?” Instances answer “which ph
 
 | Term | Meaning |
 |------|---------|
-| **Archetype** | The reusable definition: name, base description, tags, default rules. Desk tab: **Archetypes**. |
+| **Archetype** | The reusable definition: name, base description, tags, default rules. Desk tab: **Items** (heading: Item Archetypes). |
 | **Instance** | A concrete copy in the object graph (character inventory, place, bag, or map drop). Play state and divergent flavor hang here. |
-| **Catalog (legacy alias)** | Older name for the archetype list; UI now says Archetypes. |
+| **Catalog (legacy alias)** | Older name for the archetype list; UI tab is **Items**. |
 
 ## Problem with the current model
 
@@ -45,7 +45,7 @@ Keep the object graph. Split **archetype** from **owned instance**.
 - Holds the reusable name, base description, tags (including container / weapon / armor / food, etc.), default rules text, and **default property sets** for those kinds. Those defaults apply to every linked instance for any property the instance has **not** overridden.
 - Never appears in a character inventory as the contained object for ordinary gear.
 - Unique artifacts **may omit** an archetype entirely.
-- The Archetypes tab edits these definitions (formerly “Item Catalog”).
+- The Items tab (Item Archetypes) edits these definitions (formerly “Item Catalog”).
 
 ### Owned instance (required wherever a copy exists)
 
@@ -62,7 +62,7 @@ Keep the object graph. Split **archetype** from **owned instance**.
 - Full mechanical text lives on the instance description/properties.
 - May still be listed in Documents or notes for lore; the owned object is the authority for play state.
 - Do not force an archetype “just so the Items tab has something to drag.”
-- **Item customization utility:** Archetypes → **Customize owned copies…**, or Inventory → **More → Customize copy…**. Works on **item instances and inventory-container copies** (e.g. detach the Vault). Edit name/description; **Detach (make unique)** / **Attach to archetype**; **New unique item/container** creates copies with no archetype at all. Inventory **More → New unique item…** and **Add container** (no template) are the in-loadout paths for the same idea. Quantity / attunement / equipment location stay on the contains link.
+- **Item customization utility:** Items → **Customize owned copies…**, or Inventory → **More → Customize copy…**. Works on **item instances and inventory-container copies** (e.g. detach the Vault). Edit name/description; **Detach (make unique)** / **Attach to archetype**; **New unique item/container** creates copies with no archetype at all. Inventory **More → New unique item…** and **Add container** (no template) are the in-loadout paths for the same idea. Quantity / attunement / equipment location stay on the contains link.
 
 ### Stackable commons vs divergent copies
 
