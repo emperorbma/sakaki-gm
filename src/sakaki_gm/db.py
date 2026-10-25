@@ -432,3 +432,38 @@ def migrate(db):
         backfill_default_skill_descriptions(db)
         db.execute("PRAGMA user_version = 16")
         db.commit()
+
+    if version < 17:
+        # IF NOT EXISTS: remigration tests rewind user_version while tables remain.
+        cur.executescript("""
+        CREATE TABLE IF NOT EXISTS campaign_spells (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            level INTEGER NOT NULL DEFAULT 0,
+            school TEXT NOT NULL DEFAULT '',
+            casting_time TEXT NOT NULL DEFAULT '',
+            range TEXT NOT NULL DEFAULT '',
+            components TEXT NOT NULL DEFAULT '',
+            duration TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            ritual INTEGER NOT NULL DEFAULT 0,
+            concentration INTEGER NOT NULL DEFAULT 0,
+            properties TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS character_spells (
+            character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+            spell_id INTEGER NOT NULL REFERENCES campaign_spells(id) ON DELETE CASCADE,
+            known INTEGER NOT NULL DEFAULT 1,
+            prepared INTEGER NOT NULL DEFAULT 0,
+            notes TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (character_id, spell_id)
+        );
+        """)
+        from sakaki_gm.rules_5e_spells import ensure_5e_spells
+        from sakaki_gm.spell_db import migrate_character_spell_free_text
+
+        ensure_5e_spells(db, commit=False)
+        # Link catalog titles found in free-text character spells; never rewrite prose.
+        migrate_character_spell_free_text(db)
+        db.execute("PRAGMA user_version = 17")
+        db.commit()
