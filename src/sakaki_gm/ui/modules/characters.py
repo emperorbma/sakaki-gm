@@ -729,21 +729,6 @@ class CharactersModule:
         )
         inventory_tree.bind("<B1-Motion>", drag_motion)
         inventory_tree.bind("<<TreeviewSelect>>", load_inventory_selection)
-        ttk.Button(
-            inventory_controls,
-            text="Add from archetype",
-            command=add_catalog_item,
-        ).pack(side=tk.LEFT, padx=4)
-        ttk.Button(
-            inventory_controls,
-            text="Add container",
-            command=add_container,
-        ).pack(side=tk.LEFT, padx=4)
-        ttk.Button(
-            inventory_controls,
-            text="Update selected",
-            command=update_catalog_item,
-        ).pack(side=tk.LEFT, padx=4)
 
         def refresh_owned_copy_labels():
             for row_id, node in list(inventory_node_data.items()):
@@ -810,16 +795,31 @@ class CharactersModule:
             editor.wait_window(dialog)
             refresh_owned_copy_labels()
 
+        # Frequent actions stay as buttons; less common ones live under More.
         ttk.Button(
             inventory_controls,
-            text="Customize copy…",
-            command=customize_selected_copy,
+            text="Add from archetype",
+            command=add_catalog_item,
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            inventory_controls,
+            text="Update selected",
+            command=update_catalog_item,
         ).pack(side=tk.LEFT, padx=4)
         ttk.Button(
             inventory_controls,
             text="Remove selected",
             command=remove_selected,
         ).pack(side=tk.LEFT, padx=4)
+        more_menu = tk.Menu(editor, tearoff=0)
+        more_menu.add_command(label="Add container", command=add_container)
+        more_menu.add_command(
+            label="Customize copy…",
+            command=customize_selected_copy,
+        )
+        more_button = ttk.Menubutton(inventory_controls, text="More")
+        more_button["menu"] = more_menu
+        more_button.pack(side=tk.LEFT, padx=4)
 
         skills_tab = ttk.Frame(notebook)
         notebook.add(skills_tab, text="Skills")
