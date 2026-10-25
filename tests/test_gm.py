@@ -299,7 +299,7 @@ def test_v8_migration_replaces_player_flag_with_blank_campaign_role(tmp_path):
         assert db.execute(
             "SELECT campaign_role FROM characters WHERE name='Serina'"
         ).fetchone()["campaign_role"] == ""
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 17
     finally:
         db.close()
 
@@ -1016,7 +1016,7 @@ def test_schema_v13_adds_object_properties(tmp_path):
     migrate(db)
 
     backpack = next(item for item in get_items(db) if item["id"] == item_id)
-    assert db.execute("PRAGMA user_version").fetchone()[0] == 16
+    assert db.execute("PRAGMA user_version").fetchone()[0] == 17
     assert backpack["is_container"] is False
     db.close()
 
@@ -1034,7 +1034,7 @@ def test_v12_migration_moves_catalog_inventory_to_container_links(tmp_path):
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 17
         assignment = get_character_items(db, character_id)[0]
         assert assignment["name"] == "Lunar Scepter"
         assert assignment["quantity"] == 2
@@ -1080,7 +1080,7 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 17
         assert get_items(db) == []
         assert get_quests(db) == []
         data = json.loads(
@@ -1177,7 +1177,7 @@ def test_schema_v4_campaign_migrates_to_quests(tmp_path):
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 17
         assert get_quests(db) == []
     finally:
         db.close()
@@ -1200,7 +1200,7 @@ def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     db = get_db(path)
     try:
         quest = get_quests(db)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 17
         assert quest["id"] == quest_id
         assert quest["name"] == "Legacy quest"
         assert quest["description"] == "Existing objective."
@@ -1227,7 +1227,7 @@ def test_schema_v6_campaign_adds_equipment_location(tmp_path):
     db = get_db(path)
     try:
         assignment = get_character_items(db, character_id)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 17
         assert assignment["equipment_location"] == ""
         assert assignment["attuned"] == 1
     finally:

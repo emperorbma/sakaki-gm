@@ -41,6 +41,7 @@ from sakaki_gm.ui.modules.items import ItemsModule
 from sakaki_gm.ui.modules.quests import QuestsModule
 from sakaki_gm.ui.modules.settings import SettingsModule
 from sakaki_gm.ui.modules.skills import SkillsModule
+from sakaki_gm.ui.modules.spells import SpellsModule
 from sakaki_gm.ui.modules.world import WorldModule
 
 
@@ -105,6 +106,8 @@ class MainWindow:
         notebook.add(self.quests_module.frame, text="Quests")
         self.skills_module = SkillsModule(notebook, self.db)
         notebook.add(self.skills_module.frame, text="Skills")
+        self.spells_module = SpellsModule(notebook, self.db)
+        notebook.add(self.spells_module.frame, text="Spells")
         self.settings_module = SettingsModule(notebook, self.db, self)
         notebook.add(self.settings_module.frame, text="Settings")
         self.log_panel = LogPanel(self.root, self.db)
@@ -225,6 +228,7 @@ class MainWindow:
         self.items_module.set_db(new_db)
         self.quests_module.set_db(new_db)
         self.skills_module.set_db(new_db)
+        self.spells_module.set_db(new_db)
         self.settings_module.set_db(new_db)
         self.log_panel.set_db(new_db)
         self.refresh_campaign_chrome()
@@ -321,6 +325,7 @@ class MainWindow:
         self.items_module.set_db(self.db)
         self.quests_module.set_db(self.db)
         self.skills_module.set_db(self.db)
+        self.spells_module.set_db(self.db)
         self.settings_module.set_db(self.db)
         self.log_panel.set_db(self.db)
         self.refresh_campaign_chrome()
