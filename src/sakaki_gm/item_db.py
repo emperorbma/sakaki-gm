@@ -30,6 +30,26 @@ def _parse_properties(raw) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _with_container_tag(properties: dict | None, is_container: bool) -> dict:
+    """Return a properties dict with the container tag synced to ``is_container``."""
+    props = dict(properties or {})
+    tags = props.get("tags")
+    if not isinstance(tags, list):
+        tags = []
+    else:
+        tags = [tag for tag in tags if isinstance(tag, str)]
+    has_container = "container" in tags
+    if is_container and not has_container:
+        tags = [*tags, "container"]
+    elif not is_container and has_container:
+        tags = [tag for tag in tags if tag != "container"]
+    if tags:
+        props["tags"] = tags
+    else:
+        props.pop("tags", None)
+    return props
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     merged = dict(base)
     for key, value in override.items():
@@ -283,6 +303,7 @@ def update_item_instance(
     name: str | None = None,
     description: str | None = None,
     property_overrides: dict | None = None,
+    properties: dict | None = None,
     commit: bool = True,
 ) -> None:
     """Persist per-copy fields on an owned item or container instance.
@@ -290,6 +311,11 @@ def update_item_instance(
     While linked to an archetype, name/description are stored as overrides so
     clearing them later can fall back to defaults. Detached uniques store the
     values on the object row itself.
+
+    Pass ``properties`` for the desired *resolved* property sets (weapon,
+    armor, tags, …). Linked copies store only the override diff vs the
+    archetype; uniques store the full dict. ``property_overrides`` still
+    merges individual keys into the stored override blob.
     """
     row = db.execute(
         "SELECT object_id, name, description, properties, object_type "
@@ -322,7 +348,29 @@ def update_item_instance(
         if description is not None:
             object_description = description
             overrides.pop("description", None)
-    if property_overrides is not None:
+    if properties is not None:
+        if not isinstance(properties, dict):
+            raise ValueError("Instance properties must be a JSON object.")
+        kind = {
+            key: value
+            for key, value in properties.items()
+            if key not in {"name", "description"}
+        }
+        name_desc = {
+            key: overrides[key]
+            for key in ("name", "description")
+            if key in overrides
+        }
+        if archetype_id:
+            archetype = db.execute(
+                "SELECT properties FROM objects WHERE object_id=? AND object_type='item'",
+                (archetype_id,),
+            ).fetchone()
+            base = _parse_properties(archetype["properties"] if archetype else {})
+            overrides = {**name_desc, **_override_diff(base, kind)}
+        else:
+            overrides = kind
+    elif property_overrides is not None:
         for key, value in property_overrides.items():
             if key in {"name", "description"}:
                 continue
@@ -661,26 +709,31 @@ def get_items(db):
         ORDER BY name COLLATE NOCASE, object_id
         """
     ).fetchall()
-    return [
-        {
+    items = []
+    for row in rows:
+        properties = _parse_properties(row["properties"])
+        items.append({
             "id": row["id"],
             "name": row["name"],
             "description": row["description"],
-            "is_container": "container" in _parse_properties(row["properties"]).get(
-                "tags", []
-            ),
-        }
-        for row in rows
-    ]
+            "properties": properties,
+            "is_container": "container" in properties.get("tags", []),
+        })
+    return items
 
 
 def create_item(
-    db, name: str, description: str = "", is_container: bool = False
+    db,
+    name: str,
+    description: str = "",
+    is_container: bool = False,
+    properties: dict | None = None,
 ) -> str:
     name = name.strip()
     if not name:
         raise ValueError("Item name cannot be empty.")
     object_id = f"catalog-item:{uuid.uuid4().hex}"
+    props = _with_container_tag(properties, is_container)
     db.execute(
         """
         INSERT INTO objects (
@@ -691,7 +744,7 @@ def create_item(
             object_id,
             name,
             description.strip(),
-            json.dumps({"tags": ["container"]} if is_container else {}),
+            json.dumps(props, ensure_ascii=False),
         ),
     )
     db.commit()
@@ -704,10 +757,20 @@ def update_item(
     name: str,
     description: str = "",
     is_container: bool = False,
+    properties: dict | None = None,
 ) -> None:
     name = name.strip()
     if not name:
         raise ValueError("Item name cannot be empty.")
+    if properties is None:
+        row = db.execute(
+            "SELECT properties FROM objects WHERE object_id=? AND object_type='item'",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown catalog item object: {item_id}")
+        properties = _parse_properties(row["properties"])
+    props = _with_container_tag(properties, is_container)
     db.execute(
         """
         UPDATE objects SET name=?, description=?, properties=?
@@ -716,7 +779,7 @@ def update_item(
         (
             name,
             description.strip(),
-            json.dumps({"tags": ["container"]} if is_container else {}),
+            json.dumps(props, ensure_ascii=False),
             item_id,
         ),
     )
@@ -749,6 +812,11 @@ def get_character_items(db, character_id: int):
         for child in container["children"]:
             if child["object_type"] == "container":
                 if child["object_properties"].get("catalog_item_id"):
+                    object_properties = {
+                        key: value
+                        for key, value in child["object_properties"].items()
+                        if key != "catalog_item_id"
+                    }
                     assignments.append({
                         "id": child["object_id"],
                         "name": child["name"],
@@ -757,6 +825,7 @@ def get_character_items(db, character_id: int):
                         "archetype_id": child["object_properties"].get(
                             "catalog_item_id"
                         ),
+                        "properties": object_properties,
                         "quantity": child["properties"].get("quantity", 1),
                         "attuned": int(
                             bool(child["properties"].get("attuned", False))
@@ -768,6 +837,11 @@ def get_character_items(db, character_id: int):
                     })
                 collect(child, (*path, child["name"]))
             elif child["object_type"] in ("item", ITEM_INSTANCE_TYPE):
+                object_properties = {
+                    key: value
+                    for key, value in child["object_properties"].items()
+                    if key != "catalog_item_id"
+                }
                 assignments.append({
                     "id": child["object_id"],
                     "name": child["name"],
@@ -776,6 +850,7 @@ def get_character_items(db, character_id: int):
                     "archetype_id": child["object_properties"].get(
                         "catalog_item_id"
                     ),
+                    "properties": object_properties,
                     "quantity": child["properties"].get("quantity", 1),
                     "attuned": int(bool(child["properties"].get("attuned", False))),
                     "equipment_location": child["properties"].get(
