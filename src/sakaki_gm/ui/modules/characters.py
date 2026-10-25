@@ -228,6 +228,48 @@ class CharactersModule:
             fields[key] = var
             widget.grid(row=index, column=1, pady=3, padx=5, sticky="w")
 
+        scaffold_row = len(spec)
+        scaffold_enabled = tk.BooleanVar(value=stat_block_scaffold)
+        scaffold_note = tk.StringVar(
+            value=_scaffold_status_text(saved.get("stat_block_status"))
+        )
+        ttk.Checkbutton(
+            right,
+            text="Design scaffold",
+            variable=scaffold_enabled,
+            command=lambda: _sync_scaffold_note_state(),
+        ).grid(row=scaffold_row, column=0, columnspan=2, sticky="w", pady=(10, 2), padx=5)
+        ttk.Label(right, text="Status note:").grid(
+            row=scaffold_row + 1, column=0, sticky="w", pady=3, padx=5
+        )
+        scaffold_note_entry = ttk.Entry(
+            right, textvariable=scaffold_note, width=32
+        )
+        scaffold_note_entry.grid(
+            row=scaffold_row + 1, column=1, pady=3, padx=5, sticky="w"
+        )
+        scaffold_hint = ttk.Label(
+            right,
+            text=(
+                "Scaffold sheets allow blank numbers (unassigned mechanics). "
+                "Save and reopen after toggling to refresh field editors."
+            ),
+            wraplength=320,
+        )
+        scaffold_hint.grid(
+            row=scaffold_row + 2, column=0, columnspan=2, sticky="w", pady=(2, 6), padx=5
+        )
+
+        def _sync_scaffold_note_state(_event=None):
+            if scaffold_enabled.get():
+                scaffold_note_entry.configure(state="normal")
+                if not scaffold_note.get().strip():
+                    scaffold_note.set(DEFAULT_STAT_BLOCK_SCAFFOLD)
+            else:
+                scaffold_note_entry.configure(state="disabled")
+
+        _sync_scaffold_note_state()
+
         catalog_items = get_items(self.db)
         item_ids = {item["name"]: item["id"] for item in catalog_items}
         items_by_id = {item["id"]: item for item in catalog_items}
@@ -1291,28 +1333,45 @@ class CharactersModule:
         def save():
             try:
                 payload = dict(saved)
+                scaffold_now = bool(scaffold_enabled.get())
                 for key, var in fields.items():
                     value = var.get()
-                    if stat_block_scaffold and key in {
+                    if key in {
                         "level", "experience", "hp_current", "hp_max", "ac",
                         "speed", "initiative", "proficiency_bonus",
                     }:
-                        parsed = _optional_int(value)
-                        if parsed is None:
-                            payload.pop(key, None)
+                        if scaffold_now:
+                            parsed = _optional_int(value)
+                            if parsed is None:
+                                payload.pop(key, None)
+                            else:
+                                payload[key] = parsed
                         else:
-                            payload[key] = parsed
+                            parsed = _optional_int(value)
+                            payload[key] = (
+                                parsed
+                                if parsed is not None
+                                else defaults.get(key, 0)
+                            )
                     else:
                         payload[key] = value
                 for stat, var in ability_vars.items():
-                    if stat_block_scaffold:
+                    if scaffold_now:
                         parsed = _optional_int(var.get())
                         if parsed is None:
                             payload.pop(stat, None)
                         else:
                             payload[stat] = parsed
                     else:
-                        payload[stat] = var.get()
+                        parsed = _optional_int(var.get())
+                        payload[stat] = parsed if parsed is not None else 10
+                status = normalize_stat_block_status(
+                    scaffold_now, scaffold_note.get()
+                )
+                if status is None:
+                    payload.pop("stat_block_status", None)
+                else:
+                    payload["stat_block_status"] = status
                 payload.pop("inventory", None)
                 payload.pop("attuned", None)
                 payload.pop("skills", None)
@@ -1468,9 +1527,30 @@ def _as_int(value, default):
         return default
 
 
+DEFAULT_STAT_BLOCK_SCAFFOLD = "Design scaffold; mechanics unassigned."
+
+
 def _is_stat_block_scaffold(data) -> bool:
-    status = data.get("stat_block_status")
+    status = data.get("stat_block_status") if isinstance(data, dict) else None
     return isinstance(status, str) and status.lower().startswith("design scaffold")
+
+
+def _scaffold_status_text(status) -> str:
+    if isinstance(status, str) and status.strip():
+        return status.strip()
+    return DEFAULT_STAT_BLOCK_SCAFFOLD
+
+
+def normalize_stat_block_status(enabled: bool, note: str | None = None) -> str | None:
+    """Return the ``stat_block_status`` value to store, or ``None`` to clear it."""
+    if not enabled:
+        return None
+    text = (note or "").strip()
+    if not text:
+        return DEFAULT_STAT_BLOCK_SCAFFOLD
+    if text.lower().startswith("design scaffold"):
+        return text
+    return f"Design scaffold; {text}"
 
 
 def _optional_int(value):
