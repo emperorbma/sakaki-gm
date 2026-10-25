@@ -400,3 +400,10 @@ def migrate(db):
         )
         db.execute("PRAGMA user_version = 14")
         db.commit()
+
+    if version < 15:
+        from sakaki_gm.item_db import migrate_catalog_contains_to_instances
+
+        with db:
+            migrate_catalog_contains_to_instances(db)
+            db.execute("PRAGMA user_version = 15")

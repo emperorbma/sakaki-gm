@@ -121,7 +121,16 @@ def prepare_pre_object_graph_inventory_schema(db):
         for row in db.execute(
             """
             SELECT object_id FROM objects
-            WHERE object_type IN ('character', 'container', 'item')
+            WHERE object_type IN ('character', 'container', 'item', 'item_instance')
+            """
+        )
+    }
+    instance_archetypes = {
+        row["from_object_id"]: row["to_object_id"]
+        for row in db.execute(
+            """
+            SELECT from_object_id, to_object_id
+            FROM object_links WHERE relation='instance_of'
             """
         )
     }
@@ -136,7 +145,9 @@ def prepare_pre_object_graph_inventory_schema(db):
             """,
             (inventory_id,),
         ).fetchall():
-            item_id = item_ids.get(link["to_object_id"])
+            target_id = link["to_object_id"]
+            catalog_object_id = instance_archetypes.get(target_id, target_id)
+            item_id = item_ids.get(catalog_object_id)
             if item_id is None:
                 continue
             properties = json.loads(link["properties"])
@@ -288,7 +299,7 @@ def test_v8_migration_replaces_player_flag_with_blank_campaign_role(tmp_path):
         assert db.execute(
             "SELECT campaign_role FROM characters WHERE name='Serina'"
         ).fetchone()["campaign_role"] == ""
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 15
     finally:
         db.close()
 
@@ -800,6 +811,8 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
 
     assigned = get_character_items(db, character_id)
     assert len(assigned) == 1
+    assert assigned[0]["id"].startswith("item-instance:")
+    assert assigned[0]["archetype_id"] == item_id
     assert assigned[0]["name"] == "Lunar Scepter"
     assert assigned[0]["description"] == "A silver arcane focus."
     assert assigned[0]["quantity"] == 2
@@ -825,7 +838,7 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
         SELECT properties FROM object_links
         WHERE from_object_id=? AND to_object_id=? AND relation='contains'
         """,
-        (inventory_link["to_object_id"], item_id),
+        (inventory_link["to_object_id"], assigned[0]["id"]),
     ).fetchone()
     assert json.loads(item_link["properties"]) == {
         "quantity": 2,
@@ -850,7 +863,7 @@ def test_item_catalog_and_character_inventory_are_normalized(tmp_path):
     assert f'"object_id": "character:{character_id}"' in user
     assert f'"inventory_container_object_id": "inventory:{character_id}"' in user
     assert "A silver arcane focus." in user
-    assert f'"object_id": "{item_id}"' in user
+    assert f'"object_id": "{assigned[0]["id"]}"' in user
     assert '"quantity": 2' in user
     assert '"attuned": true' in user
     assert '"equipment_location": "right hand"' in user
@@ -907,13 +920,16 @@ def test_container_tag_creates_nested_backpack_and_cleans_orphan(tmp_path):
     backpack = inventory["children"][0]
     assert backpack["object_type"] == "container"
     assert backpack["object_properties"]["catalog_item_id"] == backpack_id
-    assert backpack["children"][0]["object_id"] == potion_id
+    potion_node = backpack["children"][0]
+    assert potion_node["object_id"].startswith("item-instance:")
+    assert potion_node["object_properties"]["catalog_item_id"] == potion_id
     potion_assignment = next(
         item for item in get_character_items(db, character_id)
         if item["name"] == "Potion"
     )
     assert potion_assignment["container_path"].endswith(" > Backpack")
     assert potion_assignment["quantity"] == 2
+    assert potion_assignment["archetype_id"] == potion_id
 
     save_character_inventory(db, character_id, [])
     assert db.execute(
@@ -923,6 +939,10 @@ def test_container_tag_creates_nested_backpack_and_cleans_orphan(tmp_path):
     assert db.execute(
         "SELECT COUNT(*) FROM object_links WHERE to_object_id=?",
         (potion_id,),
+    ).fetchone()[0] == 0
+    assert db.execute(
+        "SELECT COUNT(*) FROM objects WHERE object_id=?",
+        (potion_node["object_id"],),
     ).fetchone()[0] == 0
     db.close()
 
@@ -951,10 +971,16 @@ def test_inventory_sibling_order_is_preserved_when_saved(tmp_path):
     )
 
     tree = get_character_inventory_tree(db, character_id)
-    assert [item["object_id"] for item in tree["children"]] == [
-        second_item_id,
-        first_item_id,
+    assert [item["name"] for item in tree["children"]] == [
+        "Second item",
+        "First item",
     ]
+    assert all(
+        item["object_id"].startswith("item-instance:") for item in tree["children"]
+    )
+    assert [
+        item["object_properties"]["catalog_item_id"] for item in tree["children"]
+    ] == [second_item_id, first_item_id]
     db.close()
 
 
@@ -990,7 +1016,7 @@ def test_schema_v13_adds_object_properties(tmp_path):
     migrate(db)
 
     backpack = next(item for item in get_items(db) if item["id"] == item_id)
-    assert db.execute("PRAGMA user_version").fetchone()[0] == 14
+    assert db.execute("PRAGMA user_version").fetchone()[0] == 15
     assert backpack["is_container"] is False
     db.close()
 
@@ -1008,7 +1034,7 @@ def test_v12_migration_moves_catalog_inventory_to_container_links(tmp_path):
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 15
         assignment = get_character_items(db, character_id)[0]
         assert assignment["name"] == "Lunar Scepter"
         assert assignment["quantity"] == 2
@@ -1054,7 +1080,7 @@ def test_schema_v3_campaign_migrates_to_item_catalog_without_changing_legacy_ite
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 15
         assert get_items(db) == []
         assert get_quests(db) == []
         data = json.loads(
@@ -1151,7 +1177,7 @@ def test_schema_v4_campaign_migrates_to_quests(tmp_path):
 
     db = get_db(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 15
         assert get_quests(db) == []
     finally:
         db.close()
@@ -1174,7 +1200,7 @@ def test_schema_v5_campaign_adds_empty_quest_status(tmp_path):
     db = get_db(path)
     try:
         quest = get_quests(db)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 15
         assert quest["id"] == quest_id
         assert quest["name"] == "Legacy quest"
         assert quest["description"] == "Existing objective."
@@ -1201,7 +1227,7 @@ def test_schema_v6_campaign_adds_equipment_location(tmp_path):
     db = get_db(path)
     try:
         assignment = get_character_items(db, character_id)[0]
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 15
         assert assignment["equipment_location"] == ""
         assert assignment["attuned"] == 1
     finally:
@@ -1424,9 +1450,12 @@ def test_apply_proposals_inventory_note_and_link_backends(tmp_path):
     assert any("Appended" in line for line in messages)
     assert any("Created located_at" in line for line in messages)
 
-    items = {item["id"]: item for item in get_character_items(db, character_id)}
+    items = {
+        item["archetype_id"]: item for item in get_character_items(db, character_id)
+    }
     assert items[ward_id]["equipment_location"] == "left hand"
     assert stick_id in items
+    assert items[stick_id]["id"].startswith("item-instance:")
     content = db.execute(
         "SELECT content FROM notes WHERE id=?", (note_id,)
     ).fetchone()["content"]
@@ -1446,7 +1475,7 @@ def test_apply_proposals_inventory_note_and_link_backends(tmp_path):
     }])
     assert any("Removed" in line for line in remove_messages)
     assert stick_id not in {
-        item["id"] for item in get_character_items(db, character_id)
+        item["archetype_id"] for item in get_character_items(db, character_id)
     }
     db.close()
 
