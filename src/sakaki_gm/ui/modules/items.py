@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -16,6 +17,26 @@ from sakaki_gm.item_db import (
     update_item_instance,
 )
 from sakaki_gm.rules_5e_equipment import ensure_5e_equipment_archetypes
+
+
+def _format_properties(properties) -> str:
+    data = properties if isinstance(properties, dict) else {}
+    if not data:
+        return "{}"
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _parse_properties_text(raw: str) -> dict:
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Property sets must be valid JSON ({exc}).") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Property sets must be a JSON object.")
+    return data
 
 
 class ItemsModule:
@@ -62,16 +83,28 @@ class ItemsModule:
         editor.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
         ttk.Label(editor, text="Name").pack(anchor="w")
         self.name = ttk.Entry(editor, font=("Georgia", 11))
-        self.name.pack(fill=tk.X, pady=(2, 10))
+        self.name.pack(fill=tk.X, pady=(2, 8))
         ttk.Label(editor, text="Description").pack(anchor="w")
-        self.description = tk.Text(editor, wrap=tk.WORD, font=("Georgia", 11), height=12)
+        self.description = tk.Text(editor, wrap=tk.WORD, font=("Georgia", 11), height=7)
         self.description.pack(fill=tk.BOTH, expand=True, pady=(2, 8))
         self.is_container = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             editor,
             text="Container archetype (creates a container instance with its own contents)",
             variable=self.is_container,
-        ).pack(anchor="w", pady=(0, 8))
+        ).pack(anchor="w", pady=(0, 6))
+        ttk.Label(editor, text="Property sets").pack(anchor="w")
+        ttk.Label(
+            editor,
+            text=(
+                "Attached kinds as JSON (tags, weapon, armor, food, container, …). "
+                "Leave {} when none. Saving keeps these; the container checkbox "
+                "only syncs the container tag."
+            ),
+            wraplength=520,
+        ).pack(anchor="w", pady=(0, 2))
+        self.properties = tk.Text(editor, wrap=tk.NONE, font=("Consolas", 10), height=8)
+        self.properties.pack(fill=tk.BOTH, expand=True, pady=(2, 8))
 
         buttons = ttk.Frame(editor)
         buttons.pack(fill=tk.X)
@@ -133,6 +166,8 @@ class ItemsModule:
         self.name.delete(0, tk.END)
         self.description.delete("1.0", tk.END)
         self.is_container.set(False)
+        self.properties.delete("1.0", tk.END)
+        self.properties.insert("1.0", "{}")
         self._loading = False
         self.name.focus_set()
 
@@ -146,11 +181,22 @@ class ItemsModule:
                 parent=self.frame,
             )
             return
+        try:
+            properties = _parse_properties_text(
+                self.properties.get("1.0", "end")
+            )
+        except ValueError as exc:
+            messagebox.showerror("Archetype", str(exc), parent=self.frame)
+            return
         item_id = self._selected_id
         try:
             if item_id is None:
                 item_id = create_item(
-                    self.db, name, description, self.is_container.get()
+                    self.db,
+                    name,
+                    description,
+                    self.is_container.get(),
+                    properties=properties,
                 )
             else:
                 update_item(
@@ -159,6 +205,7 @@ class ItemsModule:
                     name,
                     description,
                     self.is_container.get(),
+                    properties=properties,
                 )
         except sqlite3.IntegrityError:
             self.db.rollback()
@@ -254,6 +301,8 @@ class ItemsModule:
         self.description.delete("1.0", tk.END)
         self.description.insert("1.0", item["description"])
         self.is_container.set(item["is_container"])
+        self.properties.delete("1.0", tk.END)
+        self.properties.insert("1.0", _format_properties(item.get("properties")))
 
 
 class InstanceCustomizeDialog(tk.Toplevel):
@@ -328,13 +377,24 @@ class InstanceCustomizeDialog(tk.Toplevel):
         self.status.pack(anchor="w", pady=(0, 8))
         ttk.Label(right, text="Name").pack(anchor="w")
         self.name = ttk.Entry(right, font=("Georgia", 11))
-        self.name.pack(fill=tk.X, pady=(2, 8))
+        self.name.pack(fill=tk.X, pady=(2, 6))
         ttk.Label(right, text="Description").pack(anchor="w")
-        self.description = tk.Text(right, wrap=tk.WORD, font=("Georgia", 11), height=10)
-        self.description.pack(fill=tk.BOTH, expand=True, pady=(2, 8))
+        self.description = tk.Text(right, wrap=tk.WORD, font=("Georgia", 11), height=5)
+        self.description.pack(fill=tk.BOTH, expand=True, pady=(2, 6))
+        ttk.Label(right, text="Resolved property sets").pack(anchor="w")
+        ttk.Label(
+            right,
+            text=(
+                "Practical values after archetype defaults + overrides. "
+                "Edits on linked copies store only what differs from the archetype."
+            ),
+            wraplength=360,
+        ).pack(anchor="w", pady=(0, 2))
+        self.properties = tk.Text(right, wrap=tk.NONE, font=("Consolas", 10), height=7)
+        self.properties.pack(fill=tk.BOTH, expand=True, pady=(2, 6))
         ttk.Label(right, text="Location").pack(anchor="w")
         self.location = ttk.Label(right, text="—", wraplength=360)
-        self.location.pack(anchor="w", pady=(2, 10))
+        self.location.pack(anchor="w", pady=(2, 8))
 
         attach_row = ttk.Frame(right)
         attach_row.pack(fill=tk.X, pady=(0, 8))
@@ -425,6 +485,8 @@ class InstanceCustomizeDialog(tk.Toplevel):
             self.status.config(text="No owned copies match this filter.")
             self.name.delete(0, tk.END)
             self.description.delete("1.0", tk.END)
+            self.properties.delete("1.0", tk.END)
+            self.properties.insert("1.0", "{}")
             self.location.config(text="—")
 
     def _on_select(self, _event=None):
@@ -452,6 +514,8 @@ class InstanceCustomizeDialog(tk.Toplevel):
         self.name.insert(0, item["name"])
         self.description.delete("1.0", tk.END)
         self.description.insert("1.0", item["description"] or "")
+        self.properties.delete("1.0", tk.END)
+        self.properties.insert("1.0", _format_properties(item.get("properties")))
         self.location.config(
             text="; ".join(item["locations"]) if item["locations"] else "—"
         )
@@ -473,11 +537,19 @@ class InstanceCustomizeDialog(tk.Toplevel):
             )
             return
         try:
+            properties = _parse_properties_text(
+                self.properties.get("1.0", "end")
+            )
+        except ValueError as exc:
+            messagebox.showerror("Owned copy", str(exc), parent=self)
+            return
+        try:
             update_item_instance(
                 self.db,
                 self._selected_id,
                 name=name,
                 description=description,
+                properties=properties,
             )
         except ValueError as exc:
             messagebox.showerror("Owned copy", str(exc), parent=self)

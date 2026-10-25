@@ -361,6 +361,9 @@ def _short_character_payload(db, row, action: str) -> dict:
             "attuned": bool(item["attuned"]),
             "equipment_location": item["equipment_location"],
         }
+        props = item.get("properties") or {}
+        if props:
+            payload["properties"] = props
         name = (item["name"] or "").casefold()
         if name and name in action_cf:
             named.append(payload)
@@ -373,6 +376,11 @@ def _short_character_payload(db, row, action: str) -> dict:
             "quantity": item["quantity"],
             "attuned": bool(item["attuned"]),
             "equipment_location": item["equipment_location"],
+            **(
+                {"properties": item["properties"]}
+                if item.get("properties")
+                else {}
+            ),
         }
         for item in assignments[:8]
     ]
@@ -436,6 +444,11 @@ def _full_character_payload(db, row) -> dict:
                 "quantity": item["quantity"],
                 "attuned": bool(item["attuned"]),
                 "equipment_location": item["equipment_location"],
+                **(
+                    {"properties": item["properties"]}
+                    if item.get("properties")
+                    else {}
+                ),
             }
             for item in assignments
         ],
