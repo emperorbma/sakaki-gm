@@ -6,7 +6,13 @@ import uuid
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from sakaki_gm.character_db import create_character, delete_character, get_all_characters, update_character
+from sakaki_gm.character_db import (
+    create_character,
+    delete_character,
+    get_all_characters,
+    spawn_character_from_scaffold,
+    update_character,
+)
 from sakaki_gm.inventory_generator import (
     choose_kit_for_character,
     generate_character_inventory,
@@ -41,7 +47,7 @@ TEXT_FIELDS = (
 
 
 class CharactersModule:
-    # Roster views: finished/active sheets vs design scaffolds (e.g. Voryn roles).
+    # Roster views: playable sheets vs design scaffolds / character spawners.
     LIST_CHARACTERS = "characters"
     LIST_SCAFFOLDS = "scaffolds"
 
@@ -79,6 +85,11 @@ class CharactersModule:
             btn_frame, text="+ New Character", command=self.new_character
         )
         self.new_button.pack(side=tk.LEFT, padx=5)
+        self.spawn_button = ttk.Button(
+            btn_frame,
+            text="Spawn character",
+            command=self.spawn_selected_scaffold,
+        )
         ttk.Button(btn_frame, text="Import from .md", command=self.open_importer).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Import Files", command=self.import_files).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Refresh", command=self.refresh).pack(side=tk.LEFT)
@@ -124,15 +135,21 @@ class CharactersModule:
         for item in self.tree.get_children():
             self.tree.delete(item)
         if self.showing_scaffolds():
-            self.list_heading.config(text="Design scaffolds")
+            self.list_heading.config(text="Scaffolds / spawners")
             self.tree.heading("Summary", text="Scaffold")
             self.list_mode_button.config(text="Show characters")
             self.new_button.config(text="+ New Scaffold")
+            if not self.spawn_button.winfo_ismapped():
+                self.spawn_button.pack(
+                    side=tk.LEFT, padx=5, after=self.new_button
+                )
         else:
             self.list_heading.config(text="Characters")
             self.tree.heading("Summary", text="Character Sheet")
             self.list_mode_button.config(text="Show scaffolds")
             self.new_button.config(text="+ New Character")
+            if self.spawn_button.winfo_ismapped():
+                self.spawn_button.pack_forget()
         for char in self._visible_characters():
             if "error" in char:
                 summary = "(error loading data)"
@@ -148,6 +165,48 @@ class CharactersModule:
                 role = f" — {char['campaign_role']}" if char.get("campaign_role") else ""
                 summary = f"{char['name']} — {char.get('class') or '?'} — HP: {hp}/{max_hp}{role}"
             self.tree.insert("", "end", iid=str(char["id"]), text=char["name"], values=(summary,))
+
+    def spawn_selected_scaffold(self):
+        """Clone selected scaffold(s) onto the character roster; keep templates."""
+        if not self.showing_scaffolds():
+            return
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showinfo(
+                "Spawn character",
+                "Select a scaffold to spawn from.",
+                parent=self.frame,
+            )
+            return
+        spawned = []
+        for iid in selected:
+            scaffold_id = int(iid)
+            row = self.db.execute(
+                "SELECT name FROM characters WHERE id=?",
+                (scaffold_id,),
+            ).fetchone()
+            label = row["name"] if row else str(scaffold_id)
+            try:
+                new_id = spawn_character_from_scaffold(self.db, scaffold_id)
+            except (sqlite3.Error, ValueError) as exc:
+                messagebox.showerror(
+                    "Spawn character",
+                    f"Could not spawn from {label}: {exc}",
+                    parent=self.frame,
+                )
+                return
+            new_row = self.db.execute(
+                "SELECT name FROM characters WHERE id=?",
+                (new_id,),
+            ).fetchone()
+            spawned.append(new_row["name"] if new_row else str(new_id))
+        self.refresh()
+        messagebox.showinfo(
+            "Spawn character",
+            "Spawned onto the character roster (scaffold kept):\n"
+            + "\n".join(f"• {name}" for name in spawned),
+            parent=self.frame,
+        )
 
     def fill_starter_kits(self):
         if self.showing_scaffolds():
@@ -322,6 +381,12 @@ class CharactersModule:
         scaffold_note = tk.StringVar(
             value=_scaffold_status_text(saved.get("stat_block_status"))
         )
+        spawn_generate_name = tk.BooleanVar(
+            value=bool(saved.get("spawn_generate_name"))
+        )
+        spawn_name_pattern = tk.StringVar(
+            value=str(saved.get("spawn_name_pattern") or "{given}")
+        )
         ttk.Checkbutton(
             right,
             text="Design scaffold",
@@ -337,16 +402,40 @@ class CharactersModule:
         scaffold_note_entry.grid(
             row=scaffold_row + 1, column=1, pady=3, padx=5, sticky="w"
         )
+        spawn_name_check = ttk.Checkbutton(
+            right,
+            text="Generate name when spawning",
+            variable=spawn_generate_name,
+            command=lambda: _sync_scaffold_note_state(),
+        )
+        spawn_name_check.grid(
+            row=scaffold_row + 2,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(6, 2),
+            padx=5,
+        )
+        ttk.Label(right, text="Name pattern:").grid(
+            row=scaffold_row + 3, column=0, sticky="w", pady=3, padx=5
+        )
+        spawn_pattern_entry = ttk.Entry(
+            right, textvariable=spawn_name_pattern, width=32
+        )
+        spawn_pattern_entry.grid(
+            row=scaffold_row + 3, column=1, pady=3, padx=5, sticky="w"
+        )
         scaffold_hint = ttk.Label(
             right,
             text=(
                 "Scaffold sheets allow blank numbers (unassigned mechanics). "
-                "Save and reopen after toggling to refresh field editors."
+                "Save and reopen after toggling to refresh field editors. "
+                "Spawn name pattern tokens: {given}, {scaffold}, {role}, {class}."
             ),
             wraplength=320,
         )
         scaffold_hint.grid(
-            row=scaffold_row + 2, column=0, columnspan=2, sticky="w", pady=(2, 6), padx=5
+            row=scaffold_row + 4, column=0, columnspan=2, sticky="w", pady=(2, 6), padx=5
         )
 
         def _sync_scaffold_note_state(_event=None):
@@ -354,8 +443,17 @@ class CharactersModule:
                 scaffold_note_entry.configure(state="normal")
                 if not scaffold_note.get().strip():
                     scaffold_note.set(DEFAULT_STAT_BLOCK_SCAFFOLD)
+                spawn_name_check.configure(state="normal")
+                if spawn_generate_name.get():
+                    spawn_pattern_entry.configure(state="normal")
+                    if not spawn_name_pattern.get().strip():
+                        spawn_name_pattern.set("{given}")
+                else:
+                    spawn_pattern_entry.configure(state="disabled")
             else:
                 scaffold_note_entry.configure(state="disabled")
+                spawn_name_check.configure(state="disabled")
+                spawn_pattern_entry.configure(state="disabled")
 
         _sync_scaffold_note_state()
 
@@ -1461,6 +1559,13 @@ class CharactersModule:
                     payload.pop("stat_block_status", None)
                 else:
                     payload["stat_block_status"] = status
+                if scaffold_now and spawn_generate_name.get():
+                    payload["spawn_generate_name"] = True
+                    pattern = spawn_name_pattern.get().strip() or "{given}"
+                    payload["spawn_name_pattern"] = pattern
+                else:
+                    payload.pop("spawn_generate_name", None)
+                    payload.pop("spawn_name_pattern", None)
                 payload.pop("inventory", None)
                 payload.pop("attuned", None)
                 payload.pop("skills", None)

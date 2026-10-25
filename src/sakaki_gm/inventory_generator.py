@@ -13,6 +13,7 @@ import uuid
 
 from sakaki_gm.item_db import (
     CONTAINER_INSTANCE_PREFIX,
+    create_container_instance_from_archetype,
     create_item_instance,
     get_character_inventory_container,
     get_character_inventory_tree,
@@ -214,31 +215,6 @@ def _family_covered(index: dict, family: str, catalog_name: str, archetype_id: s
     return False
 
 
-def _spawn_container_from_archetype(db, archetype) -> str:
-    instance_id = f"{CONTAINER_INSTANCE_PREFIX}{uuid.uuid4().hex}"
-    db.execute(
-        """
-        INSERT INTO objects (
-            object_id, name, object_type, geography_kind, description, properties
-        ) VALUES (?, ?, 'container', 'unspecified', '', ?)
-        """,
-        (
-            instance_id,
-            archetype["name"],
-            json.dumps({"catalog_item_id": archetype["object_id"]}, ensure_ascii=False),
-        ),
-    )
-    db.execute(
-        """
-        INSERT INTO object_links (
-            relation, from_object_id, to_object_id, properties, notes
-        ) VALUES ('instance_of', ?, ?, '{}', '')
-        """,
-        (instance_id, archetype["object_id"]),
-    )
-    return instance_id
-
-
 def _parent_for_family(index: dict, parent_family: str | None, root_id: str) -> str | None:
     if not parent_family:
         return root_id
@@ -335,7 +311,9 @@ def generate_character_inventory(
         props = json.loads(archetype["properties"] or "{}")
         is_container = "container" in (props.get("tags") or [])
         if is_container:
-            instance_id = _spawn_container_from_archetype(db, archetype)
+            instance_id = create_container_instance_from_archetype(
+                db, archetype["object_id"], commit=False
+            )
             place_owned_copy_in_container(
                 db,
                 parent_id,

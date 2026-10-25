@@ -611,6 +611,51 @@ def create_unique_container_instance(
     return instance_id
 
 
+def create_container_instance_from_archetype(
+    db,
+    archetype_id: str,
+    *,
+    commit: bool = False,
+) -> str:
+    """Create an owned container copy linked to a catalog container archetype."""
+    archetype = db.execute(
+        "SELECT object_id, name, description, properties "
+        "FROM objects WHERE object_id=? AND object_type='item'",
+        (archetype_id,),
+    ).fetchone()
+    if archetype is None:
+        raise ValueError(f"Unknown catalog item object: {archetype_id}")
+    props = _parse_properties(archetype["properties"])
+    if "container" not in (props.get("tags") or []):
+        raise ValueError(
+            f"Catalog item {archetype_id!r} is not a container archetype."
+        )
+    instance_id = f"{CONTAINER_INSTANCE_PREFIX}{uuid.uuid4().hex}"
+    db.execute(
+        """
+        INSERT INTO objects (
+            object_id, name, object_type, geography_kind, description, properties
+        ) VALUES (?, ?, 'container', 'unspecified', '', ?)
+        """,
+        (
+            instance_id,
+            archetype["name"],
+            json.dumps({"catalog_item_id": archetype["object_id"]}, ensure_ascii=False),
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO object_links (
+            relation, from_object_id, to_object_id, properties, notes
+        ) VALUES ('instance_of', ?, ?, '{}', '')
+        """,
+        (instance_id, archetype["object_id"]),
+    )
+    if commit:
+        db.commit()
+    return instance_id
+
+
 def place_owned_copy_in_container(
     db,
     parent_id: str,
