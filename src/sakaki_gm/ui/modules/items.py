@@ -15,6 +15,7 @@ from sakaki_gm.item_db import (
     update_item,
     update_item_instance,
 )
+from sakaki_gm.rules_5e_equipment import ensure_5e_equipment_archetypes
 
 
 class ItemsModule:
@@ -35,6 +36,11 @@ class ItemsModule:
             text="Customize owned copies…",
             command=self.open_instance_utility,
         ).pack(side=tk.RIGHT)
+        ttk.Button(
+            header,
+            text="Add missing 5e equipment",
+            command=self.add_missing_5e_equipment,
+        ).pack(side=tk.RIGHT, padx=(0, 6))
         ttk.Label(
             self.frame,
             text=(
@@ -84,6 +90,21 @@ class ItemsModule:
         self._items = []
         self._selected_id = None
         self.reload()
+
+    def add_missing_5e_equipment(self):
+        if not messagebox.askyesno(
+            "5e equipment",
+            "Add any missing generic D&D 5e equipment archetypes?\n\n"
+            "Existing archetypes with the same name are left unchanged.",
+        ):
+            return
+        result = ensure_5e_equipment_archetypes(self.db, commit=True)
+        self.reload()
+        messagebox.showinfo(
+            "5e equipment",
+            f"Added {result['added']} archetype(s); "
+            f"{result['skipped']} already present.",
+        )
 
     def reload(self, keep_id=None):
         self._loading = True

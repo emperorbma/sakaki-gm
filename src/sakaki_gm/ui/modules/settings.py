@@ -15,6 +15,7 @@ from sakaki_gm.llm_config import (
 )
 from sakaki_gm.model_capability_tests import run_capability_tests
 from sakaki_gm.llm_client import list_models, test_connection
+from sakaki_gm.rules_5e_equipment import ensure_5e_equipment_archetypes
 from sakaki_gm.skill_db import DEFAULT_5E_SKILLS, replace_campaign_skills
 
 
@@ -76,6 +77,15 @@ class SettingsModule:
         rules = ttk.LabelFrame(content, text="Campaign rules")
         rules.pack(fill=tk.X, padx=16, pady=12)
         ttk.Button(rules, text="Load Standard D&D 5e Rules", command=self.load_5e).pack(anchor="w", padx=10, pady=8)
+        ttk.Label(
+            rules,
+            text=(
+                "Loads ability scores, proficiency bonus, and 5e skills (replacing "
+                "existing skills). Also adds any missing generic 5e equipment "
+                "archetypes without overwriting names already in the bottle."
+            ),
+            wraplength=720,
+        ).pack(anchor="w", padx=10, pady=(0, 4))
         self.system_label = ttk.Label(rules, text=self._system_text())
         self.system_label.pack(anchor="w", padx=10, pady=(0, 8))
 
@@ -260,7 +270,12 @@ class SettingsModule:
         return f"Current system: {name}"
 
     def load_5e(self):
-        if not messagebox.askyesno("Load 5e", "Replace current rules with Standard D&D 5e?"):
+        if not messagebox.askyesno(
+            "Load 5e",
+            "Replace skills and ability settings with Standard D&D 5e?\n\n"
+            "Missing generic 5e equipment archetypes will also be added "
+            "(existing archetype names are left alone).",
+        ):
             return
         self.db.executescript("""
         INSERT OR REPLACE INTO campaign_settings (key, value) VALUES
@@ -270,9 +285,18 @@ class SettingsModule:
         """)
         replace_campaign_skills(self.db, DEFAULT_5E_SKILLS)
         self.db.execute("DELETE FROM campaign_settings WHERE key='skills_list'")
+        equipment = ensure_5e_equipment_archetypes(self.db)
         self.db.commit()
         self.system_label.config(text=self._system_text())
-        messagebox.showinfo("Success", "Standard 5e rules loaded.")
+        items_module = getattr(self.main_app, "items_module", None)
+        if items_module is not None:
+            items_module.reload()
+        messagebox.showinfo(
+            "Success",
+            "Standard 5e rules loaded.\n"
+            f"Equipment archetypes: {equipment['added']} added, "
+            f"{equipment['skipped']} already present.",
+        )
 
     def apply_preset(self, _event=None):
         preset = PRESETS.get(self.provider.get())
