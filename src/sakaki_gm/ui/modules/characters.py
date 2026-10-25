@@ -725,7 +725,7 @@ class CharactersModule:
         inventory_tree.bind("<<TreeviewSelect>>", load_inventory_selection)
         ttk.Button(
             inventory_controls,
-            text="Add item",
+            text="Add from archetype",
             command=add_catalog_item,
         ).pack(side=tk.LEFT, padx=4)
         ttk.Button(
