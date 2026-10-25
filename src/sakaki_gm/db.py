@@ -3,7 +3,12 @@ import json
 import sqlite3
 from pathlib import Path
 
-from sakaki_gm.skill_db import DEFAULT_5E_SKILLS, move_legacy_skills_to_notes
+from sakaki_gm.skill_db import (
+    DEFAULT_5E_SKILLS,
+    backfill_default_skill_descriptions,
+    move_legacy_skills_to_notes,
+    skill_entry_parts,
+)
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 # src/sakaki_gm -> src -> repository root (where pygm_campaign.db lives)
@@ -124,11 +129,18 @@ def migrate(db):
             PRIMARY KEY (character_id, skill_id)
         );
         """)
-        ability_by_name = {name.casefold(): ability for name, ability in DEFAULT_5E_SKILLS}
+        ability_by_name = {
+            name.casefold(): ability
+            for name, ability, _description in (
+                skill_entry_parts(entry) for entry in DEFAULT_5E_SKILLS
+            )
+        }
         setting = db.execute(
             "SELECT value FROM campaign_settings WHERE key='skills_list'"
         ).fetchone()
-        skill_names = [name for name, _ability in DEFAULT_5E_SKILLS]
+        skill_names = [
+            skill_entry_parts(entry)[0] for entry in DEFAULT_5E_SKILLS
+        ]
         if setting:
             try:
                 configured = json.loads(setting["value"])
@@ -407,3 +419,16 @@ def migrate(db):
         with db:
             migrate_catalog_contains_to_instances(db)
             db.execute("PRAGMA user_version = 15")
+
+    if version < 16:
+        columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(campaign_skills)")
+        }
+        if "description" not in columns:
+            db.execute(
+                "ALTER TABLE campaign_skills "
+                "ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+            )
+        backfill_default_skill_descriptions(db)
+        db.execute("PRAGMA user_version = 16")
+        db.commit()

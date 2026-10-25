@@ -2,50 +2,73 @@
 import json
 
 
+# (name, ability, description) — short play-facing notes for the Skills desk / checks.
 DEFAULT_5E_SKILLS = (
-    ("Acrobatics", "dex"),
-    ("Animal Handling", "wis"),
-    ("Arcana", "int"),
-    ("Athletics", "str"),
-    ("Deception", "cha"),
-    ("History", "int"),
-    ("Insight", "wis"),
-    ("Intimidation", "cha"),
-    ("Investigation", "int"),
-    ("Medicine", "wis"),
-    ("Nature", "int"),
-    ("Perception", "wis"),
-    ("Performance", "cha"),
-    ("Persuasion", "cha"),
-    ("Religion", "int"),
-    ("Sleight of Hand", "dex"),
-    ("Stealth", "dex"),
-    ("Survival", "wis"),
+    ("Acrobatics", "dex", "Stay on your feet in tricky situations; tumble, balance, and contort."),
+    ("Animal Handling", "wis", "Calm, control, or read the intent of animals."),
+    ("Arcana", "int", "Recall lore about spells, magic items, eldritch symbols, and planar lore."),
+    ("Athletics", "str", "Climb, jump, swim, or force your way through physical obstacles."),
+    ("Deception", "cha", "Hide the truth with words, disguise, or misdirection."),
+    ("History", "int", "Recall lore about historical events, people, kingdoms, and disputes."),
+    ("Insight", "wis", "Determine a creature's true intentions; detect lies or predict moves."),
+    ("Intimidation", "cha", "Influence someone through threats, hostile presence, or violence."),
+    ("Investigation", "int", "Look for clues, deduce how things work, and search for hidden objects."),
+    ("Medicine", "wis", "Stabilize the dying, diagnose illness, and treat wounds."),
+    ("Nature", "int", "Recall lore about terrain, plants, animals, weather, and natural cycles."),
+    ("Perception", "wis", "Spot, hear, or otherwise notice something; general awareness."),
+    ("Performance", "cha", "Entertain an audience with music, dance, acting, or storytelling."),
+    ("Persuasion", "cha", "Influence someone with tact, social grace, or good nature."),
+    ("Religion", "int", "Recall lore about deities, rites, prayers, cults, and holy symbols."),
+    ("Sleight of Hand", "dex", "Pick pockets, plant an object, or conceal what you are holding."),
+    ("Stealth", "dex", "Conceal yourself from enemies; sneak, hide, and slip past notice."),
+    ("Survival", "wis", "Follow tracks, hunt game, guide a group, and predict the weather."),
 )
 
 
 ABILITY_SCORES = frozenset({"str", "dex", "con", "int", "wis", "cha"})
 
 
+def skill_entry_parts(entry) -> tuple[str, str, str]:
+    """Normalize a skill definition tuple to (name, ability, description)."""
+    name = entry[0]
+    ability = entry[1] if len(entry) > 1 else ""
+    description = entry[2] if len(entry) > 2 else ""
+    return name, ability, description
+
+
 def get_skills(db):
     return db.execute(
-        "SELECT id, name, ability FROM campaign_skills ORDER BY name COLLATE NOCASE"
+        """
+        SELECT id, name, ability, description
+        FROM campaign_skills
+        ORDER BY name COLLATE NOCASE
+        """
     ).fetchall()
 
 
-def _normalize_skill(name: str, ability: str) -> tuple[str, str]:
+def _normalize_skill(
+    name: str, ability: str, description: str = ""
+) -> tuple[str, str, str]:
     name = (name or "").strip()
     ability = (ability or "").strip().lower()
+    description = (description or "").strip()
     if not name:
         raise ValueError("Skill names cannot be empty.")
     if ability and ability not in ABILITY_SCORES:
         raise ValueError("Skill ability must be a standard ability score.")
-    return name, ability
+    return name, ability, description
 
 
-def upsert_campaign_skill(db, name: str, ability: str, *, skill_id: int | None = None) -> int:
+def upsert_campaign_skill(
+    db,
+    name: str,
+    ability: str,
+    description: str = "",
+    *,
+    skill_id: int | None = None,
+) -> int:
     """Create or update one campaign skill. Returns the skill id."""
-    name, ability = _normalize_skill(name, ability)
+    name, ability, description = _normalize_skill(name, ability, description)
     with db:
         if skill_id is None:
             conflict = db.execute(
@@ -55,8 +78,11 @@ def upsert_campaign_skill(db, name: str, ability: str, *, skill_id: int | None =
             if conflict is not None:
                 raise ValueError(f"A skill named {name} already exists.")
             cursor = db.execute(
-                "INSERT INTO campaign_skills (name, ability) VALUES (?, ?)",
-                (name, ability),
+                """
+                INSERT INTO campaign_skills (name, ability, description)
+                VALUES (?, ?, ?)
+                """,
+                (name, ability, description),
             )
             return int(cursor.lastrowid)
         row = db.execute(
@@ -75,8 +101,12 @@ def upsert_campaign_skill(db, name: str, ability: str, *, skill_id: int | None =
         if conflict is not None:
             raise ValueError(f"A skill named {name} already exists.")
         db.execute(
-            "UPDATE campaign_skills SET name=?, ability=? WHERE id=?",
-            (name, ability, skill_id),
+            """
+            UPDATE campaign_skills
+            SET name=?, ability=?, description=?
+            WHERE id=?
+            """,
+            (name, ability, description, skill_id),
         )
         return int(skill_id)
 
@@ -93,36 +123,63 @@ def delete_campaign_skill(db, skill_id: int) -> None:
 
 
 def replace_campaign_skills(db, definitions) -> None:
-    normalized = [(name.strip(), ability.strip().lower()) for name, ability in definitions]
-    if any(not name for name, _ability in normalized):
-        raise ValueError("Skill names cannot be empty.")
-    if any(ability and ability not in ABILITY_SCORES for _name, ability in normalized):
-        raise ValueError("Skill ability must be a standard ability score.")
-    if len({name.casefold() for name, _ability in normalized}) != len(normalized):
+    normalized = []
+    for entry in definitions:
+        name, ability, description = skill_entry_parts(entry)
+        name, ability, description = _normalize_skill(name, ability, description)
+        normalized.append((name, ability, description))
+    if len({name.casefold() for name, _ability, _description in normalized}) != len(
+        normalized
+    ):
         raise ValueError("Skill names must be unique.")
     with db:
         if normalized:
             placeholders = ", ".join("?" for _ in normalized)
             db.execute(
                 f"DELETE FROM campaign_skills WHERE name NOT IN ({placeholders})",
-                tuple(name for name, _ability in normalized),
+                tuple(name for name, _ability, _description in normalized),
             )
         else:
             db.execute("DELETE FROM campaign_skills")
         db.executemany(
             """
-            INSERT INTO campaign_skills (name, ability)
-            VALUES (?, ?)
-            ON CONFLICT(name) DO UPDATE SET ability=excluded.ability
+            INSERT INTO campaign_skills (name, ability, description)
+            VALUES (?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                ability=excluded.ability,
+                description=excluded.description
             """,
             normalized,
         )
+
+
+def backfill_default_skill_descriptions(db) -> int:
+    """Fill empty descriptions for stock 5e skill names. Returns rows updated."""
+    updated = 0
+    with db:
+        for name, _ability, description in (
+            skill_entry_parts(entry) for entry in DEFAULT_5E_SKILLS
+        ):
+            if not description:
+                continue
+            cursor = db.execute(
+                """
+                UPDATE campaign_skills
+                SET description=?
+                WHERE name=? COLLATE NOCASE
+                  AND TRIM(COALESCE(description, '')) = ''
+                """,
+                (description, name),
+            )
+            updated += cursor.rowcount
+    return updated
 
 
 def get_character_skills(db, character_id: int):
     return db.execute(
         """
         SELECT campaign_skills.id, campaign_skills.name, campaign_skills.ability,
+               campaign_skills.description,
                character_skills.proficient, character_skills.expertise
         FROM campaign_skills
         LEFT JOIN character_skills
