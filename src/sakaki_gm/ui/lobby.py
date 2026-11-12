@@ -44,7 +44,7 @@ class LobbyDialog(tk.Toplevel):
         self.campaigns_dir = campaigns_dir or CAMPAIGNS_DIR
         self.result: Optional[LobbyResult] = None
         self.title("Sakaki GM — Lobby")
-        self.geometry("520x420")
+        self.minsize(520, 360)
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self._quit_app)
         # Do not call transient() while the parent is withdrawn — on X11 that
@@ -54,8 +54,18 @@ class LobbyDialog(tk.Toplevel):
         bootstrap(self.config_path, campaigns_dir=self.campaigns_dir)
         cfg = load_config(self.config_path)
 
+        # Footer first so Start/Quit stay pinned even if content grows.
+        buttons = ttk.Frame(self, padding=(16, 0, 16, 16))
+        buttons.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(buttons, text="Quit", command=self._quit_app).pack(
+            side=tk.RIGHT, padx=(6, 0)
+        )
+        ttk.Button(buttons, text="Start", command=self._continue).pack(
+            side=tk.RIGHT
+        )
+
         body = ttk.Frame(self, padding=16)
-        body.pack(fill=tk.BOTH, expand=True)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         ttk.Label(
             body,
             text="Table lobby",
@@ -64,17 +74,19 @@ class LobbyDialog(tk.Toplevel):
         ttk.Label(
             body,
             text=(
-                "Start a campaign as the table server, or join a host by IP. "
-                "The host picks the bottle; joiners follow. Peer chat rides "
-                "the same session. Campaign switches stay host-only while "
-                "nobody else is connected."
+                "Host a table, join by IP, or play solo. The host picks the "
+                "campaign; joiners follow. Campaign switches stay host-only "
+                "while nobody else is connected."
             ),
             wraplength=470,
         ).pack(anchor="w", pady=(6, 12))
 
         self.mode = tk.StringVar(value="host")
         ttk.Radiobutton(
-            body, text="Start campaign as server", variable=self.mode, value="host",
+            body,
+            text="Start campaign as server",
+            variable=self.mode,
+            value="host",
             command=self._refresh_mode,
         ).pack(anchor="w")
         ttk.Radiobutton(
@@ -92,15 +104,15 @@ class LobbyDialog(tk.Toplevel):
             command=self._refresh_mode,
         ).pack(anchor="w", pady=(0, 8))
 
-        self.host_frame = ttk.LabelFrame(body, text="Host")
-        self.host_frame.pack(fill=tk.X, pady=4)
+        self.panels = ttk.Frame(body)
+        self.panels.pack(fill=tk.BOTH, expand=True)
+
+        self.host_frame = ttk.LabelFrame(self.panels, text="Host")
         ttk.Label(self.host_frame, text="Campaign").grid(
             row=0, column=0, sticky="w", padx=8, pady=6
         )
         self._campaign_ids = [item["id"] for item in cfg["campaigns"]]
-        labels = [
-            campaign_name(item["path"]) for item in cfg["campaigns"]
-        ]
+        labels = [campaign_name(item["path"]) for item in cfg["campaigns"]]
         self.campaign_var = tk.StringVar()
         self.campaign_combo = ttk.Combobox(
             self.host_frame,
@@ -118,23 +130,24 @@ class LobbyDialog(tk.Toplevel):
         ttk.Button(
             self.host_frame, text="New…", command=self._new_campaign
         ).grid(row=0, column=2, padx=6)
-        ttk.Label(self.host_frame, text="Port").grid(
-            row=1, column=0, sticky="w", padx=8, pady=6
-        )
+        self.host_port_label = ttk.Label(self.host_frame, text="Port")
+        self.host_port_label.grid(row=1, column=0, sticky="w", padx=8, pady=6)
         self.port_var = tk.StringVar(value=str(DEFAULT_PORT))
-        ttk.Entry(self.host_frame, textvariable=self.port_var, width=10).grid(
-            row=1, column=1, sticky="w", padx=8, pady=6
+        self.host_port_entry = ttk.Entry(
+            self.host_frame, textvariable=self.port_var, width=10
         )
-        ttk.Label(self.host_frame, text="Table secret (optional)").grid(
-            row=2, column=0, sticky="w", padx=8, pady=6
+        self.host_port_entry.grid(row=1, column=1, sticky="w", padx=8, pady=6)
+        self.host_secret_label = ttk.Label(
+            self.host_frame, text="Table secret (optional)"
         )
+        self.host_secret_label.grid(row=2, column=0, sticky="w", padx=8, pady=6)
         self.host_secret = tk.StringVar()
-        ttk.Entry(
+        self.host_secret_entry = ttk.Entry(
             self.host_frame, textvariable=self.host_secret, show="*", width=28
-        ).grid(row=2, column=1, sticky="w", padx=8, pady=6)
+        )
+        self.host_secret_entry.grid(row=2, column=1, sticky="w", padx=8, pady=6)
 
-        self.join_frame = ttk.LabelFrame(body, text="Join")
-        self.join_frame.pack(fill=tk.X, pady=4)
+        self.join_frame = ttk.LabelFrame(self.panels, text="Join")
         ttk.Label(self.join_frame, text="Host URL or IP").grid(
             row=0, column=0, sticky="w", padx=8, pady=6
         )
@@ -164,16 +177,12 @@ class LobbyDialog(tk.Toplevel):
             row=3, column=1, sticky="w", padx=8, pady=6
         )
 
-        buttons = ttk.Frame(body)
-        buttons.pack(fill=tk.X, pady=(16, 0))
-        ttk.Button(buttons, text="Quit", command=self._quit_app).pack(
-            side=tk.RIGHT, padx=(6, 0)
-        )
-        ttk.Button(buttons, text="Continue", command=self._continue).pack(
-            side=tk.RIGHT
-        )
         self._refresh_mode()
         self.update_idletasks()
+        # Size to content so Start is never clipped by a short fixed height.
+        width = max(520, self.winfo_reqwidth())
+        height = max(360, self.winfo_reqheight())
+        self.geometry(f"{width}x{height}")
         self.deiconify()
         self.lift()
         self.focus_force()
@@ -192,20 +201,26 @@ class LobbyDialog(tk.Toplevel):
 
     def _refresh_mode(self):
         mode = self.mode.get()
-        host_state = "normal" if mode == "host" else "disabled"
-        join_state = "normal" if mode == "client" else "disabled"
-        for child in self.host_frame.winfo_children():
+        self.host_frame.pack_forget()
+        self.join_frame.pack_forget()
+        if mode == "client":
+            self.join_frame.pack(fill=tk.X, pady=4)
+            return
+        self.host_frame.pack(fill=tk.X, pady=4)
+        self.campaign_combo.configure(state="readonly")
+        network = mode == "host"
+        net_state = "normal" if network else "disabled"
+        for widget in (
+            self.host_port_label,
+            self.host_port_entry,
+            self.host_secret_label,
+            self.host_secret_entry,
+        ):
             try:
-                child.configure(state=host_state)
+                widget.configure(state=net_state)
             except tk.TclError:
                 pass
-        for child in self.join_frame.winfo_children():
-            try:
-                child.configure(state=join_state)
-            except tk.TclError:
-                pass
-        if mode == "host":
-            self.campaign_combo.configure(state="readonly")
+        self.host_frame.configure(text="Host" if network else "Campaign")
 
     def _new_campaign(self):
         name = simpledialog.askstring(
