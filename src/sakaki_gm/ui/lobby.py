@@ -44,7 +44,8 @@ class LobbyDialog(tk.Toplevel):
         self.campaigns_dir = campaigns_dir or CAMPAIGNS_DIR
         self.result: Optional[LobbyResult] = None
         self.title("Sakaki GM — Lobby")
-        self.minsize(520, 360)
+        self.geometry("560x580")
+        self.minsize(560, 580)
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self._quit_app)
         # Do not call transient() while the parent is withdrawn — on X11 that
@@ -179,10 +180,6 @@ class LobbyDialog(tk.Toplevel):
 
         self._refresh_mode()
         self.update_idletasks()
-        # Size to content so Start is never clipped by a short fixed height.
-        width = max(520, self.winfo_reqwidth())
-        height = max(360, self.winfo_reqheight())
-        self.geometry(f"{width}x{height}")
         self.deiconify()
         self.lift()
         self.focus_force()
