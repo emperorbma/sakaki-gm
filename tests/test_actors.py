@@ -126,7 +126,7 @@ def test_actor_tables_survive_user_version_rewind(tmp_path):
     db.execute("PRAGMA user_version = 19")
     db.commit()
     migrate(db)
-    assert db.execute("PRAGMA user_version").fetchone()[0] == 20
+    assert db.execute("PRAGMA user_version").fetchone()[0] == 21
     assert (
         db.execute(
             "SELECT COUNT(*) FROM actors WHERE name=?",

@@ -1,13 +1,20 @@
 """Multiuser ontology shell: seats, turn phase, and knowledge/visibility.
 
-Solo play is implicitly two seats (GM + one player) on one machine. The desk
-toggle is an active-seat swap. Knowledge edges gate what a player seat may see;
-the GM seat sees the full playbook.
+Solo play is implicitly two seats (GM + one player) on one machine. Seat login
+chooses the active seat; knowledge edges gate what a player seat may see; the
+GM seat sees the full playbook.
+
+Per-seat ``password_hash``: blank string = open seat (no password). Any
+non-empty hash requires the matching password at login. Password recovery is
+out of scope locally; a future server lobby can own that.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import secrets
 from typing import Any, Optional
 
 SEAT_ROLES = ("gm", "player")
@@ -54,14 +61,96 @@ def _normalize_subject_type(subject_type: str) -> str:
     return value
 
 
+def _seat_password_hash(row) -> str:
+    try:
+        return str(row["password_hash"] or "")
+    except (KeyError, IndexError):
+        return ""
+
+
 def _seat_row(row) -> dict[str, Any]:
+    password_hash = _seat_password_hash(row)
     return {
         "id": row["id"],
         "seat_key": row["seat_key"],
         "display_name": row["display_name"] or "",
         "role": row["role"],
         "character_id": row["character_id"],
+        "has_password": bool(password_hash.strip()),
     }
+
+
+def hash_seat_password(password: str, *, salt: bytes | None = None) -> str:
+    """Return ``salt_hex$digest_hex`` for storage in ``seats.password_hash``."""
+    raw = str(password or "").encode("utf-8")
+    salt_bytes = salt if salt is not None else secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", raw, salt_bytes, 120_000)
+    return f"{salt_bytes.hex()}${digest.hex()}"
+
+
+def verify_password_hash(stored: str, password: str) -> bool:
+    stored = str(stored or "").strip()
+    if not stored or "$" not in stored:
+        return False
+    salt_hex, digest_hex = stored.split("$", 1)
+    try:
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+    except ValueError:
+        return False
+    raw = str(password or "").encode("utf-8")
+    actual = hashlib.pbkdf2_hmac("sha256", raw, salt, 120_000)
+    return hmac.compare_digest(actual, expected)
+
+
+def seat_requires_password(db, role_or_seat) -> bool:
+    """True when this seat has a password configured."""
+    seat = _resolve_seat(db, role_or_seat)
+    return bool(seat and seat.get("has_password"))
+
+
+def authenticate_seat(db, role: str, password: str = "") -> dict[str, Any]:
+    """Return the seat if login is allowed; raise ValueError on bad password.
+
+    Open seats (no hash) always succeed; password may be blank.
+    """
+    role = _normalize_role(role)
+    seat = get_seat_by_role(db, role)
+    if seat is None:
+        raise ValueError(f"No seat with role {role!r}.")
+    row = db.execute("SELECT * FROM seats WHERE id=?", (seat["id"],)).fetchone()
+    stored = _seat_password_hash(row)
+    if not stored.strip():
+        return seat
+    if not verify_password_hash(stored, password):
+        raise ValueError("Incorrect password for that seat.")
+    return seat
+
+
+def set_seat_password(
+    db, role_or_seat, password: str, *, commit: bool = True
+) -> dict[str, Any]:
+    """Set or clear a seat password. Empty password clears (open seat)."""
+    seat = _resolve_seat(db, role_or_seat)
+    if seat is None:
+        raise ValueError("Unknown seat.")
+    password = str(password or "")
+    stored = hash_seat_password(password) if password else ""
+    db.execute(
+        "UPDATE seats SET password_hash=? WHERE id=?",
+        (stored, seat["id"]),
+    )
+    if commit:
+        db.commit()
+    return get_seat(db, seat["id"])
+
+
+def _resolve_seat(db, role_or_seat) -> Optional[dict[str, Any]]:
+    if isinstance(role_or_seat, dict) and role_or_seat.get("id") is not None:
+        return get_seat(db, int(role_or_seat["id"]))
+    if isinstance(role_or_seat, int):
+        return get_seat(db, role_or_seat)
+    return get_seat_by_role(db, str(role_or_seat))
 
 
 def get_seats(db) -> list[dict[str, Any]]:

@@ -3,8 +3,9 @@
 Surfaces are either ``gm_only`` (hidden for the player seat) or ``shared``
 (visible in both; modules may strip controls when the active seat is player).
 
-``desk_mode`` remains the config key; it is the active seat *role* on a solo
-two-seat table (GM + player).
+``desk_mode`` remains the config key for the active seat *role* on a solo
+two-seat table (GM + player). Choice is a seat login (startup / Switch seat),
+not a free mid-play model picker.
 """
 
 from __future__ import annotations
