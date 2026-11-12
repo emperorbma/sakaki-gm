@@ -9,10 +9,12 @@ from sakaki_gm.gm import _select_acting_character
 from sakaki_gm.seat_db import (
     claim_player_character,
     ensure_default_session,
+    get_seat_by_key,
     get_seat_by_role,
+    list_controller_seats,
     list_player_claimable_characters,
+    reassign_controller_seat,
     set_gm_control_character,
-    set_seat_character,
 )
 
 
@@ -42,24 +44,66 @@ def test_acting_character_skips_npc_substring_and_prefers_protagonist(tmp_path):
     assert named["name"] == "Doremy Sweet"
 
 
-def test_acting_character_follows_seat_binding(tmp_path):
-    db = get_db(tmp_path / "seats.db")
+def test_playerish_creation_binds_controller_npc_does_not(tmp_path):
+    db = get_db(tmp_path / "create.db")
     migrate(db)
-    create_character(
-        db, "Doremy Sweet", {"notes": "dream"}, campaign_role="NPC"
+    ensure_default_session(db)
+
+    doremy = create_character(
+        db, "Doremy Sweet", {"notes": "npc"}, campaign_role="NPC"
     )
     serina = create_character(
         db, "Serina", {"notes": "pc"}, campaign_role="Protagonist"
     )
-    ensure_default_session(db)
+
     player = get_seat_by_role(db, "player")
     assert player is not None
-    set_seat_character(db, player["id"], serina)
-
-    acting = _select_acting_character(
-        db, "Review the state of the story.", seat_id=player["id"]
+    assert player["character_id"] == serina
+    assert player["display_name"] == "Serina's controller"
+    assert all(
+        seat.get("character_id") != doremy
+        for seat in list_controller_seats(db)
     )
-    assert acting["name"] == "Serina"
+
+
+def test_gm_reassign_transfers_controller_ownership(tmp_path):
+    db = get_db(tmp_path / "reassign.db")
+    migrate(db)
+    serina = create_character(
+        db, "Serina", {"notes": "pc"}, campaign_role="Protagonist"
+    )
+    talia = create_character(
+        db, "Talia Moonsong", {"notes": "pc"}, campaign_role="Player"
+    )
+    player = get_seat_by_role(db, "player")
+    assert player is not None
+    assert player["character_id"] == serina
+
+    # Second PC got its own controller seat.
+    talia_seat = get_seat_by_key(db, f"controller:{talia}")
+    assert talia_seat is not None
+    assert talia_seat["character_id"] == talia
+
+    rebound = reassign_controller_seat(db, player["id"], talia)
+    assert rebound["character_id"] == talia
+    assert rebound["display_name"] == "Talia Moonsong's controller"
+    talia_seat = get_seat_by_key(db, f"controller:{talia}")
+    assert talia_seat is not None
+    assert talia_seat["character_id"] is None
+
+    try:
+        reassign_controller_seat(db, player["id"], serina)  # serina still playerish
+    except Exception:
+        raise
+    # NPC cannot receive ownership.
+    doremy = create_character(
+        db, "Doremy Sweet", {"notes": "npc"}, campaign_role="NPC"
+    )
+    try:
+        reassign_controller_seat(db, player["id"], doremy)
+        assert False, "expected NPC reassign to fail"
+    except PermissionError:
+        pass
 
 
 def test_player_claim_and_gm_absentee_lease(tmp_path):
@@ -69,12 +113,10 @@ def test_player_claim_and_gm_absentee_lease(tmp_path):
     serina = create_character(
         db, "Serina", {"notes": "pc"}, campaign_role="Protagonist"
     )
-    ensure_default_session(db)
 
     claimable = list_player_claimable_characters(db)
     assert {item["name"] for item in claimable} == {"Serina"}
 
-    # GM alone may lease the absentee PC.
     gm = set_gm_control_character(db, serina)
     assert gm["character_id"] == serina
     acting_gm = _select_acting_character(
@@ -82,7 +124,6 @@ def test_player_claim_and_gm_absentee_lease(tmp_path):
     )
     assert acting_gm["name"] == "Serina"
 
-    # Player login reclaim ends the GM lease.
     player = claim_player_character(db, serina, "")
     assert player["character_id"] == serina
     gm = get_seat_by_role(db, "gm")

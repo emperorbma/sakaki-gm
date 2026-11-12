@@ -62,6 +62,7 @@ from sakaki_gm.ui.gm_tools import (
     run_clear_wait,
     run_gm_control_character,
     run_party_manager,
+    run_reassign_controller_seat,
     run_request_roll,
     run_set_character_knowledge,
     run_set_turn_phase,
@@ -267,6 +268,11 @@ class MainWindow:
             self.gm_tools,
             text="Control PC…",
             command=self.gm_control_character,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Button(
+            self.gm_tools,
+            text="Reassign seat…",
+            command=self.gm_reassign_seat,
         ).pack(side=tk.LEFT, padx=6, pady=6)
         ttk.Label(self.gm_tools, text="Model").pack(side=tk.LEFT, padx=(12, 4))
         self.gm_model_var = tk.StringVar(value="")
@@ -1241,6 +1247,14 @@ class MainWindow:
         summary = run_gm_control_character(self.root, self.db)
         if summary:
             self.log_panel.add_entry("System", summary)
+
+    def gm_reassign_seat(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        summary = run_reassign_controller_seat(self.root, self.db)
+        if summary:
+            self.log_panel.add_entry("System", summary)
+            self.characters_module.refresh()
 
     def gm_set_phase(self):
         if normalize_desk_mode(self.desk_mode_var.get()) != "gm":

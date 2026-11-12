@@ -4,8 +4,8 @@ The active seat role is still stored as ``ui.desk_mode`` and mirrored onto
 ``session_state.active_seat_id``. Players never configure models; that stays
 a GM-seat concern after login.
 
-Password is seat-scoped (blank = open). Player login also picks which PC that
-seat controls; GM may later take a temporary lease on an absentee PC.
+Password is seat-scoped (blank = open). Playerish PCs bind a controller seat at
+creation; the GM may reassign ownership. Login picks that controller seat's PC.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from sakaki_gm.seat_db import (
     claim_player_character,
     ensure_default_session,
     get_seat_by_role,
+    list_controller_seats,
     list_player_claimable_characters,
     seat_requires_password,
 )
@@ -37,8 +38,8 @@ SEAT_LOGIN_BLURBS = {
         "GM tools when needed."
     ),
     "player": (
-        "Play lens: pick your PC, then the seat password. Knowledge-filtered "
-        "characters and places. Ask GM uses the configured default model."
+        "Play lens: sit as a controller seat (bound at PC creation, or "
+        "reassigned by the GM). Seat password unlocks that seat."
     ),
 }
 
@@ -104,19 +105,34 @@ class SeatLoginDialog(tk.Toplevel):
         ).pack(anchor="w", pady=(6, 12))
 
         self.choice = tk.StringVar(value=initial)
+        self._role_buttons = {}
         for role in DESK_MODES:
             row = ttk.Frame(body)
             row.pack(fill=tk.X, pady=4)
             label = SEAT_LOGIN_LABELS[role]
+            if role == "player":
+                controllers = list_controller_seats(db)
+                bound = next(
+                    (
+                        seat
+                        for seat in controllers
+                        if seat.get("character_id") is not None
+                    ),
+                    controllers[0] if controllers else None,
+                )
+                if bound is not None and bound.get("display_name"):
+                    label = bound["display_name"]
             if seat_requires_password(db, role):
                 label = f"{label} (password)"
-            ttk.Radiobutton(
+            button = ttk.Radiobutton(
                 row,
                 text=label,
                 value=role,
                 variable=self.choice,
                 command=self._refresh_mode,
-            ).pack(anchor="w")
+            )
+            button.pack(anchor="w")
+            self._role_buttons[role] = button
             ttk.Label(
                 row,
                 text=SEAT_LOGIN_BLURBS[role],
@@ -124,9 +140,9 @@ class SeatLoginDialog(tk.Toplevel):
                 foreground="#4a5568",
             ).pack(anchor="w", padx=(22, 0))
 
-        self.pc_frame = ttk.LabelFrame(body, text="Player character")
+        self.pc_frame = ttk.LabelFrame(body, text="Controller seat")
         self.pc_frame.pack(fill=tk.X, pady=(12, 0))
-        ttk.Label(self.pc_frame, text="Controlled PC").grid(
+        ttk.Label(self.pc_frame, text="Sit as").grid(
             row=0, column=0, sticky="w", padx=8, pady=6
         )
         self.pc_var = tk.StringVar()
@@ -164,21 +180,37 @@ class SeatLoginDialog(tk.Toplevel):
         role = normalize_desk_mode(self.choice.get())
         if role == "player":
             self.pc_frame.pack(fill=tk.X, pady=(12, 0))
-            claimable = list_player_claimable_characters(self.db)
-            self._pc_ids = [item["id"] for item in claimable]
-            labels = [
-                f"{item['name']} ({item['campaign_role'] or 'PC'})"
-                for item in claimable
+            controllers = [
+                seat
+                for seat in list_controller_seats(self.db)
+                if seat.get("character_id") is not None
             ]
+            if not controllers:
+                # Fallback: unbound seats still need a PC pick via claimable list.
+                claimable = list_player_claimable_characters(self.db)
+                self._pc_ids = [item["id"] for item in claimable]
+                labels = [
+                    f"{item['name']} ({item['campaign_role'] or 'PC'})"
+                    for item in claimable
+                ]
+            else:
+                self._pc_ids = [int(seat["character_id"]) for seat in controllers]
+                labels = [
+                    seat.get("display_name")
+                    or f"controller:{seat['character_id']}"
+                    for seat in controllers
+                ]
             self.pc_combo["values"] = labels
-            player = get_seat_by_role(self.db, "player")
-            bound = player.get("character_id") if player else None
-            if bound in self._pc_ids:
-                self.pc_combo.current(self._pc_ids.index(int(bound)))
-            elif labels:
+            if labels:
                 self.pc_combo.current(0)
             else:
                 self.pc_var.set("")
+            player_btn = self._role_buttons.get("player")
+            if player_btn is not None and labels:
+                suffix = " (password)" if seat_requires_password(
+                    self.db, "player"
+                ) else ""
+                player_btn.configure(text=f"{labels[0]}{suffix}")
         else:
             self.pc_frame.pack_forget()
         if seat_requires_password(self.db, role):
@@ -197,7 +229,10 @@ class SeatLoginDialog(tk.Toplevel):
             if role == "player":
                 index = self.pc_combo.current()
                 if index < 0 or index >= len(self._pc_ids):
-                    raise ValueError("Choose which PC this player seat controls.")
+                    raise ValueError(
+                        "No controller seat is bound yet. Create a playerish "
+                        "PC (or ask the GM to reassign a seat)."
+                    )
                 claim_player_character(self.db, self._pc_ids[index], password)
                 self.result = SeatLoginResult(
                     role="player", character_id=self._pc_ids[index]
