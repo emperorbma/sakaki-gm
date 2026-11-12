@@ -4,11 +4,16 @@ from typing import List, Dict, Any, Optional
 
 
 def create_character(db, name: str, data: dict, campaign_role: str = "") -> int:
-    """Insert a new character and return its ID"""
+    """Insert a new character and return its ID.
+
+    Playerish campaign roles (protagonist / player / pc / party) also open or
+    bind a controller seat. NPCs and other GM cast do not auto-bind.
+    """
+    role = campaign_role.strip()
     with db:
         cur = db.execute(
             "INSERT INTO characters (name, data, campaign_role) VALUES (?, ?, ?)",
-            (name, json.dumps(data, ensure_ascii=False), campaign_role.strip()),
+            (name, json.dumps(data, ensure_ascii=False), role),
         )
         char_id = cur.lastrowid
         object_id = f"character:{char_id}"
@@ -41,6 +46,15 @@ def create_character(db, name: str, data: dict, campaign_role: str = "") -> int:
             """,
             (object_id, inventory_id, json.dumps({"role": "inventory"})),
         )
+        from sakaki_gm.seat_db import ensure_controller_seat_for_character
+
+        ensure_controller_seat_for_character(
+            db,
+            char_id,
+            name=name,
+            campaign_role=role,
+            commit=False,
+        )
     return char_id
 
 
@@ -51,7 +65,7 @@ def update_character(
     data: dict,
     campaign_role: Optional[str] = None,
 ) -> None:
-    """Update existing character"""
+    """Update existing character; refresh controller seat if role/name change."""
     serialized = json.dumps(data, ensure_ascii=False)
     with db:
         if campaign_role is None:
@@ -59,14 +73,19 @@ def update_character(
                 "UPDATE characters SET name = ?, data = ? WHERE id = ?",
                 (name, serialized, char_id),
             )
+            role_row = db.execute(
+                "SELECT campaign_role FROM characters WHERE id=?", (char_id,)
+            ).fetchone()
+            role = (role_row["campaign_role"] if role_row else "") or ""
         else:
+            role = campaign_role.strip()
             db.execute(
                 """
                 UPDATE characters
                 SET name = ?, data = ?, campaign_role = ?
                 WHERE id = ?
                 """,
-                (name, serialized, campaign_role.strip(), char_id),
+                (name, serialized, role, char_id),
             )
         db.execute(
             """
@@ -83,6 +102,15 @@ def update_character(
             WHERE object_id=? AND object_type='container'
             """,
             (f"{name}'s Inventory", f"inventory:{char_id}"),
+        )
+        from sakaki_gm.seat_db import ensure_controller_seat_for_character
+
+        ensure_controller_seat_for_character(
+            db,
+            char_id,
+            name=name,
+            campaign_role=role,
+            commit=False,
         )
 
 

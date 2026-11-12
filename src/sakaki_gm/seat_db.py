@@ -5,8 +5,10 @@ chooses the active seat; knowledge edges gate what a player seat may see; the
 GM seat sees the full playbook.
 
 Per-seat ``password_hash``: blank string = open seat (no password). Any
-non-empty hash requires the matching password at login. Password recovery is
-out of scope locally; a future server lobby can own that.
+non-empty hash requires the matching password at login. Passwords are seat-
+scoped only — the controlled PC is a separate binding (and GM may take a
+temporary lease on an absentee PC). Password recovery is out of scope locally;
+a future server lobby can own that.
 """
 
 from __future__ import annotations
@@ -109,15 +111,15 @@ def seat_requires_password(db, role_or_seat) -> bool:
     return bool(seat and seat.get("has_password"))
 
 
-def authenticate_seat(db, role: str, password: str = "") -> dict[str, Any]:
+def authenticate_seat(db, role_or_seat, password: str = "") -> dict[str, Any]:
     """Return the seat if login is allowed; raise ValueError on bad password.
 
-    Open seats (no hash) always succeed; password may be blank.
+    ``role_or_seat`` may be a role name, seat id, or seat dict. Open seats
+    (no hash) always succeed; password may be blank.
     """
-    role = _normalize_role(role)
-    seat = get_seat_by_role(db, role)
+    seat = _resolve_seat(db, role_or_seat)
     if seat is None:
-        raise ValueError(f"No seat with role {role!r}.")
+        raise ValueError("Unknown seat.")
     row = db.execute("SELECT * FROM seats WHERE id=?", (seat["id"],)).fetchone()
     stored = _seat_password_hash(row)
     if not stored.strip():
@@ -125,6 +127,315 @@ def authenticate_seat(db, role: str, password: str = "") -> dict[str, Any]:
     if not verify_password_hash(stored, password):
         raise ValueError("Incorrect password for that seat.")
     return seat
+
+
+def set_seat_character(
+    db, seat_id: int, character_id: int | None, *, commit: bool = True
+) -> dict[str, Any]:
+    """Bind which character this seat controls (multi-player acting lens).
+
+    Player seats keep exclusive ownership among players. The GM seat may bind
+    an absentee / uncontrolled character without clearing a player's normal
+    claim (absentee GM control).
+    """
+    seat = get_seat(db, seat_id)
+    if seat is None:
+        raise ValueError(f"Unknown seat {seat_id}.")
+    if character_id is not None:
+        row = db.execute(
+            "SELECT id FROM characters WHERE id=?", (int(character_id),)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown character {character_id}.")
+        character_id = int(character_id)
+        if seat.get("role") == "player":
+            # One present player claim per character among player seats.
+            db.execute(
+                """
+                UPDATE seats SET character_id=NULL
+                WHERE character_id=? AND id!=? AND role='player'
+                """,
+                (character_id, seat_id),
+            )
+    db.execute(
+        "UPDATE seats SET character_id=? WHERE id=?",
+        (character_id, seat_id),
+    )
+    if seat.get("role") == "player":
+        sync_controller_seat_label(db, seat_id, commit=False)
+    if commit:
+        db.commit()
+    bound = get_seat(db, seat_id)
+    assert bound is not None
+    return bound
+
+
+def present_player_seat_ids(
+    db, *, extra_present_seat_ids: set[int] | list[int] | None = None
+) -> set[int]:
+    """Player seats currently at the table (local active player + extras).
+
+    Absentee player seats are omitted so the GM may control their characters.
+    """
+    present = {int(seat_id) for seat_id in (extra_present_seat_ids or [])}
+    active = get_active_seat(db)
+    if active is not None and active.get("role") == "player":
+        present.add(int(active["id"]))
+    return present
+
+
+def player_occupied_character_ids(
+    db, *, present_seat_ids: set[int] | list[int] | None = None
+) -> set[int]:
+    """Characters currently controlled by a present player seat."""
+    if present_seat_ids is None:
+        present_seat_ids = present_player_seat_ids(db)
+    present = {int(seat_id) for seat_id in present_seat_ids}
+    occupied: set[int] = set()
+    for seat in get_seats(db):
+        if seat.get("role") != "player":
+            continue
+        if int(seat["id"]) not in present:
+            continue
+        if seat.get("character_id") is not None:
+            occupied.add(int(seat["character_id"]))
+    return occupied
+
+
+def characters_available_for_gm_control(
+    db, *, present_seat_ids: set[int] | list[int] | None = None
+) -> list[dict[str, Any]]:
+    """Characters the GM may control: anyone not held by a present player.
+
+    Includes NPCs and absentee PCs (normally player-owned, player not here).
+    """
+    occupied = player_occupied_character_ids(
+        db, present_seat_ids=present_seat_ids
+    )
+    rows = db.execute(
+        """
+        SELECT id, name, campaign_role, object_id
+        FROM characters
+        ORDER BY name COLLATE NOCASE
+        """
+    ).fetchall()
+    available = []
+    for row in rows:
+        character_id = int(row["id"])
+        if character_id in occupied:
+            continue
+        available.append(
+            {
+                "id": character_id,
+                "name": row["name"],
+                "campaign_role": row["campaign_role"] or "",
+                "object_id": row["object_id"],
+                "absentee_pc": _character_has_player_claim(db, character_id),
+            }
+        )
+    return available
+
+
+def _character_has_player_claim(db, character_id: int) -> bool:
+    row = db.execute(
+        """
+        SELECT id FROM seats
+        WHERE role='player' AND character_id=?
+        LIMIT 1
+        """,
+        (int(character_id),),
+    ).fetchone()
+    return row is not None
+
+
+def set_gm_control_character(
+    db, character_id: int | None, *, commit: bool = True
+) -> dict[str, Any]:
+    """Temporary GM lease on a character not held by a present player.
+
+    Clears with ``character_id=None``. When the player seat later claims the
+    same PC, ``claim_player_character`` drops this lease.
+    """
+    ensure_default_session(db, commit=False)
+    gm = get_seat_by_role(db, "gm")
+    if gm is None:
+        raise ValueError("GM seat missing.")
+    if character_id is not None:
+        occupied = player_occupied_character_ids(db)
+        if int(character_id) in occupied:
+            raise PermissionError(
+                "That character is controlled by a player who is present."
+            )
+    return set_seat_character(db, gm["id"], character_id, commit=commit)
+
+
+def list_controller_seats(db) -> list[dict[str, Any]]:
+    """Player-role seats (natural PC controllers), labels refreshed."""
+    ensure_default_session(db, commit=False)
+    seats = []
+    for seat in get_seats(db):
+        if seat.get("role") != "player":
+            continue
+        synced = sync_controller_seat_label(db, seat["id"], commit=False) or seat
+        seats.append(synced)
+    return seats
+
+
+def reassign_controller_seat(
+    db,
+    seat_id: int,
+    character_id: int | None,
+    *,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """GM ownership transfer: bind a controller seat to a playerish PC (or clear).
+
+    NPCs cannot be assigned. If the PC already sits on another controller seat,
+    that other binding is cleared so ownership stays singular.
+    """
+    from sakaki_gm.campaign_roles import is_playerish_campaign_role
+
+    ensure_default_session(db, commit=False)
+    seat = get_seat(db, seat_id)
+    if seat is None or seat.get("role") != "player":
+        raise ValueError("Pick a player controller seat to reassign.")
+    if character_id is not None:
+        character_id = int(character_id)
+        row = db.execute(
+            "SELECT id, name, campaign_role FROM characters WHERE id=?",
+            (character_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown character {character_id}.")
+        if not is_playerish_campaign_role(row["campaign_role"]):
+            raise PermissionError(
+                "Only playerish PCs can own a controller seat "
+                "(NPCs / GM cast do not bind)."
+            )
+        # Singular ownership among controller seats.
+        db.execute(
+            """
+            UPDATE seats SET character_id=NULL
+            WHERE role='player' AND character_id=? AND id!=?
+            """,
+            (character_id, seat_id),
+        )
+        for other in get_seats(db):
+            if other.get("role") == "player" and other["id"] != seat_id:
+                sync_controller_seat_label(db, other["id"], commit=False)
+    bound = set_seat_character(db, seat_id, character_id, commit=False)
+    if seat.get("character_id") is not None or character_id is not None:
+        try:
+            sync_seat_knowledge_from_world(db, seat_id, commit=False)
+        except Exception:
+            pass
+    if commit:
+        db.commit()
+    return bound
+
+
+def list_player_claimable_characters(
+    db, *, present_seat_ids: set[int] | list[int] | None = None
+) -> list[dict[str, Any]]:
+    """PCs a player seat may pick at login (playerish / claimed, not occupied)."""
+    from sakaki_gm.campaign_roles import is_playerish_campaign_role
+
+    ensure_default_session(db, commit=False)
+    occupied = player_occupied_character_ids(
+        db, present_seat_ids=present_seat_ids
+    )
+    player = get_seat_by_role(db, "player")
+    own_id = (
+        int(player["character_id"])
+        if player is not None and player.get("character_id") is not None
+        else None
+    )
+    rows = db.execute(
+        """
+        SELECT id, name, campaign_role, object_id
+        FROM characters
+        ORDER BY name COLLATE NOCASE
+        """
+    ).fetchall()
+    claimable = []
+    for row in rows:
+        character_id = int(row["id"])
+        role = row["campaign_role"] or ""
+        if not (
+            is_playerish_campaign_role(role)
+            or _character_has_player_claim(db, character_id)
+        ):
+            continue
+        if character_id in occupied and character_id != own_id:
+            continue
+        claimable.append(
+            {
+                "id": character_id,
+                "name": row["name"],
+                "campaign_role": role,
+                "object_id": row["object_id"],
+            }
+        )
+    return claimable
+
+
+def claim_player_character(
+    db,
+    character_id: int,
+    password: str = "",
+    *,
+    seat_id: int | None = None,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """Authenticate a controller seat for its bound PC and end any GM lease."""
+    ensure_default_session(db, commit=False)
+    character_id = int(character_id)
+    seat = None
+    if seat_id is not None:
+        seat = get_seat(db, int(seat_id))
+    if seat is None:
+        for candidate in get_seats(db):
+            if (
+                candidate.get("role") == "player"
+                and candidate.get("character_id") is not None
+                and int(candidate["character_id"]) == character_id
+            ):
+                seat = candidate
+                break
+    if seat is None:
+        seat = get_seat_by_role(db, "player")
+    if seat is None or seat.get("role") != "player":
+        raise ValueError("No player controller seat available.")
+    seat = authenticate_seat(db, seat, password)
+    occupied = player_occupied_character_ids(db)
+    own = seat.get("character_id")
+    if character_id in occupied and (
+        own is None or int(own) != character_id
+    ):
+        raise PermissionError(
+            "That character is controlled by a player who is present."
+        )
+    claimable_ids = {
+        item["id"] for item in list_player_claimable_characters(db)
+    }
+    if own is not None:
+        claimable_ids.add(int(own))
+    if character_id not in claimable_ids:
+        row = db.execute(
+            "SELECT id FROM characters WHERE id=?", (character_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown character {character_id}.")
+        raise PermissionError("That character is not available for player login.")
+    gm = get_seat_by_role(db, "gm")
+    if gm is not None and gm.get("character_id") is not None:
+        if int(gm["character_id"]) == character_id:
+            set_seat_character(db, gm["id"], None, commit=False)
+    bound = set_seat_character(db, seat["id"], character_id, commit=False)
+    set_active_seat(db, seat["id"], commit=False)
+    if commit:
+        db.commit()
+    return bound
 
 
 def set_seat_password(
@@ -259,29 +570,133 @@ def upgrade_knowledge(
     )
 
 
+def controller_seat_label(character_name: str | None) -> str:
+    """Human label for a player controller seat bound to a PC (or unbound)."""
+    name = str(character_name or "").strip()
+    if name:
+        return f"{name}'s controller"
+    return "Player"
+
+
+def sync_controller_seat_label(
+    db, seat_id: int, *, commit: bool = False
+) -> dict[str, Any] | None:
+    """Refresh display_name from the seat's leased character (campaign-agnostic)."""
+    seat = get_seat(db, seat_id)
+    if seat is None or seat.get("role") != "player":
+        return seat
+    character_id = seat.get("character_id")
+    name = None
+    if character_id is not None:
+        row = db.execute(
+            "SELECT name FROM characters WHERE id=?", (int(character_id),)
+        ).fetchone()
+        if row is not None:
+            name = row["name"]
+    label = controller_seat_label(name)
+    if (seat.get("display_name") or "") != label:
+        db.execute(
+            "UPDATE seats SET display_name=? WHERE id=?",
+            (label, seat_id),
+        )
+        if commit:
+            db.commit()
+    return get_seat(db, seat_id)
+
+
+def ensure_controller_seat_for_character(
+    db,
+    character_id: int,
+    *,
+    name: str | None = None,
+    campaign_role: str | None = None,
+    commit: bool = True,
+) -> dict[str, Any] | None:
+    """Bind a controller seat when a playerish PC is created/updated.
+
+    NPCs and other GM cast never auto-bind. Singleton campaign reuses the
+    unbound ``player`` seat first; otherwise opens ``controller:<id>``.
+    """
+    from sakaki_gm.campaign_roles import is_playerish_campaign_role
+
+    character_id = int(character_id)
+    row = db.execute(
+        "SELECT id, name, campaign_role FROM characters WHERE id=?",
+        (character_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown character {character_id}.")
+    role = (
+        campaign_role
+        if campaign_role is not None
+        else (row["campaign_role"] or "")
+    )
+    if not is_playerish_campaign_role(role):
+        # Demoted from PC: clear this character from player seats only.
+        db.execute(
+            """
+            UPDATE seats SET character_id=NULL
+            WHERE role='player' AND character_id=?
+            """,
+            (character_id,),
+        )
+        for seat in get_seats(db):
+            if seat.get("role") == "player":
+                sync_controller_seat_label(db, seat["id"], commit=False)
+        if commit:
+            db.commit()
+        return None
+
+    ensure_default_session(db, commit=False)
+    char_name = (name if name is not None else row["name"]) or ""
+
+    for seat in get_seats(db):
+        if seat.get("role") == "player" and seat.get("character_id") == character_id:
+            sync_controller_seat_label(db, seat["id"], commit=False)
+            if commit:
+                db.commit()
+            return get_seat(db, seat["id"])
+
+    singleton = get_seat_by_key(db, "player")
+    if singleton is not None and singleton.get("character_id") is None:
+        bound = set_seat_character(
+            db, singleton["id"], character_id, commit=False
+        )
+        if commit:
+            db.commit()
+        return bound
+
+    seat_key = f"controller:{character_id}"
+    existing = get_seat_by_key(db, seat_key)
+    if existing is None:
+        db.execute(
+            """
+            INSERT INTO seats (seat_key, display_name, role, character_id)
+            VALUES (?, ?, 'player', ?)
+            """,
+            (seat_key, controller_seat_label(char_name), character_id),
+        )
+    else:
+        set_seat_character(db, existing["id"], character_id, commit=False)
+    seat = get_seat_by_key(db, seat_key)
+    assert seat is not None
+    sync_controller_seat_label(db, seat["id"], commit=False)
+    if commit:
+        db.commit()
+    return get_seat(db, seat["id"])
+
+
 def _bootstrap_player_character(db, player_seat_id: int) -> None:
-    """Link protagonist (if any) and sync scene/ally awareness."""
+    """Refresh label/awareness for an already-leased controller seat.
+
+    Binding itself happens at playerish character creation — not by scanning
+    the cast for a protagonist.
+    """
     seat = get_seat(db, player_seat_id)
     if seat is None:
         return
-    character_id = seat["character_id"]
-    if character_id is None:
-        rows = db.execute(
-            "SELECT id, name, campaign_role FROM characters ORDER BY id"
-        ).fetchall()
-        pick = None
-        for row in rows:
-            role = str(row["campaign_role"] or "").casefold()
-            if any(token in role for token in ("protagonist", "player", "pc")):
-                pick = row
-                break
-        if pick is not None:
-            db.execute(
-                "UPDATE seats SET character_id=? WHERE id=?",
-                (pick["id"], player_seat_id),
-            )
-            character_id = pick["id"]
-    if character_id is None:
+    sync_controller_seat_label(db, player_seat_id, commit=False)
+    if seat.get("character_id") is None:
         return
     sync_seat_knowledge_from_world(db, player_seat_id, commit=False)
 
@@ -380,14 +795,15 @@ def sync_seat_knowledge_from_world(
         pass
 
     # Standing allies / party (not enemies, not scaffolds).
+    from sakaki_gm.campaign_roles import is_allyish_campaign_role
+
     for peer in db.execute(
         """
         SELECT id, campaign_role, data FROM characters WHERE id != ?
         """,
         (character_id,),
     ):
-        role = str(peer["campaign_role"] or "").casefold()
-        if any(token in role for token in ("ally", "party", "companion")):
+        if is_allyish_campaign_role(peer["campaign_role"]):
             try:
                 data = json.loads(peer["data"] or "{}")
             except json.JSONDecodeError:

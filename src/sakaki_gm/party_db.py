@@ -187,12 +187,13 @@ def remove_party_member(
 
 
 def _bootstrap_member_ids(db) -> list[int]:
+    from sakaki_gm.campaign_roles import is_playerish_campaign_role
+
     member_ids: list[int] = []
     for row in db.execute(
         "SELECT id, campaign_role FROM characters ORDER BY id"
     ):
-        role = str(row["campaign_role"] or "").casefold()
-        if any(token in role for token in ("protagonist", "player", "pc", "party")):
+        if is_playerish_campaign_role(row["campaign_role"]):
             member_ids.append(int(row["id"]))
     if member_ids:
         return member_ids
