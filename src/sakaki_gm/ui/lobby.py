@@ -47,7 +47,8 @@ class LobbyDialog(tk.Toplevel):
         self.geometry("520x420")
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self._quit_app)
-        self.transient(parent)
+        # Do not call transient() while the parent is withdrawn — on X11 that
+        # often leaves this dialog unmapped and wait_window looks like a freeze.
 
         # Ensure registry has at least one bottle for host pickers.
         bootstrap(self.config_path, campaigns_dir=self.campaigns_dir)
@@ -172,8 +173,22 @@ class LobbyDialog(tk.Toplevel):
             side=tk.RIGHT
         )
         self._refresh_mode()
-        self.grab_set()
-        self.focus_set()
+        self.update_idletasks()
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            # Some WMs refuse grab until the window is fully mapped.
+            self.after(50, self._try_grab)
+
+    def _try_grab(self):
+        try:
+            if self.winfo_exists():
+                self.grab_set()
+        except tk.TclError:
+            pass
 
     def _refresh_mode(self):
         mode = self.mode.get()
