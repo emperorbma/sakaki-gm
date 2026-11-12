@@ -631,3 +631,20 @@ def migrate(db):
         """)
         db.execute("PRAGMA user_version = 23")
         db.commit()
+
+    if version < 24:
+        # Log visibility: table (everyone) vs gm (GM-seat ops / meta only).
+        cols = {
+            row[1]
+            for row in db.execute("PRAGMA table_info(log)").fetchall()
+        }
+        if "visibility" not in cols:
+            db.execute(
+                "ALTER TABLE log ADD COLUMN visibility TEXT NOT NULL DEFAULT 'table'"
+            )
+        # Prior System rows were GM ops/meta; keep them off player desks.
+        db.execute(
+            "UPDATE log SET visibility='gm' WHERE speaker='System'"
+        )
+        db.execute("PRAGMA user_version = 24")
+        db.commit()

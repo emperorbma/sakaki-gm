@@ -917,12 +917,22 @@ def sync_seat_knowledge_from_world(
             events = []
         if isinstance(events, list):
             blob_parts.extend(str(item) for item in events[-20:])
-    for row in db.execute(
-        """
-        SELECT message FROM log
-        ORDER BY id DESC LIMIT 40
-        """
-    ):
+    try:
+        log_rows = db.execute(
+            """
+            SELECT message FROM log
+            WHERE COALESCE(visibility, 'table') != 'gm'
+            ORDER BY id DESC LIMIT 40
+            """
+        ).fetchall()
+    except Exception:
+        log_rows = db.execute(
+            """
+            SELECT message FROM log
+            ORDER BY id DESC LIMIT 40
+            """
+        ).fetchall()
+    for row in log_rows:
         blob_parts.append(str(row["message"] or ""))
     blob = "\n".join(blob_parts)
     if blob.strip():
