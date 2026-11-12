@@ -5,7 +5,8 @@ from sakaki_gm.campaign_roles import (
 )
 from sakaki_gm.character_db import create_character
 from sakaki_gm.db import get_db, migrate
-from sakaki_gm.gm import _select_acting_character
+from sakaki_gm.gm import _select_acting_character, build_messages, build_scene_pack
+from sakaki_gm.item_db import create_item, set_character_items
 from sakaki_gm.seat_db import (
     claim_player_character,
     ensure_default_session,
@@ -14,6 +15,7 @@ from sakaki_gm.seat_db import (
     list_controller_seats,
     list_player_claimable_characters,
     reassign_controller_seat,
+    set_active_seat_by_role,
     set_gm_control_character,
 )
 
@@ -129,3 +131,59 @@ def test_player_claim_and_gm_absentee_lease(tmp_path):
     gm = get_seat_by_role(db, "gm")
     assert gm is not None
     assert gm["character_id"] is None
+
+
+def test_gm_lease_acting_ignores_shared_active_player_seat(tmp_path):
+    """Multi-window: player flips active_seat; GM Ask must still use the lease."""
+    db = get_db(tmp_path / "lease_lens.db")
+    migrate(db)
+    ensure_default_session(db)
+    serina = create_character(
+        db,
+        "Serina",
+        {"name": "Serina", "hp_current": 10, "hp_max": 10},
+        campaign_role="Protagonist",
+    )
+    elara = create_character(
+        db,
+        "Elara Starveil",
+        {"name": "Elara Starveil", "hp_current": 8, "hp_max": 8},
+        campaign_role="Ally",
+    )
+    skirt = create_item(db, "Lunarglow Skirt", "Serina's glowing hem.")
+    book = create_item(db, "Spellbook", "Elara's notes.")
+    set_character_items(db, serina, [(skirt, 1, False, "worn")])
+    set_character_items(db, elara, [(book, 1, False, "")])
+
+    claim_player_character(db, serina, "")
+    gm = set_gm_control_character(db, elara)
+    # Player desk last touched the shared active seat (common on a live table).
+    set_active_seat_by_role(db, "player")
+    player = get_seat_by_role(db, "player")
+
+    wrong = build_scene_pack(
+        db, "Describe what is going on from my perspective.", seat_id=player["id"]
+    )
+    assert wrong["acting_character"]["name"] == "Serina"
+    assert any(
+        g.get("name") == "Lunarglow Skirt"
+        for g in (wrong["acting_character"].get("gear") or [])
+    )
+
+    right = build_scene_pack(
+        db, "Describe what is going on from my perspective.", seat_id=gm["id"]
+    )
+    assert right["acting_character"]["name"] == "Elara Starveil"
+    gear_names = [g.get("name") for g in (right["acting_character"].get("gear") or [])]
+    assert "Spellbook" in gear_names
+    assert "Lunarglow Skirt" not in gear_names
+
+    _system, user = build_messages(
+        db,
+        "Describe what is going on from my perspective.",
+        include_reference_material=False,
+        seat_id=gm["id"],
+    )
+    assert "GM temporary lease on Elara Starveil" in user
+    assert "Lunarglow Skirt" not in user
+    assert "Spellbook" in user

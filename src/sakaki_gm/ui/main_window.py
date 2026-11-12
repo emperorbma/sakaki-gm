@@ -736,6 +736,22 @@ class MainWindow:
     def open_character_editor(self, char_id=None):
         self.characters_module.open_editor(char_id)
 
+    def _desk_seat(self):
+        """Seat for this desk's login — not the shared campaign active_seat.
+
+        Multi-window tables share one bottle: a player desk can flip
+        ``session_state.active_seat_id`` while the GM desk still holds a
+        temporary lease. Ask / scene packs must follow this desk's role.
+        """
+        from sakaki_gm.seat_db import get_seat_by_role
+
+        try:
+            return get_seat_by_role(
+                self.db, normalize_desk_mode(self.desk_mode_var.get())
+            )
+        except Exception:
+            return None
+
     def copy_prompt(self):
         action = self.action_entry.get().strip()
         if not action:
@@ -744,7 +760,12 @@ class MainWindow:
         self.world_module.save_prompt(quiet=True)
         self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
-        system, user = build_messages(self.db, action)
+        desk_seat = self._desk_seat()
+        system, user = build_messages(
+            self.db,
+            action,
+            seat_id=desk_seat["id"] if desk_seat else None,
+        )
         pyperclip.copy(format_clipboard(system, user))
         self.log_panel.add_entry("Player", action)
         self.action_entry.delete(0, tk.END)
@@ -977,6 +998,7 @@ class MainWindow:
         self.world_module.set_desk_audience(mode)
         self.quests_module.set_desk_audience(mode)
         self.geography_module.set_desk_audience(mode)
+        self.log_panel.set_desk_audience(mode)
 
     def _ask_button_label(self) -> str:
         if normalize_desk_mode(self.desk_mode_var.get()) == "gm":
@@ -1060,18 +1082,12 @@ class MainWindow:
         self.world_module.save_prompt(quiet=True)
         self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
-        from sakaki_gm.seat_db import get_active_seat
-
-        active_seat = None
-        try:
-            active_seat = get_active_seat(self.db)
-        except Exception:
-            active_seat = None
+        desk_seat = self._desk_seat()
         system, user = build_messages(
             self.db,
             action,
             include_reference_material=False,
-            seat_id=active_seat["id"] if active_seat else None,
+            seat_id=desk_seat["id"] if desk_seat else None,
         )
         cfg = load_config(self.config_path)
         seat = normalize_desk_mode(self.desk_mode_var.get())
@@ -1292,6 +1308,8 @@ class MainWindow:
             return
         summary = run_gm_control_character(self.root, self.db)
         if summary:
+            # Keep shared active_seat on GM so solo paths match the lease lens.
+            self._sync_active_seat("gm")
             self.log_panel.add_entry("System", summary)
 
     def gm_reassign_seat(self):

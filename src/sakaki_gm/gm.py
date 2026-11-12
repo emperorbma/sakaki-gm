@@ -155,7 +155,10 @@ def build_messages(
     Clipboard copy keeps the full bottle dump when the flag is True.
 
     ``seat_id`` selects whose bound PC is the acting character when the action
-    does not name someone (multi-player: each player seat owns a character_id).
+    does not name someone (multi-player: each player seat owns a character_id;
+    GM temporary lease uses the GM seat's character_id). Pass the *desk* seat,
+    not the shared campaign ``active_seat_id``, so multi-window tables keep
+    each Ask lens on the correct controller.
     """
     played = action.strip()
     if not played.startswith("[Play]"):
@@ -220,9 +223,31 @@ def _full_reference_user_message(db, played: str) -> str:
 def _scene_user_message(
     db, action: str, played: str, *, seat_id: int | None = None
 ) -> str:
+    from sakaki_gm.seat_db import get_active_seat, get_seat
+
     scene = build_scene_pack(db, action, seat_id=seat_id)
-    return "\n".join([
-        "CURRENT SCENE",
+    seat = get_seat(db, seat_id) if seat_id is not None else None
+    if seat is None:
+        try:
+            seat = get_active_seat(db)
+        except Exception:
+            seat = None
+    parts = ["CURRENT SCENE"]
+    # GM temporary lease: recent log often still narrates another PC as "you".
+    if (
+        seat is not None
+        and seat.get("role") == "gm"
+        and seat.get("character_id") is not None
+        and scene.get("acting_character")
+    ):
+        acting_name = scene["acting_character"].get("name") or "the acting character"
+        parts.append(
+            f"Acting lens: GM temporary lease on {acting_name}. "
+            "Second-person \"you\", worn gear, and body refer ONLY to that "
+            "character's payload below — never another PC's inventory or "
+            "appearance from the recent log."
+        )
+    parts.extend([
         "Acting character:",
         json.dumps(scene["acting_character"], ensure_ascii=False),
         f"Location: {scene['location_text']}",
@@ -239,10 +264,13 @@ def _scene_user_message(
         "PLAYER ACTION",
         played,
     ])
+    return "\n".join(parts)
 
 
 def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
     """Selective scene for Ask GM: one actor, place, routes, short log."""
+    from sakaki_gm.seat_db import get_active_seat, get_seat
+
     location_text = world_value(db, "location", "Unknown")
     if not isinstance(location_text, str) or not location_text.strip():
         location_text = "Unknown"
@@ -262,6 +290,13 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
         except KeyError:
             routes = []
     acting = _select_acting_character(db, action, seat_id=seat_id)
+    seat = get_seat(db, seat_id) if seat_id is not None else None
+    if seat is None:
+        try:
+            seat = get_active_seat(db)
+        except Exception:
+            seat = None
+    include_gm_private = not (seat and seat.get("role") == "player")
     return {
         "acting_character": (
             _short_character_payload(db, acting, action) if acting else None
@@ -278,7 +313,9 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
             if place else None
         ),
         "routes": routes,
-        "recent_log": _recent_log(db, SCENE_LOG_LIMIT),
+        "recent_log": _recent_log(
+            db, SCENE_LOG_LIMIT, include_gm_private=include_gm_private
+        ),
         "coverage_names": _scene_coverage_names(
             acting, place, routes, db, action
         ),
@@ -535,11 +572,33 @@ def _quest_payloads(db) -> list[dict]:
     ]
 
 
-def _recent_log(db, limit: int) -> list[dict]:
-    log_rows = db.execute(
-        "SELECT speaker, message FROM log ORDER BY id DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
+def _recent_log(
+    db, limit: int, *, include_gm_private: bool = True
+) -> list[dict]:
+    """Recent log lines for prompts. GM-private System ops stay off player packs."""
+    try:
+        if include_gm_private:
+            log_rows = db.execute(
+                """
+                SELECT speaker, message FROM log
+                ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        else:
+            log_rows = db.execute(
+                """
+                SELECT speaker, message FROM log
+                WHERE COALESCE(visibility, 'table') != 'gm'
+                ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    except Exception:
+        log_rows = db.execute(
+            "SELECT speaker, message FROM log ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
     return [
         {"speaker": row["speaker"], "message": row["message"]}
         for row in reversed(log_rows)
