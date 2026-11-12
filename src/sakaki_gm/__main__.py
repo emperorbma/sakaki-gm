@@ -7,12 +7,16 @@ from sakaki_gm.ui.main_window import MainWindow
 
 def main() -> None:
     root = tk.Tk()
+    root.title("Sakaki GM")
     root.withdraw()
+    # Lobby is a free Toplevel (not transient on a withdrawn parent) so it
+    # actually maps; wait_window then blocks until Continue / Quit.
     lobby = run_lobby(root)
     if lobby is None:
         root.destroy()
         return
     root.deiconify()
+    root.lift()
     window = MainWindow(root, session=lobby.session)
 
     def on_close():
