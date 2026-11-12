@@ -323,6 +323,12 @@ def sync_seat_knowledge_from_world(
             if name.casefold() in blob.casefold():
                 note(int(peer["id"]), "known", "recent_mention")
 
+    # Places the PC has been / is in (and names that surfaced in recent play).
+    place_upgrades = sync_place_knowledge_from_world(
+        db, seat_id, character_id=character_id, commit=False
+    )
+    upgraded.extend(place_upgrades)
+
     if commit:
         db.commit()
     return upgraded
@@ -553,3 +559,215 @@ def filter_characters_for_seat(
     if bound is not None:
         known.add(int(bound))
     return [char for char in characters if char.get("id") in known]
+
+
+def get_place_knowledge(db, seat_id: int, object_id: str) -> Optional[str]:
+    row = db.execute(
+        """
+        SELECT level FROM place_knowledge
+        WHERE seat_id=? AND object_id=?
+        """,
+        (seat_id, object_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return row["level"]
+
+
+def set_place_knowledge(
+    db,
+    seat_id: int,
+    object_id: str,
+    level: str,
+    *,
+    commit: bool = True,
+) -> None:
+    if get_seat(db, seat_id) is None:
+        raise ValueError(f"Unknown seat {seat_id}.")
+    object_id = str(object_id or "").strip()
+    if not object_id:
+        raise ValueError("Place object_id cannot be empty.")
+    level = _normalize_knowledge(level)
+    db.execute(
+        """
+        INSERT INTO place_knowledge (seat_id, object_id, level)
+        VALUES (?, ?, ?)
+        ON CONFLICT(seat_id, object_id) DO UPDATE SET level=excluded.level
+        """,
+        (seat_id, object_id, level),
+    )
+    if commit:
+        db.commit()
+
+
+def upgrade_place_knowledge(
+    db,
+    seat_id: int,
+    object_id: str,
+    level: str,
+    *,
+    commit: bool = True,
+) -> None:
+    level = _normalize_knowledge(level)
+    current = get_place_knowledge(db, seat_id, object_id)
+    if current is not None and _KNOWLEDGE_RANK[current] >= _KNOWLEDGE_RANK[level]:
+        return
+    set_place_knowledge(db, seat_id, object_id, level, commit=commit)
+
+
+def list_place_knowledge(db, seat_id: int) -> list[dict[str, Any]]:
+    rows = db.execute(
+        """
+        SELECT seat_id, object_id, level
+        FROM place_knowledge
+        WHERE seat_id=?
+        ORDER BY object_id
+        """,
+        (seat_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def place_ids_known_to_seat(db, seat_id: int) -> set[str]:
+    return {
+        row["object_id"]
+        for row in list_place_knowledge(db, seat_id)
+        if row["level"] in VISIBLE_KNOWLEDGE
+    }
+
+
+def sync_place_knowledge_from_world(
+    db,
+    seat_id: int,
+    *,
+    character_id: int | None = None,
+    commit: bool = True,
+) -> list[dict[str, Any]]:
+    """Mark places the seat's PC has visited / currently occupies."""
+    seat = get_seat(db, seat_id)
+    if seat is None or seat_is_gm(seat):
+        return []
+    if character_id is None:
+        character_id = seat.get("character_id")
+    if character_id is None:
+        return []
+
+    upgraded = []
+
+    def note_place(object_id: str, level: str, reason: str) -> None:
+        object_id = str(object_id or "").strip()
+        if not object_id:
+            return
+        before = get_place_knowledge(db, seat_id, object_id)
+        upgrade_place_knowledge(db, seat_id, object_id, level, commit=False)
+        after = get_place_knowledge(db, seat_id, object_id)
+        if after != before:
+            upgraded.append(
+                {
+                    "object_id": object_id,
+                    "level": after,
+                    "reason": reason,
+                }
+            )
+
+    object_row = db.execute(
+        "SELECT object_id FROM characters WHERE id=?",
+        (character_id,),
+    ).fetchone()
+    current_place_ids = set()
+    if object_row and object_row["object_id"]:
+        for location in db.execute(
+            """
+            SELECT to_object_id FROM object_links
+            WHERE relation='located_at' AND from_object_id=?
+            """,
+            (object_row["object_id"],),
+        ):
+            current_place_ids.add(location["to_object_id"])
+            note_place(location["to_object_id"], "present", "located_at")
+        # Historical visits: any prior located_at still recorded counts as known.
+        # (Same query today; present covers current. Keep known for any link.)
+        for location in current_place_ids:
+            note_place(location, "present", "located_at")
+
+    # Match free-text world.location to a geography object name when possible.
+    world_loc = db.execute(
+        "SELECT value FROM world WHERE key='location'"
+    ).fetchone()
+    location_text = str(world_loc["value"] if world_loc else "").strip()
+    if location_text:
+        match = db.execute(
+            """
+            SELECT object_id, name FROM objects
+            WHERE geography_kind NOT IN ('', 'unspecified')
+              AND name = ? COLLATE NOCASE
+            LIMIT 1
+            """,
+            (location_text,),
+        ).fetchone()
+        if match is None:
+            match = db.execute(
+                """
+                SELECT object_id, name FROM objects
+                WHERE geography_kind NOT IN ('', 'unspecified')
+                  AND instr(lower(?), lower(name)) > 0
+                ORDER BY length(name) DESC
+                LIMIT 1
+                """,
+                (location_text,),
+            ).fetchone()
+        if match is not None:
+            note_place(match["object_id"], "present", "world_location")
+
+    # Place names mentioned in recent events/log → at least rumored/known.
+    blob_parts = []
+    events_row = db.execute(
+        "SELECT value FROM world WHERE key='events'"
+    ).fetchone()
+    if events_row and events_row["value"]:
+        try:
+            events = json.loads(events_row["value"])
+        except json.JSONDecodeError:
+            events = []
+        if isinstance(events, list):
+            blob_parts.extend(str(item) for item in events[-20:])
+    for row in db.execute(
+        "SELECT message FROM log ORDER BY id DESC LIMIT 40"
+    ):
+        blob_parts.append(str(row["message"] or ""))
+    blob = "\n".join(blob_parts)
+    if blob.strip():
+        for place in db.execute(
+            """
+            SELECT object_id, name FROM objects
+            WHERE geography_kind NOT IN ('', 'unspecified')
+            """
+        ):
+            name = str(place["name"] or "").strip()
+            if len(name) < 3:
+                continue
+            if name.casefold() in blob.casefold():
+                note_place(place["object_id"], "known", "recent_mention")
+
+    if commit:
+        db.commit()
+    return upgraded
+
+
+def filter_places_for_seat(
+    db,
+    places: list[dict[str, Any]],
+    seat: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """GM seat sees all geography; player seat sees visited/known places only."""
+    if seat_is_gm(seat):
+        return list(places)
+    if seat is None:
+        return []
+    sync_seat_knowledge_from_world(db, seat["id"], commit=True)
+    known = place_ids_known_to_seat(db, seat["id"])
+    return [
+        place
+        for place in places
+        if place.get("object_id") in known
+    ]

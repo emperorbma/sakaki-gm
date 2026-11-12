@@ -547,6 +547,7 @@ class MainWindow:
         self.characters_module.set_desk_audience(mode)
         self.world_module.set_desk_audience(mode)
         self.quests_module.set_desk_audience(mode)
+        self.geography_module.set_desk_audience(mode)
 
     def _set_ask_busy(self, busy: bool, *, model: str = "") -> None:
         self._ask_busy = busy

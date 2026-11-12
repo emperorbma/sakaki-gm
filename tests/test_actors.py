@@ -123,10 +123,10 @@ def test_affect_edge_and_pantheon_mortality(tmp_path):
 def test_actor_tables_survive_user_version_rewind(tmp_path):
     db = get_db(tmp_path / "campaign.db")
     create_actor_for_plot(db, "Council of Eldenport", kind="political")
-    db.execute("PRAGMA user_version = 18")
+    db.execute("PRAGMA user_version = 19")
     db.commit()
     migrate(db)
-    assert db.execute("PRAGMA user_version").fetchone()[0] == 19
+    assert db.execute("PRAGMA user_version").fetchone()[0] == 20
     assert (
         db.execute(
             "SELECT COUNT(*) FROM actors WHERE name=?",

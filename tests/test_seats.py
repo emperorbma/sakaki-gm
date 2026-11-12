@@ -4,8 +4,10 @@ from sakaki_gm.seat_db import (
     clear_turn_wait,
     ensure_default_session,
     filter_characters_for_seat,
+    filter_places_for_seat,
     get_active_seat,
     get_knowledge,
+    get_place_knowledge,
     get_seat_by_role,
     get_session_state,
     request_player_roll,
@@ -17,7 +19,7 @@ from sakaki_gm.ui.modules.characters import CharactersModule
 
 def test_schema_v19_creates_seats_and_defaults(tmp_path):
     db = get_db(tmp_path / "campaign.db")
-    assert db.execute("PRAGMA user_version").fetchone()[0] >= 19
+    assert db.execute("PRAGMA user_version").fetchone()[0] >= 20
     state = ensure_default_session(db)
     assert get_seat_by_role(db, "gm")["seat_key"] == "gm"
     assert get_seat_by_role(db, "player")["seat_key"] == "player"
@@ -117,9 +119,64 @@ def test_knowledge_filters_player_roster(tmp_path):
 def test_session_tables_survive_version_rewind(tmp_path):
     db = get_db(tmp_path / "campaign.db")
     ensure_default_session(db)
-    db.execute("PRAGMA user_version = 18")
+    db.execute("PRAGMA user_version = 19")
     db.commit()
     migrate(db)
-    assert db.execute("PRAGMA user_version").fetchone()[0] == 19
+    assert db.execute("PRAGMA user_version").fetchone()[0] == 20
     assert get_seat_by_role(db, "gm") is not None
+    db.close()
+
+
+def test_place_knowledge_from_visits_and_mentions(tmp_path):
+    db = get_db(tmp_path / "campaign.db")
+    serina = create_character(
+        db,
+        "Serina",
+        {"name": "Serina", "class": "Wizard"},
+        campaign_role="Protagonist",
+    )
+    db.execute(
+        """
+        INSERT INTO objects (
+            object_id, name, object_type, geography_kind, description
+        ) VALUES
+        ('place:eldenport', 'Eldenport', 'place', 'settlement', ''),
+        ('place:academy', 'Academy of Starlight', 'place', 'point', ''),
+        ('place:secret', 'Hidden Vault', 'place', 'point', '')
+        """
+    )
+    char_object = db.execute(
+        "SELECT object_id FROM characters WHERE id=?", (serina,)
+    ).fetchone()["object_id"]
+    db.execute(
+        """
+        INSERT INTO object_links (
+            relation, from_object_id, to_object_id, properties
+        ) VALUES ('located_at', ?, 'place:academy', '{}')
+        """,
+        (char_object,),
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO world (key, value) VALUES ('location', ?)",
+        ("Academy of Starlight",),
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO world (key, value) VALUES ('events', ?)",
+        ('["Serina walked through Eldenport to the Academy."]',),
+    )
+    db.commit()
+    ensure_default_session(db)
+    player = get_seat_by_role(db, "player")
+    set_active_seat_by_role(db, "player")
+    places = [
+        {"object_id": "place:eldenport", "name": "Eldenport"},
+        {"object_id": "place:academy", "name": "Academy of Starlight"},
+        {"object_id": "place:secret", "name": "Hidden Vault"},
+    ]
+    visible = filter_places_for_seat(db, places, get_active_seat(db))
+    ids = {place["object_id"] for place in visible}
+    assert "place:academy" in ids
+    assert get_place_knowledge(db, player["id"], "place:academy") == "present"
+    assert "place:eldenport" in ids
+    assert "place:secret" not in ids
     db.close()
