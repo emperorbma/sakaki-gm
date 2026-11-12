@@ -184,6 +184,7 @@ def test_gm_lease_acting_ignores_shared_active_player_seat(tmp_path):
         include_reference_material=False,
         seat_id=gm["id"],
     )
-    assert "GM temporary lease on Elara Starveil" in user
+    assert "GM desk temporary lease on Elara Starveil" in user
+    assert "CONTROLLER ACTION" in user
     assert "Lunarglow Skirt" not in user
     assert "Spellbook" in user

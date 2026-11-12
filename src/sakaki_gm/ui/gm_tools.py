@@ -18,6 +18,8 @@ from sakaki_gm.seat_db import (
     list_player_claimable_characters,
     reassign_controller_seat,
     request_player_roll,
+    GM_LEASE_CLEARED_MESSAGE,
+    gm_lease_controlling_message,
     set_gm_control_character,
     set_turn_phase,
     sync_seat_knowledge_from_world,
@@ -371,10 +373,10 @@ def run_gm_control_character(parent, db) -> Optional[str]:
             messagebox.showerror("Control character", str(exc), parent=dialog)
             return
         if character_id is None:
-            result["summary"] = "GM cleared character lease"
+            result["summary"] = GM_LEASE_CLEARED_MESSAGE
         else:
             name = available[index - 1]["name"]
-            result["summary"] = f"GM controlling {name} (temporary lease)"
+            result["summary"] = gm_lease_controlling_message(name)
         dialog.destroy()
 
     buttons = ttk.Frame(body)
