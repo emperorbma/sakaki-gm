@@ -19,7 +19,7 @@ from sakaki_gm.campaigns import (
     rename_campaign,
     restore_campaign_from_backup,
     set_active,
-)
+)  # campaign_name used for session campaign switches
 from sakaki_gm.db import get_db
 from sakaki_gm.gm import (
     apply_proposals,
@@ -78,24 +78,64 @@ from sakaki_gm.ui.modules.world import WorldModule
 
 
 class MainWindow:
-    def __init__(self, root, config_path=None, campaigns_dir=None, legacy_db=None):
+    def __init__(
+        self,
+        root,
+        config_path=None,
+        campaigns_dir=None,
+        legacy_db=None,
+        session=None,
+    ):
         self.root = root
         self.config_path = config_path or CONFIG_PATH
         self.campaigns_dir = campaigns_dir or CAMPAIGNS_DIR
+        self.session = session
         self._loading_campaigns = False
         self._ask_busy = False
         legacy = legacy_db if legacy_db is not None else None
         if legacy_db is None:
             from sakaki_gm.db import LEGACY_DB
             legacy = LEGACY_DB
-        cfg, path = bootstrap(self.config_path, legacy, self.campaigns_dir)
-        self._active_campaign_id = cfg["active_campaign"]
-        self.db_path = Path(path).resolve()
-        self.db = get_db(path)
+        if session is not None and session.campaign_path:
+            path = Path(session.campaign_path)
+            if path.is_file():
+                cfg = load_config(self.config_path)
+                if session.campaign_id:
+                    try:
+                        set_active(self.config_path, session.campaign_id)
+                        cfg = load_config(self.config_path)
+                    except Exception:
+                        pass
+                self._active_campaign_id = cfg.get("active_campaign")
+                self.db_path = path.resolve()
+                self.db = get_db(path)
+            else:
+                cfg, path = bootstrap(self.config_path, legacy, self.campaigns_dir)
+                self._active_campaign_id = cfg["active_campaign"]
+                self.db_path = Path(path).resolve()
+                self.db = get_db(path)
+        else:
+            cfg, path = bootstrap(self.config_path, legacy, self.campaigns_dir)
+            self._active_campaign_id = cfg["active_campaign"]
+            self.db_path = Path(path).resolve()
+            self.db = get_db(path)
         self.root.geometry("1600x950")
         self._seat_session_active = False
         self.setup_ui()
         self.refresh_campaign_chrome()
+        if self.session is not None:
+            self.session.subscribe(self._on_session_event)
+            endpoint = self.session.endpoint()
+            if endpoint:
+                self.log_panel.add_entry(
+                    "System",
+                    f"Table session ({self.session.mode}): {endpoint}"
+                    + (
+                        f" — {self.session.campaign_name}"
+                        if self.session.campaign_name
+                        else ""
+                    ),
+                )
         # Seat login gates the desk: GM vs player is a login, not a mid-flow toggle.
         self.root.update_idletasks()
         self.prompt_seat_login()
@@ -270,6 +310,17 @@ class MainWindow:
         )
         self.d20_button.pack(side=tk.RIGHT)
 
+        self.chat_bar = ttk.Frame(self.root)
+        self.chat_bar.pack(fill=tk.X, padx=15, pady=(0, 4))
+        ttk.Label(self.chat_bar, text="Table chat").pack(side=tk.LEFT)
+        self.chat_entry = tk.Entry(self.chat_bar, font=("Georgia", 11))
+        self.chat_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        self.chat_entry.bind("<Return>", lambda _event: self.send_table_chat())
+        ttk.Button(
+            self.chat_bar, text="Send", command=self.send_table_chat
+        ).pack(side=tk.RIGHT)
+        self._seen_chat_ids: set[int] = set()
+
         status_row = ttk.Frame(self.root)
         status_row.pack(fill=tk.X, padx=15, pady=(0, 8))
         self.ask_status_var = tk.StringVar(value="")
@@ -279,6 +330,13 @@ class MainWindow:
             foreground="#4a5568",
         )
         self.ask_status.pack(side=tk.LEFT)
+        self.session_status_var = tk.StringVar(value="")
+        self.session_status = ttk.Label(
+            status_row,
+            textvariable=self.session_status_var,
+            foreground="#2f855a",
+        )
+        self.session_status.pack(side=tk.LEFT, padx=(12, 0))
         self.turn_status_var = tk.StringVar(value="")
         self.turn_status = ttk.Label(
             status_row,
@@ -347,6 +405,81 @@ class MainWindow:
         )
         self.db.commit()
 
+    def _ensure_can_change_campaign(self) -> bool:
+        """GM may change campaigns only when no other table sessions are live."""
+        if self.session is None:
+            return True
+        reason = self.session.campaign_change_block_reason()
+        if reason:
+            messagebox.showerror("Campaign", reason)
+            self.refresh_campaign_chrome()
+            return False
+        if not self.session.can_change_campaign():
+            messagebox.showerror(
+                "Campaign",
+                "Cannot change campaign while other players have a session.",
+            )
+            self.refresh_campaign_chrome()
+            return False
+        return True
+
+    def send_table_chat(self):
+        text = self.chat_entry.get().strip()
+        if not text:
+            return
+        if self.session is None:
+            self.log_panel.add_entry("Chat", text)
+            self.chat_entry.delete(0, tk.END)
+            return
+        seat = normalize_desk_mode(self.desk_mode_var.get())
+        speaker = "GM" if seat == "gm" else (
+            self.session.display_name or "Player"
+        )
+        try:
+            entry = self.session.post_chat(speaker, text)
+        except Exception as exc:
+            messagebox.showerror("Table chat", str(exc))
+            return
+        self.chat_entry.delete(0, tk.END)
+        # Host gets the event via subscribe; clients may also echo locally.
+        chat_id = int(entry.get("id") or 0)
+        if chat_id and chat_id not in self._seen_chat_ids:
+            self._seen_chat_ids.add(chat_id)
+            self.log_panel.add_entry("Chat", f"{entry.get('speaker')}: {entry.get('text')}")
+
+    def _on_session_event(self, event: dict):
+        """Network thread → UI thread desk refresh / chat."""
+        self.root.after(0, lambda e=event: self._handle_session_event(e))
+
+    def _handle_session_event(self, event: dict):
+        kind = event.get("type")
+        if kind == "chat":
+            message = event.get("message") or {}
+            chat_id = int(message.get("id") or 0)
+            if chat_id and chat_id in self._seen_chat_ids:
+                return
+            if chat_id:
+                self._seen_chat_ids.add(chat_id)
+            speaker = message.get("speaker") or "Peer"
+            text = message.get("text") or ""
+            self.log_panel.add_entry("Chat", f"{speaker}: {text}")
+            return
+        if kind == "refresh":
+            reason = event.get("reason") or ""
+            if self.session is not None:
+                peers = self.session.peer_count()
+                alone = self.session.can_change_campaign()
+                self.session_status_var.set(
+                    f"table peers={peers}"
+                    + ("; campaign switch ok" if alone else "; campaign locked")
+                )
+            if reason in {"campaign_changed", "peer_joined", "peer_left", "state_changed"}:
+                self.characters_module.refresh()
+                self.load_location()
+                self.world_module.reload()
+                self.log_panel.reload()
+                self._refresh_turn_status()
+
     def on_campaign_selected(self, _event=None):
         if self._loading_campaigns:
             return
@@ -356,6 +489,8 @@ class MainWindow:
         cid = self._campaign_ids[index]
         cfg = load_config(self.config_path)
         if cid == self._active_campaign_id:
+            return
+        if not self._ensure_can_change_campaign():
             return
         selected = next(
             (item for item in cfg["campaigns"] if item["id"] == cid),
@@ -373,6 +508,15 @@ class MainWindow:
         self.settings_module.save_system_prompt(quiet=True)
         path = set_active(self.config_path, cid)
         self._swap_db(path)
+        if self.session is not None:
+            try:
+                self.session.set_campaign(
+                    campaign_id=cid,
+                    campaign_name=campaign_name(path),
+                    campaign_path=path,
+                )
+            except PermissionError as exc:
+                messagebox.showerror("Campaign", str(exc))
 
     def _swap_db(self, path):
         new_db = get_db(path)
@@ -402,6 +546,8 @@ class MainWindow:
         self.refresh_campaign_chrome()
 
     def new_campaign(self):
+        if not self._ensure_can_change_campaign():
+            return
         name = simpledialog.askstring("New Campaign", "Campaign name:", parent=self.root)
         if not name or not name.strip():
             return
@@ -409,8 +555,18 @@ class MainWindow:
         self.world_module.save_prompt(quiet=True)
         self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
-        create_campaign(self.config_path, name.strip(), self.campaigns_dir)
-        self._swap_db(active_path(load_config(self.config_path)))
+        cid = create_campaign(self.config_path, name.strip(), self.campaigns_dir)
+        path = active_path(load_config(self.config_path))
+        self._swap_db(path)
+        if self.session is not None:
+            try:
+                self.session.set_campaign(
+                    campaign_id=cid,
+                    campaign_name=name.strip(),
+                    campaign_path=path,
+                )
+            except PermissionError as exc:
+                messagebox.showerror("Campaign", str(exc))
 
     def rename_current(self):
         current = self.get_meta("campaign_name", "New Campaign")
@@ -500,6 +656,8 @@ class MainWindow:
         self.refresh_campaign_chrome()
 
     def open_campaign_file(self):
+        if not self._ensure_can_change_campaign():
+            return
         chosen = filedialog.askopenfilename(
             title="Open campaign file",
             filetypes=[("SQLite", "*.db"), ("All files", "*.*")],
@@ -510,10 +668,22 @@ class MainWindow:
         self.world_module.save_prompt(quiet=True)
         self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
-        register_file(self.config_path, chosen)
-        self._swap_db(active_path(load_config(self.config_path)))
+        cid = register_file(self.config_path, chosen)
+        path = active_path(load_config(self.config_path))
+        self._swap_db(path)
+        if self.session is not None:
+            try:
+                self.session.set_campaign(
+                    campaign_id=cid,
+                    campaign_name=campaign_name(path),
+                    campaign_path=path,
+                )
+            except PermissionError as exc:
+                messagebox.showerror("Campaign", str(exc))
 
     def remove_current(self):
+        if not self._ensure_can_change_campaign():
+            return
         index = self.campaign_combo.current()
         selected_id = (
             self._campaign_ids[index]

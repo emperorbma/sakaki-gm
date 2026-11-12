@@ -44,7 +44,12 @@ class LogPanel:
             clock = datetime.now().strftime("%H:%M")
         start = self.log.index(tk.END)
         self.log.insert(tk.END, f"[{clock}] {speaker}: {message}\n\n")
-        color = {"Player": "#1b5e20", "GM": "#0d47a1", "System": "#5d4037"}.get(speaker, "black")
+        color = {
+            "Player": "#1b5e20",
+            "GM": "#0d47a1",
+            "System": "#5d4037",
+            "Chat": "#6a1b9a",
+        }.get(speaker, "black")
         self.log.tag_add(speaker, start, "end-1c")
         self.log.tag_config(
             speaker,
