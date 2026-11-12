@@ -36,6 +36,7 @@ from sakaki_gm.llm_config import (
     CONFIG_PATH,
     ai_assist_mode,
     desk_mode,
+    effective_ai_assist_mode,
     list_model_choices,
     load_config,
     model_settings_dict,
@@ -371,6 +372,7 @@ class MainWindow:
         self.reply_pending_hint.pack(side=tk.LEFT)
         self._reply_debug_visible = False
         self._pending_reply_scratch = None
+        self._pending_ask_assist = "manager"
         self.apply_ui_preferences()
 
     def refresh_campaign_chrome(self):
@@ -1000,7 +1002,7 @@ class MainWindow:
         # Players never select a model; resolve_ask_model ignores overrides.
         entry = resolve_ask_model(cfg, desk_mode=seat)
         settings = model_settings_dict(entry)
-        assist = ai_assist_mode(cfg)
+        assist = effective_ai_assist_mode(cfg, model_entry=entry)
         if assist == "muse":
             user = (
                 user
@@ -1011,14 +1013,20 @@ class MainWindow:
         tool_db_path = self.db_path
         model_name = str(settings.get("model") or "").strip()
         turn_scratch = ScratchContext()
+        self._pending_ask_assist = assist
         self.log_panel.add_entry("Player", action)
         self.action_entry.delete(0, tk.END)
         self._set_ask_busy(True, model=model_name)
         role_note = " as muse" if assist == "muse" else ""
+        purpose = str(entry.get("purpose") or "").strip()
+        purpose_note = (
+            f", purpose={purpose}" if assist == "muse" and purpose else ""
+        )
         self.log_panel.add_entry(
             "System",
             f"Asking GM{role_note}"
-            f"{' (' + model_name + ')' if model_name else ''}…",
+            f"{' (' + model_name + ')' if model_name else ''}"
+            f"{purpose_note}…",
         )
 
         def work():
@@ -1089,7 +1097,10 @@ class MainWindow:
 
     def _apply_reply_text(self, reply: str, *, scratch=None):
         parsed = parse_reply(reply)
-        allow_writes = ai_assist_mode(load_config(self.config_path)) == "manager"
+        assist = getattr(self, "_pending_ask_assist", None) or effective_ai_assist_mode(
+            load_config(self.config_path)
+        )
+        allow_writes = assist == "manager"
         self.log_panel.add_entry("GM", parsed.narration or reply)
         for line in citation_messages(scratch, parsed.cited_record_ids):
             self.log_panel.add_entry("System", line)

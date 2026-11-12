@@ -178,7 +178,7 @@ class SettingsModule:
         )
         ttk.Label(
             llm,
-            text="Optional note (e.g. muse, manager, routing). Prompt strategies can key off this later.",
+            text="Optional. Purpose muse / narration forces narration-only (no bottle writes) for this model.",
             wraplength=560,
         ).grid(row=5, column=1, sticky="w", padx=10)
 
