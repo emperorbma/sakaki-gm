@@ -11,12 +11,20 @@ from sakaki_gm.llm_config import (
     MODEL_CAPABILITIES,
     RAG_MODES,
     PRESETS,
+    active_llm_settings,
     ai_assist_mode,
+    allocate_model_id,
     enabled_ai_tools,
+    get_model,
+    list_model_choices,
     load_config,
+    model_display_label,
     model_profile_key,
+    remove_model,
     resolve_api_key,
     save_config,
+    set_default_model,
+    upsert_model,
 )
 from sakaki_gm.model_capability_tests import run_capability_tests
 from sakaki_gm.llm_client import list_models, test_connection
@@ -96,33 +104,88 @@ class SettingsModule:
         self.system_label = ttk.Label(rules, text=self._system_text())
         self.system_label.pack(anchor="w", padx=10, pady=(0, 8))
 
-        llm = ttk.LabelFrame(content, text="Language model")
+        llm = ttk.LabelFrame(content, text="Language models")
         llm.pack(fill=tk.X, padx=16, pady=12)
         cfg = load_config(self.main_app.config_path)
-        current = cfg["llm"]
+        self._selected_model_id = cfg.get("default_model_id")
+        self._model_choice_ids = []
+        current = get_model(cfg, self._selected_model_id)
 
+        self.model_entry_var = tk.StringVar()
+        self.model_label = tk.StringVar(value=current.get("label") or "")
+        self.model_purpose = tk.StringVar(value=current.get("purpose") or "")
         self.provider = tk.StringVar(value=current.get("provider") or "spacexai")
         self.base_url = tk.StringVar(value=current.get("base_url") or "")
         self.model = tk.StringVar(value=current.get("model") or "")
         self.api_key = tk.StringVar(value=current.get("api_key") or "")
         rag_mode = current.get("rag_mode", "tools")
         self.rag_mode = tk.StringVar(value=RAG_MODES.get(rag_mode, RAG_MODES["tools"]))
+        self.default_hint = tk.StringVar(value="")
         self.model_capabilities = {
             capability: tk.BooleanVar(value=False)
             for capability in MODEL_CAPABILITIES
         }
-        self._load_model_capabilities()
 
-        ttk.Label(llm, text="Preset").grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        picker = ttk.Frame(llm)
+        picker.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 4))
+        ttk.Label(picker, text="Configured models").pack(side=tk.LEFT)
+        self.model_entry_combo = ttk.Combobox(
+            picker,
+            textvariable=self.model_entry_var,
+            state="readonly",
+            width=36,
+        )
+        self.model_entry_combo.pack(side=tk.LEFT, padx=(8, 6))
+        self.model_entry_combo.bind(
+            "<<ComboboxSelected>>", self.on_model_entry_selected
+        )
+        ttk.Button(picker, text="Add", command=self.add_model_entry).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(picker, text="Remove", command=self.remove_model_entry).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(
+            picker, text="Set default", command=self.set_selected_as_default
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Label(llm, textvariable=self.default_hint).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4)
+        )
+        ttk.Label(
+            llm,
+            text=(
+                "GM seat only. The default model powers Ask / Run as GM. "
+                "Players never pick a model — the GM manager uses this config "
+                "(and later purpose-based routing). Connectivity and capability "
+                "tests are the only checks."
+            ),
+            wraplength=640,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 6))
+
+        ttk.Label(llm, text="Label").grid(row=3, column=0, sticky="w", padx=10, pady=6)
+        ttk.Entry(llm, textvariable=self.model_label, width=48).grid(
+            row=3, column=1, sticky="w", padx=10, pady=6
+        )
+        ttk.Label(llm, text="Purpose").grid(row=4, column=0, sticky="w", padx=10, pady=6)
+        ttk.Entry(llm, textvariable=self.model_purpose, width=48).grid(
+            row=4, column=1, sticky="w", padx=10, pady=6
+        )
+        ttk.Label(
+            llm,
+            text="Optional note (e.g. muse, manager, routing). Prompt strategies can key off this later.",
+            wraplength=560,
+        ).grid(row=5, column=1, sticky="w", padx=10)
+
+        ttk.Label(llm, text="Preset").grid(row=6, column=0, sticky="w", padx=10, pady=6)
         preset = ttk.Combobox(
             llm, textvariable=self.provider, values=list(PRESETS), state="readonly", width=28,
         )
-        preset.grid(row=0, column=1, sticky="w", padx=10, pady=6)
+        preset.grid(row=6, column=1, sticky="w", padx=10, pady=6)
         preset.bind("<<ComboboxSelected>>", self.apply_preset)
 
-        ttk.Label(llm, text="Base URL").grid(row=1, column=0, sticky="w", padx=10, pady=6)
+        ttk.Label(llm, text="Base URL").grid(row=7, column=0, sticky="w", padx=10, pady=6)
         base_url_entry = ttk.Entry(llm, textvariable=self.base_url, width=48)
-        base_url_entry.grid(row=1, column=1, sticky="w", padx=10, pady=6)
+        base_url_entry.grid(row=7, column=1, sticky="w", padx=10, pady=6)
         base_url_entry.bind(
             "<FocusOut>",
             lambda _event: self._load_model_capabilities(),
@@ -131,9 +194,9 @@ class SettingsModule:
             "<Return>",
             lambda _event: self._load_model_capabilities(),
         )
-        ttk.Label(llm, text="Model").grid(row=2, column=0, sticky="w", padx=10, pady=6)
+        ttk.Label(llm, text="Model").grid(row=8, column=0, sticky="w", padx=10, pady=6)
         model_frame = ttk.Frame(llm)
-        model_frame.grid(row=2, column=1, sticky="w", padx=10, pady=6)
+        model_frame.grid(row=8, column=1, sticky="w", padx=10, pady=6)
         self.model_combo = ttk.Combobox(
             model_frame,
             textvariable=self.model,
@@ -147,32 +210,36 @@ class SettingsModule:
             text="Refresh models",
             command=self.refresh_models,
         ).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Label(llm, text="API key").grid(row=3, column=0, sticky="w", padx=10, pady=6)
-        ttk.Entry(llm, textvariable=self.api_key, width=48, show="*").grid(row=3, column=1, sticky="w", padx=10, pady=6)
+        ttk.Label(llm, text="API key").grid(row=9, column=0, sticky="w", padx=10, pady=6)
+        ttk.Entry(llm, textvariable=self.api_key, width=48, show="*").grid(
+            row=9, column=1, sticky="w", padx=10, pady=6
+        )
         ttk.Label(
             llm,
             text="Leave the key blank to use XAI_API_KEY. A local server does not need a key.",
-        ).grid(row=4, column=1, sticky="w", padx=10)
+        ).grid(row=10, column=1, sticky="w", padx=10)
 
-        ttk.Label(llm, text="Campaign RAG").grid(row=5, column=0, sticky="w", padx=10, pady=6)
+        ttk.Label(llm, text="Campaign RAG").grid(
+            row=11, column=0, sticky="w", padx=10, pady=6
+        )
         ttk.Combobox(
             llm,
             textvariable=self.rag_mode,
             values=list(RAG_MODES.values()),
             state="readonly",
             width=28,
-        ).grid(row=5, column=1, sticky="w", padx=10, pady=6)
+        ).grid(row=11, column=1, sticky="w", padx=10, pady=6)
         ttk.Label(
             llm,
             text="Choose model-driven tool calls or app-retrieved context.",
-        ).grid(row=6, column=1, sticky="w", padx=10)
+        ).grid(row=12, column=1, sticky="w", padx=10)
         tools_frame = ttk.LabelFrame(llm, text="Enable AI tools")
-        tools_frame.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        tools_frame.grid(row=13, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
         ttk.Label(
             tools_frame,
             text=(
-                "Which RAG tools the Manager may call. Uncheck all (or choose "
-                "Muse) to run without model-initiated tools."
+                "Which RAG tools this model may call as Manager. Uncheck all "
+                "(or desk Muse) to run without model-initiated tools."
             ),
             wraplength=560,
         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 2))
@@ -193,7 +260,7 @@ class SettingsModule:
                 pady=2,
             )
         capabilities = ttk.LabelFrame(llm, text="Model capabilities")
-        capabilities.grid(row=8, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        capabilities.grid(row=14, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
         ttk.Label(
             capabilities,
             text="User-declared expectations; the model listing does not report these.",
@@ -216,7 +283,7 @@ class SettingsModule:
         )
 
         buttons = ttk.Frame(llm)
-        buttons.grid(row=9, column=1, sticky="w", padx=10, pady=10)
+        buttons.grid(row=15, column=1, sticky="w", padx=10, pady=10)
         ttk.Button(buttons, text="Save", command=self.save_llm).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Test", command=self.test_llm).pack(side=tk.LEFT, padx=4)
         self.capability_test_button = ttk.Button(
@@ -226,6 +293,8 @@ class SettingsModule:
         )
         self.capability_test_button.pack(side=tk.LEFT, padx=4)
         self._capability_test_busy = False
+        self._refresh_model_entry_picker(cfg)
+        self._load_model_capabilities()
 
         desk = ttk.LabelFrame(content, text="Desk")
         desk.pack(fill=tk.X, padx=16, pady=12)
@@ -401,6 +470,7 @@ class SettingsModule:
             variable.set(capability in selected)
 
     def _llm_dict(self) -> dict:
+        """Connection settings for the form currently being edited."""
         return {
             "provider": self.provider.get().strip() or "spacexai",
             "base_url": self.base_url.get().strip(),
@@ -417,26 +487,178 @@ class SettingsModule:
             ],
         }
 
-    def reload_desk_ai_controls(self):
-        """Sync Settings desk AI controls from config (e.g. GM tools strip)."""
-        cfg = load_config(self.main_app.config_path)
-        ui_cfg = cfg.get("ui") if isinstance(cfg.get("ui"), dict) else {}
-        self.show_gm_reply_debug.set(bool(ui_cfg.get("show_gm_reply_debug")))
-        self.ai_assist_mode.set(AI_ASSIST_MODES[ai_assist_mode(cfg)])
-        enabled = set(enabled_ai_tools(cfg.get("llm")))
+    def _model_entry_dict(self) -> dict:
+        settings = self._llm_dict()
+        return {
+            "id": self._selected_model_id,
+            "label": self.model_label.get().strip()
+            or settings.get("model")
+            or "Model",
+            "purpose": self.model_purpose.get().strip(),
+            **settings,
+        }
+
+    def _refresh_model_entry_picker(self, cfg=None):
+        cfg = cfg or load_config(self.main_app.config_path)
+        choices = list_model_choices(cfg)
+        self._model_choice_ids = [model_id for model_id, _label in choices]
+        labels = [label for _model_id, label in choices]
+        self.model_entry_combo["values"] = labels
+        selected = self._selected_model_id or cfg.get("default_model_id")
+        if selected in self._model_choice_ids:
+            index = self._model_choice_ids.index(selected)
+        elif self._model_choice_ids:
+            index = 0
+            selected = self._model_choice_ids[0]
+        else:
+            self.model_entry_var.set("")
+            self.default_hint.set("")
+            return
+        self._selected_model_id = selected
+        self.model_entry_var.set(labels[index])
+        default_id = cfg.get("default_model_id")
+        default_entry = get_model(cfg, default_id)
+        self.default_hint.set(
+            f"Default for Ask / Run as GM: {model_display_label(default_entry)}"
+            + (" (this entry)" if selected == default_id else "")
+        )
+
+    def _load_entry_into_form(self, entry: dict):
+        self._selected_model_id = entry.get("id")
+        self.model_label.set(entry.get("label") or "")
+        self.model_purpose.set(entry.get("purpose") or "")
+        self.provider.set(entry.get("provider") or "spacexai")
+        self.base_url.set(entry.get("base_url") or "")
+        self.model.set(entry.get("model") or "")
+        self.api_key.set(entry.get("api_key") or "")
+        rag_mode = entry.get("rag_mode", "tools")
+        self.rag_mode.set(RAG_MODES.get(rag_mode, RAG_MODES["tools"]))
+        enabled = set(enabled_ai_tools(entry))
         for name, variable in self.enabled_ai_tools.items():
             variable.set(name in enabled)
+        self.model_combo["values"] = ()
+        self._load_model_capabilities()
 
-    def save_llm(self):
+    def on_model_entry_selected(self, _event=None):
+        label = self.model_entry_var.get()
+        choices = list(self.model_entry_combo["values"] or ())
+        if label not in choices:
+            return
+        model_id = self._model_choice_ids[choices.index(label)]
         cfg = load_config(self.main_app.config_path)
+        self._load_entry_into_form(get_model(cfg, model_id))
+        self._refresh_model_entry_picker(cfg)
+
+    def add_model_entry(self):
+        cfg = load_config(self.main_app.config_path)
+        existing_ids = {
+            entry.get("id")
+            for entry in (cfg.get("models") or [])
+            if isinstance(entry, dict)
+        }
+        model_id = allocate_model_id(existing_ids)
+        preset = PRESETS.get(self.provider.get()) or PRESETS["spacexai"]
+        entry = {
+            "id": model_id,
+            "label": f"Model {len(existing_ids) + 1}",
+            "purpose": "",
+            "provider": self.provider.get().strip() or "spacexai",
+            "base_url": preset["base_url"],
+            "model": preset["model"],
+            "api_key": "",
+            "rag_mode": "tools",
+            "enabled_ai_tools": list(AI_TOOL_NAMES),
+        }
+        upsert_model(cfg, entry, make_default=False)
+        save_config(cfg, self.main_app.config_path)
+        self._load_entry_into_form(get_model(cfg, model_id))
+        self._refresh_model_entry_picker(cfg)
+        if hasattr(self.main_app, "_refresh_gm_model_picker"):
+            self.main_app._refresh_gm_model_picker(cfg)
+
+    def remove_model_entry(self):
+        cfg = load_config(self.main_app.config_path)
+        if len(cfg.get("models") or []) <= 1:
+            messagebox.showerror(
+                "Models", "At least one model configuration is required."
+            )
+            return
+        model_id = self._selected_model_id
+        if not messagebox.askyesno(
+            "Remove model",
+            f"Remove “{self.model_entry_var.get()}” from the list?",
+        ):
+            return
+        try:
+            remove_model(cfg, model_id)
+        except ValueError as exc:
+            messagebox.showerror("Models", str(exc))
+            return
+        save_config(cfg, self.main_app.config_path)
+        self._load_entry_into_form(get_model(cfg))
+        self._refresh_model_entry_picker(cfg)
+        if hasattr(self.main_app, "_refresh_gm_model_picker"):
+            self.main_app._refresh_gm_model_picker(cfg)
+
+    def set_selected_as_default(self):
+        cfg = load_config(self.main_app.config_path)
+        # Persist current form edits into the selected entry first.
+        upsert_model(cfg, self._model_entry_dict(), make_default=False)
+        try:
+            set_default_model(cfg, self._selected_model_id)
+        except ValueError as exc:
+            messagebox.showerror("Models", str(exc))
+            return
         settings = self._llm_dict()
-        cfg["llm"] = settings
         cfg["model_profiles"][model_profile_key(settings)] = [
             capability
             for capability, variable in self.model_capabilities.items()
             if variable.get()
         ]
         save_config(cfg, self.main_app.config_path)
+        self._refresh_model_entry_picker(cfg)
+        if hasattr(self.main_app, "_refresh_gm_model_picker"):
+            self.main_app._refresh_gm_model_picker(cfg)
+        messagebox.showinfo(
+            "Models",
+            f"Default model set to {model_display_label(get_model(cfg))}.",
+        )
+
+    def reload_desk_ai_controls(self):
+        """Sync Settings desk AI controls from config (e.g. GM tools strip)."""
+        cfg = load_config(self.main_app.config_path)
+        ui_cfg = cfg.get("ui") if isinstance(cfg.get("ui"), dict) else {}
+        self.show_gm_reply_debug.set(bool(ui_cfg.get("show_gm_reply_debug")))
+        self.ai_assist_mode.set(AI_ASSIST_MODES[ai_assist_mode(cfg)])
+        # Tool checkboxes belong to the selected model entry, not desk mode.
+        enabled = set(enabled_ai_tools(active_llm_settings(cfg)))
+        # Only sync tool boxes when viewing the default model to avoid clobbering.
+        if self._selected_model_id == cfg.get("default_model_id"):
+            for name, variable in self.enabled_ai_tools.items():
+                variable.set(name in enabled)
+        self._refresh_model_entry_picker(cfg)
+        if hasattr(self.main_app, "_refresh_gm_model_picker"):
+            self.main_app._refresh_gm_model_picker(cfg)
+
+    def save_llm(self):
+        cfg = load_config(self.main_app.config_path)
+        entry = self._model_entry_dict()
+        make_default = (
+            not cfg.get("default_model_id")
+            or entry["id"] == cfg.get("default_model_id")
+            or len(cfg.get("models") or []) <= 1
+        )
+        upsert_model(cfg, entry, make_default=make_default)
+        settings = self._llm_dict()
+        cfg["model_profiles"][model_profile_key(settings)] = [
+            capability
+            for capability, variable in self.model_capabilities.items()
+            if variable.get()
+        ]
+        save_config(cfg, self.main_app.config_path)
+        self._refresh_model_entry_picker(cfg)
+        if hasattr(self.main_app, "_refresh_gm_model_picker"):
+            self.main_app._refresh_gm_model_picker(cfg)
         messagebox.showinfo("Saved", "Model settings saved.")
 
     def save_desk_ui(self):
