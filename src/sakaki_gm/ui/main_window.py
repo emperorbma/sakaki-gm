@@ -88,7 +88,7 @@ class MainWindow:
         )
         mode_wrap = ttk.Frame(header)
         mode_wrap.pack(side=tk.LEFT, padx=(16, 0))
-        ttk.Label(mode_wrap, text="Desk").pack(side=tk.LEFT)
+        ttk.Label(mode_wrap, text="Seat").pack(side=tk.LEFT)
         self.desk_mode_var = tk.StringVar(
             value=desk_mode(load_config(self.config_path))
         )
@@ -452,16 +452,31 @@ class MainWindow:
         if not isinstance(cfg.get("ui"), dict):
             cfg["ui"] = {}
         if cfg["ui"].get("desk_mode") == mode:
+            self._sync_active_seat(mode)
             return
         cfg["ui"]["desk_mode"] = mode
         save_config(cfg, self.config_path)
+        self._sync_active_seat(mode)
         self.apply_ui_preferences()
 
+    def _sync_active_seat(self, mode: str):
+        """Desk toggle = active seat swap on the implicit two-seat table."""
+        import sqlite3
+
+        from sakaki_gm.seat_db import set_active_seat_by_role
+
+        try:
+            set_active_seat_by_role(self.db, mode)
+        except (sqlite3.Error, ValueError):
+            # Pre-v19 bottles mid-migrate still get ensure on next open.
+            pass
+
     def apply_ui_preferences(self):
-        """Apply desk audience mode and debug-only controls from saved UI settings."""
+        """Apply active-seat lens and debug-only controls from saved UI settings."""
         cfg = load_config(self.config_path)
         mode = desk_mode(cfg)
         self.desk_mode_var.set(mode)
+        self._sync_active_seat(mode)
         self.apply_desk_audience(mode)
         debug_ok = show_gm_reply_debug(cfg) and surface_visible("gm_reply_debug", mode)
         if debug_ok and not self._reply_debug_visible:
@@ -472,11 +487,20 @@ class MainWindow:
             self._reply_debug_visible = False
 
     def apply_desk_audience(self, mode: str | None = None):
-        """Show GM-only surfaces only in GM mode; strip shared modules in player mode."""
+        """Show GM-only surfaces for GM seat; strip shared modules for player seat."""
+        from sakaki_gm.seat_db import get_session_state
+
         mode = normalize_desk_mode(mode if mode is not None else self.desk_mode_var.get())
-        self.desk_mode_hint.configure(
-            text="(full desk)" if mode == "gm" else "(play surfaces; GM tools hidden)"
-        )
+        phase = "idle"
+        try:
+            phase = get_session_state(self.db).get("turn_phase") or "idle"
+        except Exception:
+            phase = "idle"
+        if mode == "gm":
+            hint = f"(GM seat; phase={phase})"
+        else:
+            hint = f"(player seat; phase={phase}; knowledge-filtered)"
+        self.desk_mode_hint.configure(text=hint)
 
         selected = None
         try:

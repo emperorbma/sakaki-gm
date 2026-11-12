@@ -215,8 +215,9 @@ class SettingsModule:
         ttk.Label(
             desk,
             text=(
-                "Desk mode (GM / player) is toggled in the header. "
-                "Player mode hides GM-only tabs and strips design controls."
+                "Seat (GM / player) is toggled in the header — an active-seat "
+                "swap on the solo two-seat table. Player seat hides the GM "
+                "playbook tabs and filters characters by knowledge."
             ),
             wraplength=640,
         ).pack(anchor="w", padx=10, pady=(0, 8))

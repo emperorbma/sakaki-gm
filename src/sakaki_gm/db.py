@@ -517,3 +517,35 @@ def migrate(db):
         """)
         db.execute("PRAGMA user_version = 18")
         db.commit()
+
+    if version < 19:
+        # Multiuser ontology shell: seats, session turn state, knowledge/visibility.
+        cur.executescript("""
+        CREATE TABLE IF NOT EXISTS seats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            seat_key TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            display_name TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL DEFAULT 'player',
+            character_id INTEGER REFERENCES characters(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS session_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            active_seat_id INTEGER REFERENCES seats(id) ON DELETE SET NULL,
+            turn_phase TEXT NOT NULL DEFAULT 'idle',
+            hotseat_seat_id INTEGER REFERENCES seats(id) ON DELETE SET NULL,
+            turn_wait TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            seat_id INTEGER NOT NULL REFERENCES seats(id) ON DELETE CASCADE,
+            subject_type TEXT NOT NULL,
+            subject_id INTEGER NOT NULL,
+            level TEXT NOT NULL DEFAULT 'known',
+            UNIQUE (seat_id, subject_type, subject_id)
+        );
+        """)
+        from sakaki_gm.seat_db import ensure_default_session
+
+        ensure_default_session(db, commit=False)
+        db.execute("PRAGMA user_version = 19")
+        db.commit()
