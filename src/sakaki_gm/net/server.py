@@ -42,6 +42,8 @@ class TableServerState:
         }
         self.chat: list[dict[str, Any]] = []
         self._chat_seq = 0
+        # character_id -> {session_id, seat_id?, desk_role, display_name}
+        self.occupancy: dict[int, dict[str, Any]] = {}
         self.revision = 1
         self.on_event: Optional[Callable[[dict[str, Any]], None]] = None
 
@@ -86,10 +88,92 @@ class TableServerState:
     def leave(self, session_id: str) -> None:
         with self.lock:
             if session_id == self.host_session_id:
+                # Host stays; still drop any character occupancy for this session.
+                self._release_occupancy_locked(session_id)
                 return
             self.sessions.pop(session_id, None)
+            self._release_occupancy_locked(session_id)
             self.revision += 1
         self._emit({"type": "refresh", "reason": "peer_left", "revision": self.revision})
+
+    def claim_occupancy(
+        self,
+        *,
+        session_id: str,
+        character_id: int | None,
+        desk_role: str = "player",
+        seat_id: int | None = None,
+        display_name: str = "",
+    ) -> dict[str, Any]:
+        """Exclusive live claim on a PC for this table session."""
+        with self.lock:
+            if session_id not in self.sessions:
+                raise PermissionError("Unknown table session.")
+            self._release_occupancy_locked(session_id)
+            if character_id is None or desk_role != "player":
+                self.revision += 1
+                info = self._occupancy_info_locked()
+            else:
+                character_id = int(character_id)
+                held = self.occupancy.get(character_id)
+                if held is not None and held.get("session_id") != session_id:
+                    raise PermissionError(
+                        "That character is already seated at another desk."
+                    )
+                self.occupancy[character_id] = {
+                    "session_id": session_id,
+                    "character_id": character_id,
+                    "seat_id": seat_id,
+                    "desk_role": "player",
+                    "display_name": str(display_name or "").strip(),
+                }
+                self.revision += 1
+                info = self._occupancy_info_locked()
+        self._emit(
+            {
+                "type": "refresh",
+                "reason": "occupancy_changed",
+                "revision": self.revision,
+                "occupancy": info,
+            }
+        )
+        return {"occupancy": info, "revision": self.revision}
+
+    def release_occupancy(self, session_id: str) -> dict[str, Any]:
+        with self.lock:
+            self._release_occupancy_locked(session_id)
+            self.revision += 1
+            info = self._occupancy_info_locked()
+        self._emit(
+            {
+                "type": "refresh",
+                "reason": "occupancy_changed",
+                "revision": self.revision,
+                "occupancy": info,
+            }
+        )
+        return {"occupancy": info, "revision": self.revision}
+
+    def occupied_character_ids(self, *, except_session_id: str | None = None) -> set[int]:
+        with self.lock:
+            occupied = set()
+            for character_id, held in self.occupancy.items():
+                if except_session_id and held.get("session_id") == except_session_id:
+                    continue
+                occupied.add(int(character_id))
+            return occupied
+
+    def _release_occupancy_locked(self, session_id: str) -> None:
+        drop = [
+            character_id
+            for character_id, held in self.occupancy.items()
+            if held.get("session_id") == session_id
+        ]
+        for character_id in drop:
+            self.occupancy.pop(character_id, None)
+
+    def _occupancy_info_locked(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.occupancy.values()]
 
     def campaign_info(self) -> dict[str, Any]:
         with self.lock:
@@ -100,6 +184,7 @@ class TableServerState:
                 "peer_count": len(self.sessions),
                 "can_change_campaign": self.can_change_campaign(),
                 "revision": self.revision,
+                "occupancy": self._occupancy_info_locked(),
             }
 
     def set_campaign(
@@ -235,6 +320,14 @@ def make_handler(state: TableServerState):
                     peers = list(state.sessions.values())
                 self._send(200, ok(sessions=peers, campaign=state.campaign_info()))
                 return
+            if path == "/occupancy":
+                if not state.authorize(self._secret()):
+                    self._send(401, err("Incorrect table secret."))
+                    return
+                with state.lock:
+                    info = state._occupancy_info_locked()
+                self._send(200, ok(occupancy=info, campaign=state.campaign_info()))
+                return
             self._send(404, err("Not found."))
 
         def do_POST(self):  # noqa: N802
@@ -284,6 +377,40 @@ def make_handler(state: TableServerState):
                         str(data.get("reason") or "state_changed")
                     )
                     self._send(200, ok(revision=revision))
+                    return
+                if path == "/occupancy/claim":
+                    if not state.authorize(self._secret(data)):
+                        self._send(401, err("Incorrect table secret."))
+                        return
+                    character_raw = data.get("character_id")
+                    character_id = (
+                        int(character_raw)
+                        if character_raw is not None and str(character_raw).strip() != ""
+                        else None
+                    )
+                    seat_raw = data.get("seat_id")
+                    seat_id = (
+                        int(seat_raw)
+                        if seat_raw is not None and str(seat_raw).strip() != ""
+                        else None
+                    )
+                    result = state.claim_occupancy(
+                        session_id=str(data.get("session_id") or ""),
+                        character_id=character_id,
+                        desk_role=str(data.get("desk_role") or "player"),
+                        seat_id=seat_id,
+                        display_name=str(data.get("display_name") or ""),
+                    )
+                    self._send(200, ok(**result))
+                    return
+                if path == "/occupancy/release":
+                    if not state.authorize(self._secret(data)):
+                        self._send(401, err("Incorrect table secret."))
+                        return
+                    result = state.release_occupancy(
+                        str(data.get("session_id") or "")
+                    )
+                    self._send(200, ok(**result))
                     return
             except PermissionError as exc:
                 self._send(403, err(str(exc)))

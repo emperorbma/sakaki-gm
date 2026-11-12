@@ -94,6 +94,10 @@ class TableSession:
         if self._poll_thread is not None:
             self._poll_thread.join(timeout=1.5)
             self._poll_thread = None
+        try:
+            self.release_presence()
+        except Exception:
+            pass
         if self._client is not None:
             try:
                 self._client.leave()
@@ -101,6 +105,11 @@ class TableSession:
                 pass
             self._client = None
         if self._server is not None:
+            if self.session_id and self._state is not None:
+                try:
+                    self._state.release_occupancy(self.session_id)
+                except Exception:
+                    pass
             self._server.stop()
             self._server = None
         self._state = None
@@ -211,6 +220,68 @@ class TableSession:
                 pass
         else:
             self._dispatch({"type": "refresh", "reason": reason})
+
+    def claim_presence(
+        self,
+        *,
+        desk_role: str,
+        character_id: int | None = None,
+        seat_id: int | None = None,
+        display_name: str = "",
+    ) -> None:
+        """Claim exclusive live presence for a PC on the table (no-op when solo)."""
+        if self.mode == "solo":
+            return
+        if self._state is not None and self.session_id:
+            self._state.claim_occupancy(
+                session_id=self.session_id,
+                character_id=character_id if desk_role == "player" else None,
+                desk_role=desk_role,
+                seat_id=seat_id,
+                display_name=display_name or self.display_name,
+            )
+            return
+        if self._client is not None:
+            self._client.claim_occupancy(
+                character_id=character_id if desk_role == "player" else None,
+                desk_role=desk_role,
+                seat_id=seat_id,
+                display_name=display_name or self.display_name,
+            )
+
+    def release_presence(self) -> None:
+        if self.mode == "solo":
+            return
+        if self._state is not None and self.session_id:
+            self._state.release_occupancy(self.session_id)
+            return
+        if self._client is not None:
+            try:
+                self._client.release_occupancy()
+            except TableClientError:
+                pass
+
+    def occupied_character_ids(self) -> set[int]:
+        """Character ids currently seated at another desk on this table."""
+        if self._state is not None:
+            return self._state.occupied_character_ids(
+                except_session_id=self.session_id
+            )
+        if self._client is not None:
+            try:
+                rows = self._client.occupancy()
+            except TableClientError:
+                return set()
+            occupied = set()
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("session_id") == self.session_id:
+                    continue
+                if row.get("character_id") is not None:
+                    occupied.add(int(row["character_id"]))
+            return occupied
+        return set()
 
     def _start_poll(self) -> None:
         self._poll_stop.clear()

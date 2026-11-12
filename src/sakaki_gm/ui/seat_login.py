@@ -74,9 +74,13 @@ class SeatLoginDialog(tk.Toplevel):
         initial: str = "gm",
         title: str = "Seat login",
         allow_cancel: bool = True,
+        holder_id: str | None = None,
+        occupied_character_ids: set[int] | None = None,
     ):
         super().__init__(parent)
         self.db = db
+        self.holder_id = holder_id
+        self.occupied_character_ids = set(occupied_character_ids or ())
         self.result: Optional[SeatLoginResult] = None
         self.allow_cancel = allow_cancel
         self._pc_ids: list[int] = []
@@ -233,7 +237,13 @@ class SeatLoginDialog(tk.Toplevel):
                         "No controller seat is bound yet. Create a playerish "
                         "PC (or ask the GM to reassign a seat)."
                     )
-                claim_player_character(self.db, self._pc_ids[index], password)
+                claim_player_character(
+                    self.db,
+                    self._pc_ids[index],
+                    password,
+                    holder_id=self.holder_id,
+                    extra_occupied_character_ids=self.occupied_character_ids,
+                )
                 self.result = SeatLoginResult(
                     role="player", character_id=self._pc_ids[index]
                 )
@@ -261,6 +271,8 @@ def run_seat_login(
     initial: str = "gm",
     title: str = "Seat login",
     allow_cancel: bool = True,
+    holder_id: str | None = None,
+    occupied_character_ids: set[int] | None = None,
 ) -> Optional[SeatLoginResult]:
     """Show the seat login dialog; return result or None if cancelled."""
     dialog = SeatLoginDialog(
@@ -269,6 +281,8 @@ def run_seat_login(
         initial=initial,
         title=title,
         allow_cancel=allow_cancel,
+        holder_id=holder_id,
+        occupied_character_ids=occupied_character_ids,
     )
     parent.wait_window(dialog)
     return dialog.result
