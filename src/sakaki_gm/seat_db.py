@@ -143,8 +143,35 @@ def ensure_default_session(db, *, commit: bool = True) -> dict[str, Any]:
     return get_session_state(db)
 
 
+_KNOWLEDGE_RANK = {"rumored": 1, "known": 2, "present": 3}
+
+
+def upgrade_knowledge(
+    db,
+    seat_id: int,
+    subject_type: str,
+    subject_id: int,
+    level: str,
+    *,
+    commit: bool = True,
+) -> None:
+    """Set knowledge only if missing or strictly higher awareness."""
+    level = _normalize_knowledge(level)
+    current = get_knowledge(db, seat_id, subject_type, subject_id)
+    if current is not None and _KNOWLEDGE_RANK[current] >= _KNOWLEDGE_RANK[level]:
+        return
+    set_knowledge(
+        db,
+        seat_id,
+        subject_type,
+        subject_id,
+        level,
+        commit=commit,
+    )
+
+
 def _bootstrap_player_character(db, player_seat_id: int) -> None:
-    """Link protagonist (if any) and seed minimal self-knowledge."""
+    """Link protagonist (if any) and sync scene/ally awareness."""
     seat = get_seat(db, player_seat_id)
     if seat is None:
         return
@@ -159,9 +186,6 @@ def _bootstrap_player_character(db, player_seat_id: int) -> None:
             if any(token in role for token in ("protagonist", "player", "pc")):
                 pick = row
                 break
-        if pick is None and rows:
-            # No role hint: leave unlinked; knowledge stays empty until planned.
-            pick = None
         if pick is not None:
             db.execute(
                 "UPDATE seats SET character_id=? WHERE id=?",
@@ -170,14 +194,138 @@ def _bootstrap_player_character(db, player_seat_id: int) -> None:
             character_id = pick["id"]
     if character_id is None:
         return
-    set_knowledge(
-        db,
-        player_seat_id,
-        "character",
-        character_id,
-        "present",
-        commit=False,
-    )
+    sync_seat_knowledge_from_world(db, player_seat_id, commit=False)
+
+
+def sync_seat_knowledge_from_world(
+    db,
+    seat_id: int,
+    *,
+    commit: bool = True,
+) -> list[dict[str, Any]]:
+    """Repair desynced awareness from scene presence, quests, allies, and log.
+
+    Player knowledge should reflect who they are with / know about—not only the
+    bound PC. Upgrades only; never strips GM-authored higher awareness.
+    """
+    seat = get_seat(db, seat_id)
+    if seat is None or seat_is_gm(seat):
+        return []
+    character_id = seat.get("character_id")
+    if character_id is None:
+        return []
+
+    upgraded = []
+
+    def note(subject_id: int, level: str, reason: str) -> None:
+        before = get_knowledge(db, seat_id, "character", subject_id)
+        upgrade_knowledge(
+            db, seat_id, "character", subject_id, level, commit=False
+        )
+        after = get_knowledge(db, seat_id, "character", subject_id)
+        if after != before:
+            upgraded.append(
+                {
+                    "character_id": subject_id,
+                    "level": after,
+                    "reason": reason,
+                }
+            )
+
+    note(int(character_id), "present", "self")
+
+    # Co-located via located_at (same place as the PC).
+    object_row = db.execute(
+        "SELECT object_id FROM characters WHERE id=?",
+        (character_id,),
+    ).fetchone()
+    if object_row and object_row["object_id"]:
+        locations = db.execute(
+            """
+            SELECT to_object_id FROM object_links
+            WHERE relation='located_at' AND from_object_id=?
+            """,
+            (object_row["object_id"],),
+        ).fetchall()
+        for location in locations:
+            for peer in db.execute(
+                """
+                SELECT c.id
+                FROM object_links AS link
+                JOIN characters AS c ON c.object_id = link.from_object_id
+                WHERE link.relation='located_at'
+                  AND link.to_object_id=?
+                  AND c.id != ?
+                """,
+                (location["to_object_id"], character_id),
+            ):
+                note(int(peer["id"]), "present", "colocated")
+
+    # Open quest co-participants.
+    for peer in db.execute(
+        """
+        SELECT DISTINCT qc2.character_id AS id
+        FROM quest_characters AS qc1
+        JOIN quests AS q ON q.id = qc1.quest_id
+        JOIN quest_characters AS qc2 ON qc2.quest_id = q.id
+        WHERE qc1.character_id = ?
+          AND qc2.character_id != ?
+          AND lower(coalesce(q.status, '')) NOT IN
+              ('done', 'complete', 'completed', 'finished', 'failed', 'fail')
+        """,
+        (character_id, character_id),
+    ):
+        note(int(peer["id"]), "known", "shared_quest")
+
+    # Standing allies / party (not enemies, not scaffolds).
+    for peer in db.execute(
+        """
+        SELECT id, campaign_role, data FROM characters WHERE id != ?
+        """,
+        (character_id,),
+    ):
+        role = str(peer["campaign_role"] or "").casefold()
+        if any(token in role for token in ("ally", "party", "companion")):
+            try:
+                data = json.loads(peer["data"] or "{}")
+            except json.JSONDecodeError:
+                data = {}
+            status = data.get("stat_block_status") if isinstance(data, dict) else None
+            if isinstance(status, str) and status.lower().startswith("design scaffold"):
+                continue
+            note(int(peer["id"]), "known", "ally_role")
+
+    # Names mentioned in recent world events / log (scene cast the bottle already recorded).
+    blob_parts = []
+    events_row = db.execute(
+        "SELECT value FROM world WHERE key='events'"
+    ).fetchone()
+    if events_row and events_row["value"]:
+        try:
+            events = json.loads(events_row["value"])
+        except json.JSONDecodeError:
+            events = []
+        if isinstance(events, list):
+            blob_parts.extend(str(item) for item in events[-20:])
+    for row in db.execute(
+        """
+        SELECT message FROM log
+        ORDER BY id DESC LIMIT 40
+        """
+    ):
+        blob_parts.append(str(row["message"] or ""))
+    blob = "\n".join(blob_parts)
+    if blob.strip():
+        for peer in db.execute("SELECT id, name FROM characters WHERE id != ?", (character_id,)):
+            name = str(peer["name"] or "").strip()
+            if len(name) < 3:
+                continue
+            if name.casefold() in blob.casefold():
+                note(int(peer["id"]), "known", "recent_mention")
+
+    if commit:
+        db.commit()
+    return upgraded
 
 
 def get_session_state(db) -> dict[str, Any]:
@@ -397,8 +545,10 @@ def filter_characters_for_seat(
         return list(characters)
     if seat is None:
         return []
+    # Keep awareness aligned with scene/quests/allies/log before filtering.
+    sync_seat_knowledge_from_world(db, seat["id"], commit=True)
+    seat = get_seat(db, seat["id"]) or seat
     known = character_ids_known_to_seat(db, seat["id"])
-    # Always include the seat's bound character if present in the list.
     bound = seat.get("character_id")
     if bound is not None:
         known.add(int(bound))
