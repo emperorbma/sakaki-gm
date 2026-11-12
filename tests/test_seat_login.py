@@ -35,7 +35,7 @@ def test_apply_seat_choice_persists_desk_mode(tmp_path):
 def test_open_seat_needs_no_password(tmp_path):
     db = get_db(tmp_path / "campaign.db")
     ensure_default_session(db)
-    assert db.execute("PRAGMA user_version").fetchone()[0] >= 21
+    assert db.execute("PRAGMA user_version").fetchone()[0] >= 22
     assert seat_requires_password(db, "gm") is False
     assert seat_requires_password(db, "player") is False
     seat = authenticate_seat(db, "player", "")

@@ -58,6 +58,7 @@ from sakaki_gm.ui.seat_login import (
 from sakaki_gm.ui.gm_tools import (
     format_turn_wait_status,
     run_clear_wait,
+    run_party_manager,
     run_request_roll,
     run_set_character_knowledge,
     run_set_turn_phase,
@@ -213,6 +214,11 @@ class MainWindow:
             self.gm_tools,
             text="Set knowledge",
             command=self.gm_set_knowledge,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Button(
+            self.gm_tools,
+            text="Parties",
+            command=self.gm_parties,
         ).pack(side=tk.LEFT, padx=6, pady=6)
         ttk.Label(self.gm_tools, text="Model").pack(side=tk.LEFT, padx=(12, 4))
         self.gm_model_var = tk.StringVar(value="")
@@ -1014,6 +1020,14 @@ class MainWindow:
             return
         if run_set_character_knowledge(self.root, self.db):
             self.log_panel.add_entry("System", "GM set character knowledge")
+            self.characters_module.refresh()
+
+    def gm_parties(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        summary = run_party_manager(self.root, self.db)
+        if summary:
+            self.log_panel.add_entry("System", f"GM parties: {summary}")
             self.characters_module.refresh()
 
     def gm_set_phase(self):
