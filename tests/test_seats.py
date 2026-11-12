@@ -67,10 +67,30 @@ def test_knowledge_filters_player_roster(tmp_path):
         {"name": "Elara Starveil", "class": "Wizard"},
         campaign_role="Ally",
     )
+    koren = create_character(
+        db,
+        "Koren Brightwind",
+        {"name": "Koren Brightwind", "class": "Wizard"},
+        campaign_role="NPC",
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO world (key, value) VALUES ('events', ?)",
+        (
+            '["Serina agreed to Elara’s plan: Talia and Lyssia joined, '
+            'and Koren Brightwind was sent to fetch reagents."]',
+        ),
+    )
+    db.commit()
     ensure_default_session(db)
     player = get_seat_by_role(db, "player")
     assert player["character_id"] == serina
     assert get_knowledge(db, player["id"], "character", serina) == "present"
+    # Ally role + event mention should sync without leaving Serina alone.
+    assert get_knowledge(db, player["id"], "character", elara) == "known"
+    assert get_knowledge(db, player["id"], "character", koren) == "known"
+    assert get_knowledge(db, player["id"], "character", 
+        db.execute("SELECT id FROM characters WHERE name=?", ("Voryn Spy",)).fetchone()[0]
+    ) is None
 
     module = CharactersModule.__new__(CharactersModule)
     module.db = db
@@ -83,12 +103,11 @@ def test_knowledge_filters_player_roster(tmp_path):
 
     module._desk_mode = "player"
     set_active_seat_by_role(db, "player")
-    player_names = [c["name"] for c in module._visible_characters()]
-    assert player_names == ["Serina"]
-
-    set_knowledge(db, player["id"], "character", elara, "known")
-    player_names = [c["name"] for c in module._visible_characters()]
-    assert set(player_names) == {"Serina", "Elara Starveil"}
+    player_names = set(c["name"] for c in module._visible_characters())
+    assert "Serina" in player_names
+    assert "Elara Starveil" in player_names
+    assert "Koren Brightwind" in player_names
+    assert "Voryn Spy" not in player_names
 
     gm = get_seat_by_role(db, "gm")
     assert len(filter_characters_for_seat(db, module._visible_characters(), gm)) >= 2
