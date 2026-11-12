@@ -30,7 +30,13 @@ from sakaki_gm.model_capability_tests import run_capability_tests
 from sakaki_gm.llm_client import list_models, test_connection
 from sakaki_gm.rules_5e_equipment import ensure_5e_equipment_archetypes
 from sakaki_gm.rules_5e_spells import ensure_5e_spells
+from sakaki_gm.seat_db import (
+    ensure_default_session,
+    seat_requires_password,
+    set_seat_password,
+)
 from sakaki_gm.skill_db import DEFAULT_5E_SKILLS, replace_campaign_skills
+from sakaki_gm.ui.seat_login import SEAT_LOGIN_LABELS
 
 
 class SettingsModule:
@@ -343,12 +349,49 @@ class SettingsModule:
         ttk.Label(
             desk,
             text=(
-                "Seat (GM / player) is toggled in the header — an active-seat "
-                "swap on the solo two-seat table. Player seat hides the GM "
-                "playbook tabs and filters characters by knowledge."
+                "Seat is a login (startup or header “Switch seat…”): Game Master "
+                "vs Player on the solo two-seat table. Player seat hides GM "
+                "playbook tabs and filters by knowledge; players never pick models."
             ),
             wraplength=640,
         ).pack(anchor="w", padx=10, pady=(0, 8))
+
+        seats = ttk.LabelFrame(desk, text="Seat passwords")
+        seats.pack(fill=tk.X, padx=10, pady=(4, 10))
+        ttk.Label(
+            seats,
+            text=(
+                "Blank = open seat. Non-empty password is required at login. "
+                "No recovery here — a future lobby can handle that when "
+                "tables are serverized."
+            ),
+            wraplength=600,
+        ).pack(anchor="w", padx=8, pady=(6, 4))
+        self.seat_password_status = tk.StringVar(value="")
+        ttk.Label(seats, textvariable=self.seat_password_status).pack(
+            anchor="w", padx=8, pady=(0, 4)
+        )
+        pw_row = ttk.Frame(seats)
+        pw_row.pack(fill=tk.X, padx=8, pady=(0, 8))
+        ttk.Label(pw_row, text="Seat").pack(side=tk.LEFT)
+        self.seat_password_role = tk.StringVar(value=SEAT_LOGIN_LABELS["gm"])
+        ttk.Combobox(
+            pw_row,
+            textvariable=self.seat_password_role,
+            values=list(SEAT_LOGIN_LABELS.values()),
+            state="readonly",
+            width=16,
+        ).pack(side=tk.LEFT, padx=(6, 10))
+        ttk.Label(pw_row, text="New password").pack(side=tk.LEFT)
+        self.seat_password_entry = ttk.Entry(pw_row, show="*", width=20)
+        self.seat_password_entry.pack(side=tk.LEFT, padx=(6, 8))
+        ttk.Button(
+            pw_row, text="Set", command=self.save_seat_password
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            pw_row, text="Clear", command=self.clear_seat_password
+        ).pack(side=tk.LEFT, padx=2)
+        self._refresh_seat_password_status()
 
     def set_db(self, db):
         self.db = db
@@ -660,6 +703,66 @@ class SettingsModule:
         if hasattr(self.main_app, "_refresh_gm_model_picker"):
             self.main_app._refresh_gm_model_picker(cfg)
         messagebox.showinfo("Saved", "Model settings saved.")
+
+    def _seat_role_from_label(self) -> str:
+        label = self.seat_password_role.get()
+        return next(
+            (role for role, text in SEAT_LOGIN_LABELS.items() if text == label),
+            "gm",
+        )
+
+    def _refresh_seat_password_status(self):
+        try:
+            ensure_default_session(self.db)
+            parts = []
+            for role, label in SEAT_LOGIN_LABELS.items():
+                state = "password set" if seat_requires_password(self.db, role) else "open"
+                parts.append(f"{label}: {state}")
+            self.seat_password_status.set(" · ".join(parts))
+        except Exception:
+            self.seat_password_status.set("")
+
+    def save_seat_password(self):
+        role = self._seat_role_from_label()
+        password = self.seat_password_entry.get()
+        if not password.strip():
+            messagebox.showerror(
+                "Seat password",
+                "Enter a password to set, or use Clear for an open seat.",
+            )
+            return
+        try:
+            ensure_default_session(self.db)
+            set_seat_password(self.db, role, password)
+        except ValueError as exc:
+            messagebox.showerror("Seat password", str(exc))
+            return
+        self.seat_password_entry.delete(0, tk.END)
+        self._refresh_seat_password_status()
+        messagebox.showinfo(
+            "Seat password",
+            f"Password set for {SEAT_LOGIN_LABELS[role]}.",
+        )
+
+    def clear_seat_password(self):
+        role = self._seat_role_from_label()
+        if not messagebox.askyesno(
+            "Clear seat password",
+            f"Make {SEAT_LOGIN_LABELS[role]} an open seat (no password)?",
+        ):
+            return
+        try:
+            ensure_default_session(self.db)
+            set_seat_password(self.db, role, "")
+        except ValueError as exc:
+            messagebox.showerror("Seat password", str(exc))
+            return
+        self.seat_password_entry.delete(0, tk.END)
+        self._refresh_seat_password_status()
+        messagebox.showinfo(
+            "Seat password",
+            f"{SEAT_LOGIN_LABELS[role]} is open (no password).",
+        )
 
     def save_desk_ui(self):
         from sakaki_gm.ui.desk_audience import normalize_desk_mode

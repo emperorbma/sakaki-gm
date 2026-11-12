@@ -46,10 +46,14 @@ from sakaki_gm.llm_config import (
 )
 from sakaki_gm.scratch_context import ScratchContext
 from sakaki_gm.ui.desk_audience import (
-    DESK_MODES,
     normalize_desk_mode,
     shared_is_stripped,
     surface_visible,
+)
+from sakaki_gm.ui.seat_login import (
+    apply_seat_choice,
+    run_seat_login,
+    seat_login_label,
 )
 from sakaki_gm.ui.gm_tools import (
     format_turn_wait_status,
@@ -88,8 +92,12 @@ class MainWindow:
         self.db_path = Path(path).resolve()
         self.db = get_db(path)
         self.root.geometry("1600x950")
+        self._seat_session_active = False
         self.setup_ui()
         self.refresh_campaign_chrome()
+        # Seat login gates the desk: GM vs player is a login, not a mid-flow toggle.
+        self.root.update_idletasks()
+        self.prompt_seat_login()
 
     def setup_ui(self):
         style = ttk.Style()
@@ -102,19 +110,24 @@ class MainWindow:
         )
         mode_wrap = ttk.Frame(header)
         mode_wrap.pack(side=tk.LEFT, padx=(16, 0))
-        ttk.Label(mode_wrap, text="Seat").pack(side=tk.LEFT)
         self.desk_mode_var = tk.StringVar(
             value=desk_mode(load_config(self.config_path))
         )
-        self.desk_mode_combo = ttk.Combobox(
-            mode_wrap,
-            textvariable=self.desk_mode_var,
-            values=DESK_MODES,
-            state="readonly",
-            width=8,
+        self.seat_login_var = tk.StringVar(
+            value=f"Signed in as {seat_login_label(self.desk_mode_var.get())}"
         )
-        self.desk_mode_combo.pack(side=tk.LEFT, padx=(6, 0))
-        self.desk_mode_combo.bind("<<ComboboxSelected>>", self.on_desk_mode_selected)
+        self.seat_login_label = ttk.Label(
+            mode_wrap,
+            textvariable=self.seat_login_var,
+            font=("Georgia", 11),
+        )
+        self.seat_login_label.pack(side=tk.LEFT)
+        self.switch_seat_button = ttk.Button(
+            mode_wrap,
+            text="Switch seat…",
+            command=self.switch_seat_login,
+        )
+        self.switch_seat_button.pack(side=tk.LEFT, padx=(10, 0))
         self.desk_mode_hint = ttk.Label(mode_wrap, text="")
         self.desk_mode_hint.pack(side=tk.LEFT, padx=(8, 0))
 
@@ -543,19 +556,48 @@ class MainWindow:
         self.action_entry.delete(0, tk.END)
         messagebox.showinfo("Copied", "Prompt copied to clipboard.")
 
-    def on_desk_mode_selected(self, _event=None):
-        mode = normalize_desk_mode(self.desk_mode_var.get())
-        self.desk_mode_var.set(mode)
+    def prompt_seat_login(self, *, allow_cancel: bool = False, title: str = "Seat login"):
+        """Modal seat login — required at startup; optional when switching."""
         cfg = load_config(self.config_path)
-        if not isinstance(cfg.get("ui"), dict):
-            cfg["ui"] = {}
-        if cfg["ui"].get("desk_mode") == mode:
-            self._sync_active_seat(mode)
-            return
-        cfg["ui"]["desk_mode"] = mode
+        current = desk_mode(cfg)
+        while True:
+            choice = run_seat_login(
+                self.root,
+                self.db,
+                initial=current,
+                title=title,
+                allow_cancel=allow_cancel and self._seat_session_active,
+            )
+            if choice is None:
+                if allow_cancel and self._seat_session_active:
+                    return False
+                # Startup: cancel is not allowed — keep prompting.
+                continue
+            self._commit_seat_login(choice)
+            return True
+
+    def switch_seat_login(self):
+        """Re-open seat login so a solo host can swap GM ↔ player."""
+        self.prompt_seat_login(allow_cancel=True, title="Switch seat")
+
+    def _commit_seat_login(self, role: str):
+        mode = normalize_desk_mode(role)
+        cfg = load_config(self.config_path)
+        apply_seat_choice(cfg, mode)
         save_config(cfg, self.config_path)
+        self.desk_mode_var.set(mode)
+        self._seat_session_active = True
         self._sync_active_seat(mode)
         self.apply_ui_preferences()
+        self.log_panel.add_entry(
+            "System",
+            f"Seated as {seat_login_label(mode)}",
+        )
+
+    def on_desk_mode_selected(self, _event=None):
+        # Kept for any residual callers; seat changes go through login.
+        mode = normalize_desk_mode(self.desk_mode_var.get())
+        self._commit_seat_login(mode)
 
     def _sync_active_seat(self, mode: str):
         """Desk toggle = active seat swap on the implicit two-seat table."""
@@ -592,6 +634,10 @@ class MainWindow:
         cfg = load_config(self.config_path)
         mode = desk_mode(cfg)
         self.desk_mode_var.set(mode)
+        if hasattr(self, "seat_login_var"):
+            self.seat_login_var.set(
+                f"Signed in as {seat_login_label(mode)}"
+            )
         assist = ai_assist_mode(cfg)
         if hasattr(self, "ai_assist_var"):
             self.ai_assist_var.set(AI_ASSIST_MODES[assist])

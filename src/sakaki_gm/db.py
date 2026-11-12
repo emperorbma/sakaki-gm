@@ -565,3 +565,19 @@ def migrate(db):
         ensure_default_session(db, commit=False)
         db.execute("PRAGMA user_version = 20")
         db.commit()
+
+    if version < 21:
+        # Optional per-seat password for multiuser login; empty = open seat.
+        cols = {
+            row[1]
+            for row in db.execute("PRAGMA table_info(seats)").fetchall()
+        }
+        if "password_hash" not in cols:
+            db.execute(
+                "ALTER TABLE seats ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''"
+            )
+        from sakaki_gm.seat_db import ensure_default_session
+
+        ensure_default_session(db, commit=False)
+        db.execute("PRAGMA user_version = 21")
+        db.commit()
