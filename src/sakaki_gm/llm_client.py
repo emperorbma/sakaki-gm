@@ -7,6 +7,8 @@ from pathlib import Path
 
 from sakaki_gm.gm import out_of_scene_lore_query
 from sakaki_gm.llm_config import (
+    ai_assist_mode,
+    enabled_ai_tools,
     load_config,
     resolve_api_key,
     resolve_ask_gm_mode,
@@ -20,6 +22,17 @@ from sakaki_gm.rag_tools import (
 from sakaki_gm.scratch_context import ScratchBudgetExceeded, ScratchContext
 
 
+def selected_campaign_tools(settings: dict) -> list:
+    """Filter CAMPAIGN_TOOLS by the user's enabled-AI-tools checkboxes."""
+    allowed = set(enabled_ai_tools(settings))
+    selected = []
+    for tool in CAMPAIGN_TOOLS:
+        name = tool.get("function", {}).get("name")
+        if name in allowed:
+            selected.append(tool)
+    return selected
+
+
 def complete(
     settings: dict,
     system: str,
@@ -29,6 +42,7 @@ def complete(
     tool_db_path=None,
     model_profiles=None,
     scratch=None,
+    assist_mode: str | None = None,
 ) -> str:
     model = str(settings.get("model") or "").strip()
     base_url = str(settings.get("base_url") or "").strip()
@@ -47,12 +61,22 @@ def complete(
 
     if model_profiles is None:
         model_profiles = load_config().get("model_profiles", {})
-    mode = resolve_ask_gm_mode(settings, model_profiles)
+    if assist_mode is None:
+        assist_mode = ai_assist_mode()
+    mode = resolve_ask_gm_mode(
+        settings, model_profiles, assist_mode=assist_mode
+    )
     turn_scratch = scratch or ScratchContext()
+    tools = selected_campaign_tools(settings)
 
-    if mode == "tools":
+    if mode == "tools" and tools:
         return _complete_with_campaign_tools(
-            create, model, messages, tool_db_path, turn_scratch
+            create,
+            model,
+            messages,
+            tool_db_path,
+            turn_scratch,
+            tools=tools,
         )
 
     try:
@@ -121,8 +145,15 @@ def _retrieve_campaign_context(tool_db_path, query: str, scratch: ScratchContext
 
 
 def _complete_with_campaign_tools(
-    create, model, messages, tool_db_path, scratch: ScratchContext
+    create,
+    model,
+    messages,
+    tool_db_path,
+    scratch: ScratchContext,
+    *,
+    tools=None,
 ) -> str:
+    tool_defs = tools if tools is not None else CAMPAIGN_TOOLS
     tool_system_message = {
         "role": "system",
         "content": (
@@ -164,7 +195,7 @@ def _complete_with_campaign_tools(
             response = create(
                 model=model,
                 messages=messages,
-                tools=CAMPAIGN_TOOLS,
+                tools=tool_defs,
             )
             message = _response_message(response)
             tool_calls = _field(message, "tool_calls", []) or []

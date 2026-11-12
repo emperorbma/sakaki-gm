@@ -25,6 +25,26 @@ RAG_MODES = {
     "context": "App-retrieved context",
 }
 
+# Muse = inspiration / narration; Manager = may propose state writes + tools.
+AI_ASSIST_MODES = {
+    "manager": "Manager (may change state)",
+    "muse": "Muse (narration only)",
+}
+
+AI_TOOL_NAMES = (
+    "search_documents",
+    "search_objects",
+    "inspect_object",
+    "inspect_location",
+)
+
+AI_TOOL_LABELS = {
+    "search_documents": "Search documents",
+    "search_objects": "Search objects",
+    "inspect_object": "Inspect object",
+    "inspect_location": "Inspect location",
+}
+
 MODEL_CAPABILITIES = {
     "chat": "Chat",
     "query_decomposition": "Query decomposition",
@@ -43,9 +63,11 @@ DEFAULT_CONFIG = {
         "model": PRESETS["spacexai"]["model"],
         "api_key": "",
         "rag_mode": "tools",
+        "enabled_ai_tools": list(AI_TOOL_NAMES),
     },
     "ui": {
         "show_gm_reply_debug": False,
+        "ai_assist_mode": "manager",
         "desk_mode": "gm",
     },
 }
@@ -104,7 +126,13 @@ def load_config(path=None) -> dict:
         or cfg["llm"]["rag_mode"] not in RAG_MODES
     ):
         cfg["llm"]["rag_mode"] = "tools"
+    cfg["llm"]["enabled_ai_tools"] = normalize_enabled_ai_tools(
+        cfg["llm"].get("enabled_ai_tools")
+    )
     cfg["ui"]["show_gm_reply_debug"] = bool(cfg["ui"].get("show_gm_reply_debug"))
+    cfg["ui"]["ai_assist_mode"] = normalize_ai_assist_mode(
+        cfg["ui"].get("ai_assist_mode")
+    )
     from sakaki_gm.ui.desk_audience import normalize_desk_mode
 
     cfg["ui"]["desk_mode"] = normalize_desk_mode(cfg["ui"].get("desk_mode"))
@@ -113,14 +141,50 @@ def load_config(path=None) -> dict:
     return cfg
 
 
+def normalize_ai_assist_mode(value) -> str:
+    mode = str(value or "manager").strip().lower()
+    if mode not in AI_ASSIST_MODES:
+        return "manager"
+    return mode
+
+
+def normalize_enabled_ai_tools(value) -> list[str]:
+    if value is None:
+        return list(AI_TOOL_NAMES)
+    if not isinstance(value, list):
+        return list(AI_TOOL_NAMES)
+    selected = []
+    for name in value:
+        if isinstance(name, str) and name in AI_TOOL_NAMES and name not in selected:
+            selected.append(name)
+    return selected
+
+
 def show_gm_reply_debug(cfg: dict | None = None) -> bool:
-    """Return whether the raw GM reply paste panel should be shown."""
+    """Return whether the AI reply intercept / debug panel should be shown."""
     if cfg is None:
         cfg = load_config()
     ui = cfg.get("ui") if isinstance(cfg, dict) else None
     if not isinstance(ui, dict):
         return False
     return bool(ui.get("show_gm_reply_debug"))
+
+
+def ai_assist_mode(cfg: dict | None = None) -> str:
+    """Return ``manager`` or ``muse`` for Ask / Run as GM."""
+    if cfg is None:
+        cfg = load_config()
+    ui = cfg.get("ui") if isinstance(cfg, dict) else None
+    if not isinstance(ui, dict):
+        return "manager"
+    return normalize_ai_assist_mode(ui.get("ai_assist_mode"))
+
+
+def enabled_ai_tools(settings: dict | None = None) -> list[str]:
+    """Return which campaign RAG tools the model may call this turn."""
+    if not isinstance(settings, dict):
+        return list(AI_TOOL_NAMES)
+    return normalize_enabled_ai_tools(settings.get("enabled_ai_tools"))
 
 
 def desk_mode(cfg: dict | None = None) -> str:
@@ -182,14 +246,27 @@ def model_capabilities(settings: dict, profiles: dict | None = None) -> list[str
     ]
 
 
-def resolve_ask_gm_mode(settings: dict, profiles: dict | None = None) -> str:
+def resolve_ask_gm_mode(
+    settings: dict,
+    profiles: dict | None = None,
+    *,
+    assist_mode: str | None = None,
+) -> str:
     """Choose tools vs app-retrieved context from settings and capability labels.
 
     Local OpenAI-compatible endpoints stay on app-retrieved context unless both
     tool_use and structured_json are labeled for that model. SpaceXAI/Grok may
     use tools when the user selected that mode and either has no profile yet or
     has both required labels. Missing labels never invent capability.
+
+    Muse assist mode and an empty enabled-tool list always force context (no
+    model-initiated RAG tools).
     """
+    if normalize_ai_assist_mode(assist_mode) == "muse":
+        return "context"
+    if not enabled_ai_tools(settings):
+        return "context"
+
     requested = settings.get("rag_mode", "tools")
     if requested not in RAG_MODES:
         requested = "tools"

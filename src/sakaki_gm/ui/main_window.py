@@ -32,7 +32,9 @@ from sakaki_gm.gm import (
 )
 from sakaki_gm.llm_client import complete
 from sakaki_gm.llm_config import (
+    AI_ASSIST_MODES,
     CONFIG_PATH,
+    ai_assist_mode,
     desk_mode,
     load_config,
     save_config,
@@ -44,6 +46,14 @@ from sakaki_gm.ui.desk_audience import (
     normalize_desk_mode,
     shared_is_stripped,
     surface_visible,
+)
+from sakaki_gm.ui.gm_tools import (
+    format_turn_wait_status,
+    run_clear_wait,
+    run_request_roll,
+    run_set_character_knowledge,
+    run_set_turn_phase,
+    run_sync_awareness,
 )
 from sakaki_gm.ui.log_panel import LogPanel
 from sakaki_gm.ui.modules.characters import CharactersModule
@@ -160,8 +170,56 @@ class MainWindow:
         for _key, frame, title in self._desk_tabs:
             self.notebook.add(frame, text=title)
 
-        bottom = ttk.Frame(self.root)
-        bottom.pack(fill=tk.X, padx=15, pady=(10, 4))
+        self.gm_tools = ttk.LabelFrame(self.root, text="GM tools")
+        self.gm_tools.pack(fill=tk.X, padx=15, pady=(8, 0))
+        ttk.Button(
+            self.gm_tools,
+            text="Request roll",
+            command=self.gm_request_roll,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Button(
+            self.gm_tools,
+            text="Clear wait",
+            command=self.gm_clear_wait,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Button(
+            self.gm_tools,
+            text="Set phase",
+            command=self.gm_set_phase,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Button(
+            self.gm_tools,
+            text="Sync awareness",
+            command=self.gm_sync_awareness,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Button(
+            self.gm_tools,
+            text="Set knowledge",
+            command=self.gm_set_knowledge,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Label(self.gm_tools, text="AI role").pack(side=tk.LEFT, padx=(12, 4))
+        self.ai_assist_var = tk.StringVar(
+            value=AI_ASSIST_MODES[ai_assist_mode(load_config(self.config_path))]
+        )
+        self.ai_assist_combo = ttk.Combobox(
+            self.gm_tools,
+            textvariable=self.ai_assist_var,
+            values=list(AI_ASSIST_MODES.values()),
+            state="readonly",
+            width=26,
+        )
+        self.ai_assist_combo.pack(side=tk.LEFT, padx=(0, 6), pady=6)
+        self.ai_assist_combo.bind(
+            "<<ComboboxSelected>>", self.on_ai_assist_mode_selected
+        )
+        ttk.Label(
+            self.gm_tools,
+            text="Engine ops + AI oversight. Muse = narration; Manager may write.",
+        ).pack(side=tk.LEFT, padx=(6, 6))
+
+        self.bottom_bar = ttk.Frame(self.root)
+        self.bottom_bar.pack(fill=tk.X, padx=15, pady=(10, 4))
+        bottom = self.bottom_bar
         self.action_entry = tk.Entry(bottom, font=("Georgia", 12))
         self.action_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.action_entry.bind("<Return>", lambda _event: self.ask_gm())
@@ -185,17 +243,40 @@ class MainWindow:
             foreground="#4a5568",
         )
         self.ask_status.pack(side=tk.LEFT)
+        self.turn_status_var = tk.StringVar(value="")
+        self.turn_status = ttk.Label(
+            status_row,
+            textvariable=self.turn_status_var,
+            foreground="#2c5282",
+        )
+        self.turn_status.pack(side=tk.RIGHT)
 
         self.reply_frame = ttk.LabelFrame(
             self.root,
-            text="GM reply debug (raw model output)",
+            text="AI reply intercept (peek / rewrite before state changes)",
         )
+        ttk.Label(
+            self.reply_frame,
+            text=(
+                "When this panel is open, Ask / Run as GM parks the raw JSON "
+                "here instead of applying it. Edit freely, then Apply, or Discard."
+            ),
+            wraplength=720,
+        ).pack(anchor="w", padx=10, pady=(8, 0))
         self.reply_box = tk.Text(self.reply_frame, height=8, font=("Georgia", 11))
         self.reply_box.pack(fill=tk.X, expand=True, padx=10, pady=10)
+        reply_buttons = ttk.Frame(self.reply_frame)
+        reply_buttons.pack(fill=tk.X, padx=10, pady=(0, 10))
         ttk.Button(
-            self.reply_frame, text="Process", command=self.process_reply
-        ).pack(side=tk.RIGHT, padx=10, pady=(0, 10))
+            reply_buttons, text="Discard", command=self.discard_pending_reply
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(
+            reply_buttons, text="Apply", command=self.process_reply
+        ).pack(side=tk.RIGHT)
+        self.reply_pending_hint = ttk.Label(reply_buttons, text="")
+        self.reply_pending_hint.pack(side=tk.LEFT)
         self._reply_debug_visible = False
+        self._pending_reply_scratch = None
         self.apply_ui_preferences()
 
     def refresh_campaign_chrome(self):
@@ -476,6 +557,9 @@ class MainWindow:
         cfg = load_config(self.config_path)
         mode = desk_mode(cfg)
         self.desk_mode_var.set(mode)
+        assist = ai_assist_mode(cfg)
+        if hasattr(self, "ai_assist_var"):
+            self.ai_assist_var.set(AI_ASSIST_MODES[assist])
         self._sync_active_seat(mode)
         self.apply_desk_audience(mode)
         debug_ok = show_gm_reply_debug(cfg) and surface_visible("gm_reply_debug", mode)
@@ -483,6 +567,14 @@ class MainWindow:
             self.reply_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
             self._reply_debug_visible = True
         elif not debug_ok and self._reply_debug_visible:
+            if self.reply_box.get("1.0", tk.END).strip():
+                self.log_panel.add_entry(
+                    "System",
+                    "Intercept panel closed; pending reply discarded.",
+                )
+            self.reply_box.delete("1.0", tk.END)
+            self._pending_reply_scratch = None
+            self.reply_pending_hint.configure(text="")
             self.reply_frame.pack_forget()
             self._reply_debug_visible = False
 
@@ -498,9 +590,18 @@ class MainWindow:
             phase = "idle"
         if mode == "gm":
             hint = f"(GM seat; phase={phase})"
+            self.ask_button.configure(text="Run as GM")
+            if not self.gm_tools.winfo_ismapped():
+                self.gm_tools.pack(
+                    fill=tk.X, padx=15, pady=(8, 0), before=self.bottom_bar
+                )
         else:
             hint = f"(player seat; phase={phase}; knowledge-filtered)"
+            self.ask_button.configure(text="Ask GM")
+            if self.gm_tools.winfo_ismapped():
+                self.gm_tools.pack_forget()
         self.desk_mode_hint.configure(text=hint)
+        self._refresh_turn_status()
 
         selected = None
         try:
@@ -549,6 +650,11 @@ class MainWindow:
         self.quests_module.set_desk_audience(mode)
         self.geography_module.set_desk_audience(mode)
 
+    def _ask_button_label(self) -> str:
+        if normalize_desk_mode(self.desk_mode_var.get()) == "gm":
+            return "Run as GM"
+        return "Ask GM"
+
     def _set_ask_busy(self, busy: bool, *, model: str = "") -> None:
         self._ask_busy = busy
         if busy:
@@ -561,13 +667,42 @@ class MainWindow:
             self.copy_prompt_button.state(["disabled"])
             self.action_entry.configure(state="disabled")
             self.root.config(cursor="watch")
+            try:
+                from sakaki_gm.seat_db import set_turn_phase
+
+                set_turn_phase(self.db, "model_busy")
+                self._refresh_turn_status()
+            except Exception:
+                pass
         else:
             self.ask_status_var.set("")
-            self.ask_button.configure(text="Ask GM")
+            self.ask_button.configure(text=self._ask_button_label())
             self.ask_button.state(["!disabled"])
             self.copy_prompt_button.state(["!disabled"])
             self.action_entry.configure(state="normal")
             self.root.config(cursor="")
+            try:
+                from sakaki_gm.seat_db import get_session_state, set_turn_phase
+
+                if get_session_state(self.db).get("turn_phase") == "model_busy":
+                    set_turn_phase(self.db, "idle")
+                self._refresh_turn_status()
+            except Exception:
+                pass
+
+    def on_ai_assist_mode_selected(self, _event=None):
+        label = self.ai_assist_var.get()
+        mode = next(
+            (key for key, text in AI_ASSIST_MODES.items() if text == label),
+            "manager",
+        )
+        cfg = load_config(self.config_path)
+        if not isinstance(cfg.get("ui"), dict):
+            cfg["ui"] = {}
+        cfg["ui"]["ai_assist_mode"] = mode
+        save_config(cfg, self.config_path)
+        if hasattr(self, "settings_module"):
+            self.settings_module.reload_desk_ai_controls()
 
     def ask_gm(self):
         if self._ask_busy:
@@ -584,16 +719,27 @@ class MainWindow:
             action,
             include_reference_material=False,
         )
-        settings = load_config(self.config_path)["llm"]
+        cfg = load_config(self.config_path)
+        settings = cfg["llm"]
+        assist = ai_assist_mode(cfg)
+        if assist == "muse":
+            user = (
+                user
+                + "\n\nASSIST MODE: muse. Return vivid narration and advice only. "
+                "Do not change campaign state: updates must be {} and proposals "
+                "must be []. Do not claim you applied writes."
+            )
         tool_db_path = self.db_path
         model_name = str(settings.get("model") or "").strip()
         turn_scratch = ScratchContext()
         self.log_panel.add_entry("Player", action)
         self.action_entry.delete(0, tk.END)
         self._set_ask_busy(True, model=model_name)
+        role_note = " as muse" if assist == "muse" else ""
         self.log_panel.add_entry(
             "System",
-            f"Asking GM{' (' + model_name + ')' if model_name else ''}…",
+            f"Asking GM{role_note}"
+            f"{' (' + model_name + ')' if model_name else ''}…",
         )
 
         def work():
@@ -604,6 +750,7 @@ class MainWindow:
                     user,
                     tool_db_path=tool_db_path,
                     scratch=turn_scratch,
+                    assist_mode=assist,
                 )
             except Exception as exc:
                 self.root.after(0, lambda err=exc: self._ask_failed(err))
@@ -625,9 +772,26 @@ class MainWindow:
     def _ask_finished(self, reply, scratch=None):
         self._set_ask_busy(False)
         if self._reply_debug_visible:
+            self._pending_reply_scratch = scratch
             self.reply_box.delete("1.0", tk.END)
             self.reply_box.insert("1.0", reply)
+            self.reply_pending_hint.configure(
+                text="Pending — rewrite if needed, then Apply or Discard."
+            )
+            self.log_panel.add_entry(
+                "System",
+                "AI reply parked in intercept panel (not applied yet).",
+            )
+            return
         self._apply_reply_text(reply, scratch=scratch)
+
+    def discard_pending_reply(self):
+        if not self._reply_debug_visible:
+            return
+        self.reply_box.delete("1.0", tk.END)
+        self._pending_reply_scratch = None
+        self.reply_pending_hint.configure(text="")
+        self.log_panel.add_entry("System", "Pending AI reply discarded")
 
     def process_reply(self):
         if not self._reply_debug_visible:
@@ -635,17 +799,30 @@ class MainWindow:
         reply = self.reply_box.get("1.0", tk.END).strip()
         if not reply:
             return
+        scratch = self._pending_reply_scratch
         self.world_module.save_prompt(quiet=True)
         self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
         self.reply_box.delete("1.0", tk.END)
-        self._apply_reply_text(reply, scratch=None)
+        self._pending_reply_scratch = None
+        self.reply_pending_hint.configure(text="")
+        self._apply_reply_text(reply, scratch=scratch)
 
     def _apply_reply_text(self, reply: str, *, scratch=None):
         parsed = parse_reply(reply)
+        allow_writes = ai_assist_mode(load_config(self.config_path)) == "manager"
         self.log_panel.add_entry("GM", parsed.narration or reply)
         for line in citation_messages(scratch, parsed.cited_record_ids):
             self.log_panel.add_entry("System", line)
+        if not allow_writes:
+            if parsed.updates or parsed.proposals:
+                self.log_panel.add_entry(
+                    "System",
+                    "Muse mode: ignored updates/proposals (narration only).",
+                )
+            else:
+                self.log_panel.add_entry("System", "Muse mode: narration only")
+            return
         if parsed.updates:
             for line in apply_updates(self.db, parsed.updates):
                 self.log_panel.add_entry("System", line)
@@ -681,6 +858,73 @@ class MainWindow:
             return
         for line in apply_proposals(self.db, proposals, scratch=scratch):
             self.log_panel.add_entry("System", line)
+
+    def _refresh_turn_status(self):
+        from sakaki_gm.seat_db import ensure_default_session, get_session_state
+
+        try:
+            ensure_default_session(self.db)
+            state = get_session_state(self.db)
+            self.turn_status_var.set(format_turn_wait_status(state))
+        except Exception:
+            self.turn_status_var.set("")
+
+    def gm_request_roll(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        state = run_request_roll(self.root, self.db)
+        if state is None:
+            return
+        wait = state.get("turn_wait") or {}
+        self.log_panel.add_entry(
+            "System",
+            "GM requested roll: "
+            f"{wait.get('character', '?')} · {wait.get('kind', 'check')}"
+            + (f" ({wait['skill']})" if wait.get("skill") else "")
+            + (f" DC {wait['dc']}" if wait.get("dc") is not None else ""),
+        )
+        self._refresh_turn_status()
+        self.apply_desk_audience("gm")
+
+    def gm_clear_wait(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        run_clear_wait(self.root, self.db)
+        self.log_panel.add_entry("System", "GM cleared pending wait")
+        self._refresh_turn_status()
+        self.apply_desk_audience("gm")
+
+    def gm_sync_awareness(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        upgraded = run_sync_awareness(self.root, self.db)
+        self.log_panel.add_entry(
+            "System", f"GM synced player awareness ({len(upgraded)} updates)"
+        )
+        self.characters_module.refresh()
+        self.geography_module.set_desk_audience(
+            normalize_desk_mode(self.desk_mode_var.get())
+        )
+
+    def gm_set_knowledge(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        if run_set_character_knowledge(self.root, self.db):
+            self.log_panel.add_entry("System", "GM set character knowledge")
+            self.characters_module.refresh()
+
+    def gm_set_phase(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        state = run_set_turn_phase(self.root, self.db)
+        if state is None:
+            return
+        self.log_panel.add_entry(
+            "System",
+            f"GM set session phase to {state.get('turn_phase') or 'idle'}",
+        )
+        self._refresh_turn_status()
+        self.apply_desk_audience("gm")
 
     def quick_roll(self, sides):
         import random

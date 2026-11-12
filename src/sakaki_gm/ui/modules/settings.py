@@ -5,9 +5,14 @@ from tkinter import messagebox, ttk
 
 from sakaki_gm.gm import DEFAULT_INSTRUCTIONS, bootstrap_instructions, stored_system_prompt
 from sakaki_gm.llm_config import (
+    AI_ASSIST_MODES,
+    AI_TOOL_LABELS,
+    AI_TOOL_NAMES,
     MODEL_CAPABILITIES,
     RAG_MODES,
     PRESETS,
+    ai_assist_mode,
+    enabled_ai_tools,
     load_config,
     model_profile_key,
     resolve_api_key,
@@ -161,8 +166,34 @@ class SettingsModule:
             llm,
             text="Choose model-driven tool calls or app-retrieved context.",
         ).grid(row=6, column=1, sticky="w", padx=10)
+        tools_frame = ttk.LabelFrame(llm, text="Enable AI tools")
+        tools_frame.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        ttk.Label(
+            tools_frame,
+            text=(
+                "Which RAG tools the Manager may call. Uncheck all (or choose "
+                "Muse) to run without model-initiated tools."
+            ),
+            wraplength=560,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 2))
+        enabled = set(enabled_ai_tools(current))
+        self.enabled_ai_tools = {
+            name: tk.BooleanVar(value=name in enabled) for name in AI_TOOL_NAMES
+        }
+        for index, name in enumerate(AI_TOOL_NAMES):
+            ttk.Checkbutton(
+                tools_frame,
+                text=AI_TOOL_LABELS[name],
+                variable=self.enabled_ai_tools[name],
+            ).grid(
+                row=1 + index // 2,
+                column=index % 2,
+                sticky="w",
+                padx=8,
+                pady=2,
+            )
         capabilities = ttk.LabelFrame(llm, text="Model capabilities")
-        capabilities.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        capabilities.grid(row=8, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
         ttk.Label(
             capabilities,
             text="User-declared expectations; the model listing does not report these.",
@@ -185,7 +216,7 @@ class SettingsModule:
         )
 
         buttons = ttk.Frame(llm)
-        buttons.grid(row=8, column=1, sticky="w", padx=10, pady=10)
+        buttons.grid(row=9, column=1, sticky="w", padx=10, pady=10)
         ttk.Button(buttons, text="Save", command=self.save_llm).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Test", command=self.test_llm).pack(side=tk.LEFT, padx=4)
         self.capability_test_button = ttk.Button(
@@ -204,13 +235,41 @@ class SettingsModule:
         )
         ttk.Checkbutton(
             desk,
-            text="Show GM reply debug paste (raw model output)",
+            text="Peek / intercept AI replies before state changes",
             variable=self.show_gm_reply_debug,
             command=self.save_desk_ui,
         ).pack(anchor="w", padx=10, pady=8)
         ttk.Label(
             desk,
-            text="Off by default. Turn on only when inspecting or re-processing raw replies.",
+            text=(
+                "GM seat only. Parks raw model JSON for rewrite, Apply, or "
+                "Discard instead of auto-applying."
+            ),
+            wraplength=640,
+        ).pack(anchor="w", padx=10, pady=(0, 4))
+        assist_row = ttk.Frame(desk)
+        assist_row.pack(fill=tk.X, padx=10, pady=(4, 4))
+        ttk.Label(assist_row, text="AI role").pack(side=tk.LEFT)
+        self.ai_assist_mode = tk.StringVar(
+            value=AI_ASSIST_MODES[ai_assist_mode(cfg)]
+        )
+        assist_combo = ttk.Combobox(
+            assist_row,
+            textvariable=self.ai_assist_mode,
+            values=list(AI_ASSIST_MODES.values()),
+            state="readonly",
+            width=28,
+        )
+        assist_combo.pack(side=tk.LEFT, padx=(8, 0))
+        assist_combo.bind("<<ComboboxSelected>>", lambda _e: self.save_desk_ui())
+        ttk.Label(
+            desk,
+            text=(
+                "Muse: narration/inspiration only (no tools, no writes). "
+                "Manager: may use enabled RAG tools and propose state changes. "
+                "Also toggled from the GM tools strip."
+            ),
+            wraplength=640,
         ).pack(anchor="w", padx=10, pady=(0, 4))
         ttk.Label(
             desk,
@@ -351,7 +410,22 @@ class SettingsModule:
                 mode for mode, label in RAG_MODES.items()
                 if label == self.rag_mode.get()
             ),
+            "enabled_ai_tools": [
+                name
+                for name in AI_TOOL_NAMES
+                if self.enabled_ai_tools[name].get()
+            ],
         }
+
+    def reload_desk_ai_controls(self):
+        """Sync Settings desk AI controls from config (e.g. GM tools strip)."""
+        cfg = load_config(self.main_app.config_path)
+        ui_cfg = cfg.get("ui") if isinstance(cfg.get("ui"), dict) else {}
+        self.show_gm_reply_debug.set(bool(ui_cfg.get("show_gm_reply_debug")))
+        self.ai_assist_mode.set(AI_ASSIST_MODES[ai_assist_mode(cfg)])
+        enabled = set(enabled_ai_tools(cfg.get("llm")))
+        for name, variable in self.enabled_ai_tools.items():
+            variable.set(name in enabled)
 
     def save_llm(self):
         cfg = load_config(self.main_app.config_path)
@@ -372,6 +446,11 @@ class SettingsModule:
         if not isinstance(cfg.get("ui"), dict):
             cfg["ui"] = {}
         cfg["ui"]["show_gm_reply_debug"] = bool(self.show_gm_reply_debug.get())
+        label = self.ai_assist_mode.get()
+        cfg["ui"]["ai_assist_mode"] = next(
+            (key for key, text in AI_ASSIST_MODES.items() if text == label),
+            "manager",
+        )
         # Preserve header desk-mode toggle; Settings is GM-only.
         current_mode = cfg["ui"].get("desk_mode")
         if hasattr(self.main_app, "desk_mode_var"):
