@@ -467,3 +467,53 @@ def migrate(db):
         migrate_character_spell_free_text(db)
         db.execute("PRAGMA user_version = 17")
         db.commit()
+
+    if version < 18:
+        # Actor / brain shell: org, pantheon, political, person minds for GM + Dreamtime.
+        # IF NOT EXISTS: remigration tests rewind user_version while tables remain.
+        cur.executescript("""
+        CREATE TABLE IF NOT EXISTS actors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            kind TEXT NOT NULL DEFAULT 'person',
+            character_id INTEGER REFERENCES characters(id) ON DELETE SET NULL,
+            drive TEXT NOT NULL DEFAULT '',
+            methods TEXT NOT NULL DEFAULT '',
+            mortality TEXT,
+            provenance TEXT NOT NULL DEFAULT 'authored',
+            confidence REAL,
+            notes TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS brain_goals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+            summary TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            priority INTEGER NOT NULL DEFAULT 0,
+            quest_id INTEGER REFERENCES quests(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS actor_traits (
+            actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+            tag TEXT NOT NULL COLLATE NOCASE,
+            PRIMARY KEY (actor_id, tag)
+        );
+        CREATE TABLE IF NOT EXISTS affect_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+            to_actor_id INTEGER REFERENCES actors(id) ON DELETE CASCADE,
+            to_character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+            axis TEXT NOT NULL,
+            level INTEGER NOT NULL DEFAULT 0,
+            CHECK (
+                (to_actor_id IS NOT NULL AND to_character_id IS NULL)
+                OR (to_actor_id IS NULL AND to_character_id IS NOT NULL)
+            )
+        );
+        CREATE TABLE IF NOT EXISTS actor_role_bindings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role_key TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE
+        );
+        """)
+        db.execute("PRAGMA user_version = 18")
+        db.commit()
