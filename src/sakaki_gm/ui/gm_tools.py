@@ -8,11 +8,13 @@ from typing import Any, Optional
 
 from sakaki_gm.character_db import get_all_characters
 from sakaki_gm.seat_db import (
+    TURN_PHASES,
     clear_turn_wait,
     ensure_default_session,
     get_seat_by_role,
     get_session_state,
     request_player_roll,
+    set_turn_phase,
     sync_seat_knowledge_from_world,
     upgrade_knowledge,
 )
@@ -258,3 +260,53 @@ def format_turn_wait_status(state: dict[str, Any]) -> str:
     if dc is not None:
         detail += f" DC {dc}"
     return f"awaiting roll: {detail}"
+
+
+def run_set_turn_phase(parent, db) -> Optional[dict[str, Any]]:
+    """Reassign session turn_phase (idle / awaiting_roll / model_busy)."""
+    ensure_default_session(db)
+    state = get_session_state(db)
+    current = state.get("turn_phase") or "idle"
+    chooser = tk.Toplevel(parent)
+    chooser.title("Set session phase")
+    chooser.transient(parent)
+    chooser.grab_set()
+    frame = ttk.Frame(chooser, padding=12)
+    frame.pack(fill=tk.BOTH, expand=True)
+    ttk.Label(
+        frame,
+        text="Reassign the table state machine phase. Prefer Clear wait / "
+        "Request roll for normal flow; use this when the phase is stuck.",
+        wraplength=360,
+    ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    ttk.Label(frame, text="Phase").grid(row=1, column=0, sticky="w")
+    phase = ttk.Combobox(
+        frame, values=list(TURN_PHASES), state="readonly", width=28
+    )
+    phase.grid(row=1, column=1, sticky="ew", pady=4)
+    phase.set(current if current in TURN_PHASES else "idle")
+    result: dict[str, Any] = {"state": None}
+
+    def ok():
+        chosen = phase.get().strip()
+        if chosen not in TURN_PHASES:
+            messagebox.showerror("Set phase", "Choose a valid phase.", parent=chooser)
+            return
+        if chosen == "awaiting_roll" and not (state.get("turn_wait") or {}):
+            if not messagebox.askyesno(
+                "Set phase",
+                "No turn_wait payload is set. Enter awaiting_roll anyway?",
+                parent=chooser,
+            ):
+                return
+        result["state"] = set_turn_phase(db, chosen)
+        chooser.destroy()
+
+    buttons = ttk.Frame(frame)
+    buttons.grid(row=2, column=0, columnspan=2, sticky="e", pady=(10, 0))
+    ttk.Button(buttons, text="Cancel", command=chooser.destroy).pack(
+        side=tk.RIGHT, padx=(6, 0)
+    )
+    ttk.Button(buttons, text="Set", command=ok).pack(side=tk.RIGHT)
+    parent.wait_window(chooser)
+    return result["state"]

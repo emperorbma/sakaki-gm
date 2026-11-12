@@ -5,6 +5,7 @@ from sakaki_gm.seat_db import (
     get_seat_by_role,
     get_session_state,
     request_player_roll,
+    set_turn_phase,
 )
 from sakaki_gm.ui.gm_tools import build_roll_wait_payload, format_turn_wait_status
 
@@ -44,4 +45,7 @@ def test_request_roll_sets_player_hotseat(tmp_path):
     assert state["turn_phase"] == "awaiting_roll"
     assert state["hotseat_seat_id"] == player["id"]
     assert "initiative" in format_turn_wait_status(get_session_state(db))
+    set_turn_phase(db, "model_busy")
+    assert get_session_state(db)["turn_phase"] == "model_busy"
+    assert format_turn_wait_status(get_session_state(db)) == "phase=model_busy"
     db.close()

@@ -589,7 +589,16 @@ def test_default_config_migrates_old_name_to_sakaki_gm(monkeypatch, tmp_path):
 
     assert loaded["active_campaign"] == "campaign-id"
     assert loaded["campaigns"] == previous["campaigns"]
-    assert loaded["llm"] == {**previous["llm"], "rag_mode": "tools"}
+    assert loaded["llm"] == {
+        **previous["llm"],
+        "rag_mode": "tools",
+        "enabled_ai_tools": [
+            "search_documents",
+            "search_objects",
+            "inspect_object",
+            "inspect_location",
+        ],
+    }
     assert json.loads(new_config.read_text(encoding="utf-8")) == loaded
     assert json.loads(old_config.read_text(encoding="utf-8")) == previous
 
