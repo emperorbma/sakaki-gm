@@ -36,8 +36,12 @@ from sakaki_gm.llm_config import (
     CONFIG_PATH,
     ai_assist_mode,
     desk_mode,
+    list_model_choices,
     load_config,
+    model_settings_dict,
+    resolve_ask_model,
     save_config,
+    set_default_model,
     show_gm_reply_debug,
 )
 from sakaki_gm.scratch_context import ScratchContext
@@ -197,7 +201,20 @@ class MainWindow:
             text="Set knowledge",
             command=self.gm_set_knowledge,
         ).pack(side=tk.LEFT, padx=6, pady=6)
-        ttk.Label(self.gm_tools, text="AI role").pack(side=tk.LEFT, padx=(12, 4))
+        ttk.Label(self.gm_tools, text="Model").pack(side=tk.LEFT, padx=(12, 4))
+        self.gm_model_var = tk.StringVar(value="")
+        self._gm_model_ids = []
+        self.gm_model_combo = ttk.Combobox(
+            self.gm_tools,
+            textvariable=self.gm_model_var,
+            state="readonly",
+            width=28,
+        )
+        self.gm_model_combo.pack(side=tk.LEFT, padx=(0, 6), pady=6)
+        self.gm_model_combo.bind(
+            "<<ComboboxSelected>>", self.on_gm_model_selected
+        )
+        ttk.Label(self.gm_tools, text="AI role").pack(side=tk.LEFT, padx=(8, 4))
         self.ai_assist_var = tk.StringVar(
             value=AI_ASSIST_MODES[ai_assist_mode(load_config(self.config_path))]
         )
@@ -206,7 +223,7 @@ class MainWindow:
             textvariable=self.ai_assist_var,
             values=list(AI_ASSIST_MODES.values()),
             state="readonly",
-            width=26,
+            width=24,
         )
         self.ai_assist_combo.pack(side=tk.LEFT, padx=(0, 6), pady=6)
         self.ai_assist_combo.bind(
@@ -214,7 +231,7 @@ class MainWindow:
         )
         ttk.Label(
             self.gm_tools,
-            text="Engine ops + AI oversight. Muse = narration; Manager may write.",
+            text="GM selects model; players use config default / manager routing.",
         ).pack(side=tk.LEFT, padx=(6, 6))
 
         self.bottom_bar = ttk.Frame(self.root)
@@ -552,6 +569,24 @@ class MainWindow:
             # Pre-v19 bottles mid-migrate still get ensure on next open.
             pass
 
+    def _refresh_gm_model_picker(self, cfg=None):
+        """GM-seat only: show configured models; selection sets the Ask default."""
+        if not hasattr(self, "gm_model_combo"):
+            return
+        cfg = cfg or load_config(self.config_path)
+        choices = list_model_choices(cfg)
+        self._gm_model_ids = [model_id for model_id, _label in choices]
+        labels = [label for _model_id, label in choices]
+        self.gm_model_combo["values"] = labels
+        default_id = cfg.get("default_model_id")
+        if default_id in self._gm_model_ids:
+            index = self._gm_model_ids.index(default_id)
+            self.gm_model_var.set(labels[index])
+        elif labels:
+            self.gm_model_var.set(labels[0])
+        else:
+            self.gm_model_var.set("")
+
     def apply_ui_preferences(self):
         """Apply active-seat lens and debug-only controls from saved UI settings."""
         cfg = load_config(self.config_path)
@@ -560,6 +595,7 @@ class MainWindow:
         assist = ai_assist_mode(cfg)
         if hasattr(self, "ai_assist_var"):
             self.ai_assist_var.set(AI_ASSIST_MODES[assist])
+        self._refresh_gm_model_picker(cfg)
         self._sync_active_seat(mode)
         self.apply_desk_audience(mode)
         debug_ok = show_gm_reply_debug(cfg) and surface_visible("gm_reply_debug", mode)
@@ -704,6 +740,24 @@ class MainWindow:
         if hasattr(self, "settings_module"):
             self.settings_module.reload_desk_ai_controls()
 
+    def on_gm_model_selected(self, _event=None):
+        """GM seat only: choosing a model sets the config default for Ask."""
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        label = self.gm_model_var.get()
+        labels = list(self.gm_model_combo["values"] or ())
+        if label not in labels:
+            return
+        model_id = self._gm_model_ids[labels.index(label)]
+        cfg = load_config(self.config_path)
+        try:
+            set_default_model(cfg, model_id)
+        except ValueError:
+            return
+        save_config(cfg, self.config_path)
+        if hasattr(self, "settings_module"):
+            self.settings_module.reload_desk_ai_controls()
+
     def ask_gm(self):
         if self._ask_busy:
             return
@@ -720,7 +774,10 @@ class MainWindow:
             include_reference_material=False,
         )
         cfg = load_config(self.config_path)
-        settings = cfg["llm"]
+        seat = normalize_desk_mode(self.desk_mode_var.get())
+        # Players never select a model; resolve_ask_model ignores overrides.
+        entry = resolve_ask_model(cfg, desk_mode=seat)
+        settings = model_settings_dict(entry)
         assist = ai_assist_mode(cfg)
         if assist == "muse":
             user = (

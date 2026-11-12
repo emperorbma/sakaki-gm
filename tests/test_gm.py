@@ -589,6 +589,9 @@ def test_default_config_migrates_old_name_to_sakaki_gm(monkeypatch, tmp_path):
 
     assert loaded["active_campaign"] == "campaign-id"
     assert loaded["campaigns"] == previous["campaigns"]
+    assert loaded["default_model_id"] == "primary"
+    assert len(loaded["models"]) == 1
+    assert loaded["models"][0]["model"] == "local-model"
     assert loaded["llm"] == {
         **previous["llm"],
         "rag_mode": "tools",
