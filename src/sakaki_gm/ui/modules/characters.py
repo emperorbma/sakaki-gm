@@ -81,24 +81,40 @@ class CharactersModule:
 
         btn_frame = ttk.Frame(tree_frame)
         btn_frame.pack(pady=8)
+        self.gm_tools = ttk.Frame(btn_frame)
+        self.gm_tools.pack(side=tk.LEFT)
         self.new_button = ttk.Button(
-            btn_frame, text="+ New Character", command=self.new_character
+            self.gm_tools, text="+ New Character", command=self.new_character
         )
         self.new_button.pack(side=tk.LEFT, padx=5)
         self.spawn_button = ttk.Button(
-            btn_frame,
+            self.gm_tools,
             text="Spawn character",
             command=self.spawn_selected_scaffold,
         )
-        ttk.Button(btn_frame, text="Import from .md", command=self.open_importer).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Import Files", command=self.import_files).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Refresh", command=self.refresh).pack(side=tk.LEFT)
-        ttk.Button(btn_frame, text="Delete", command=self.delete_selected).pack(side=tk.LEFT, padx=5)
-        ttk.Button(
-            btn_frame,
+        self.import_md_button = ttk.Button(
+            self.gm_tools, text="Import from .md", command=self.open_importer
+        )
+        self.import_md_button.pack(side=tk.LEFT, padx=5)
+        self.import_files_button = ttk.Button(
+            self.gm_tools, text="Import Files", command=self.import_files
+        )
+        self.import_files_button.pack(side=tk.LEFT, padx=5)
+        self.delete_button = ttk.Button(
+            self.gm_tools, text="Delete", command=self.delete_selected
+        )
+        self.delete_button.pack(side=tk.LEFT, padx=5)
+        self.fill_kits_button = ttk.Button(
+            self.gm_tools,
             text="Fill starter kits",
             command=self.fill_starter_kits,
-        ).pack(side=tk.LEFT, padx=5)
+        )
+        self.fill_kits_button.pack(side=tk.LEFT, padx=5)
+        self.refresh_button = ttk.Button(
+            btn_frame, text="Refresh", command=self.refresh
+        )
+        self.refresh_button.pack(side=tk.LEFT, padx=5)
+        self._desk_mode = "gm"
 
         self.refresh()
 
@@ -107,10 +123,34 @@ class CharactersModule:
         self.list_mode = self.LIST_CHARACTERS
         self.refresh()
 
+    def set_desk_audience(self, mode: str):
+        """Strip scaffold/spawn/import tooling in player mode."""
+        from sakaki_gm.ui.desk_audience import normalize_desk_mode, shared_is_stripped
+
+        self._desk_mode = normalize_desk_mode(mode)
+        if shared_is_stripped(self._desk_mode):
+            self.list_mode = self.LIST_CHARACTERS
+            if self.list_mode_button.winfo_ismapped():
+                self.list_mode_button.pack_forget()
+            if self.spawn_button.winfo_ismapped():
+                self.spawn_button.pack_forget()
+            if self.gm_tools.winfo_ismapped():
+                self.gm_tools.pack_forget()
+        else:
+            if not self.list_mode_button.winfo_ismapped():
+                self.list_mode_button.pack(side=tk.RIGHT)
+            if not self.gm_tools.winfo_ismapped():
+                self.gm_tools.pack(side=tk.LEFT, before=self.refresh_button)
+        self.refresh()
+
     def showing_scaffolds(self) -> bool:
         return self.list_mode == self.LIST_SCAFFOLDS
 
     def toggle_list_mode(self):
+        from sakaki_gm.ui.desk_audience import shared_is_stripped
+
+        if shared_is_stripped(getattr(self, "_desk_mode", "gm")):
+            return
         if self.list_mode == self.LIST_CHARACTERS:
             self.list_mode = self.LIST_SCAFFOLDS
         else:

@@ -46,6 +46,7 @@ DEFAULT_CONFIG = {
     },
     "ui": {
         "show_gm_reply_debug": False,
+        "desk_mode": "gm",
     },
 }
 
@@ -104,6 +105,9 @@ def load_config(path=None) -> dict:
     ):
         cfg["llm"]["rag_mode"] = "tools"
     cfg["ui"]["show_gm_reply_debug"] = bool(cfg["ui"].get("show_gm_reply_debug"))
+    from sakaki_gm.ui.desk_audience import normalize_desk_mode
+
+    cfg["ui"]["desk_mode"] = normalize_desk_mode(cfg["ui"].get("desk_mode"))
     if migrate_legacy:
         save_config(cfg, CONFIG_PATH)
     return cfg
@@ -117,6 +121,15 @@ def show_gm_reply_debug(cfg: dict | None = None) -> bool:
     if not isinstance(ui, dict):
         return False
     return bool(ui.get("show_gm_reply_debug"))
+
+
+def desk_mode(cfg: dict | None = None) -> str:
+    """Return the desk audience mode: ``gm`` or ``player``."""
+    from sakaki_gm.ui.desk_audience import desk_mode_from_config
+
+    if cfg is None:
+        cfg = load_config()
+    return desk_mode_from_config(cfg)
 
 
 def model_profile_key(settings: dict) -> str:

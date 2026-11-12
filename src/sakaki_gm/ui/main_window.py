@@ -31,8 +31,20 @@ from sakaki_gm.gm import (
     proposal_summary_lines,
 )
 from sakaki_gm.llm_client import complete
-from sakaki_gm.llm_config import CONFIG_PATH, load_config, show_gm_reply_debug
+from sakaki_gm.llm_config import (
+    CONFIG_PATH,
+    desk_mode,
+    load_config,
+    save_config,
+    show_gm_reply_debug,
+)
 from sakaki_gm.scratch_context import ScratchContext
+from sakaki_gm.ui.desk_audience import (
+    DESK_MODES,
+    normalize_desk_mode,
+    shared_is_stripped,
+    surface_visible,
+)
 from sakaki_gm.ui.log_panel import LogPanel
 from sakaki_gm.ui.modules.characters import CharactersModule
 from sakaki_gm.ui.modules.documents import DocumentsModule
@@ -71,50 +83,82 @@ class MainWindow:
 
         header = ttk.Frame(self.root)
         header.pack(fill=tk.X, padx=15, pady=(12, 4))
-        ttk.Label(header, text="Sakaki GM", font=("Georgia", 28, "bold")).pack(side=tk.LEFT)
-        ttk.Button(header, text="Remove", command=self.remove_current).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(header, text="Restore", command=self.restore_current).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(header, text="Backup", command=self.backup_current).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(header, text="Open", command=self.open_campaign_file).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(header, text="Rename", command=self.rename_current).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(header, text="New", command=self.new_campaign).pack(side=tk.RIGHT, padx=4)
+        ttk.Label(header, text="Sakaki GM", font=("Georgia", 28, "bold")).pack(
+            side=tk.LEFT
+        )
+        mode_wrap = ttk.Frame(header)
+        mode_wrap.pack(side=tk.LEFT, padx=(16, 0))
+        ttk.Label(mode_wrap, text="Desk").pack(side=tk.LEFT)
+        self.desk_mode_var = tk.StringVar(
+            value=desk_mode(load_config(self.config_path))
+        )
+        self.desk_mode_combo = ttk.Combobox(
+            mode_wrap,
+            textvariable=self.desk_mode_var,
+            values=DESK_MODES,
+            state="readonly",
+            width=8,
+        )
+        self.desk_mode_combo.pack(side=tk.LEFT, padx=(6, 0))
+        self.desk_mode_combo.bind("<<ComboboxSelected>>", self.on_desk_mode_selected)
+        self.desk_mode_hint = ttk.Label(mode_wrap, text="")
+        self.desk_mode_hint.pack(side=tk.LEFT, padx=(8, 0))
+
+        self.campaign_admin = ttk.Frame(header)
+        self.campaign_admin.pack(side=tk.RIGHT)
+        for label, command in (
+            ("Remove", self.remove_current),
+            ("Restore", self.restore_current),
+            ("Backup", self.backup_current),
+            ("Open", self.open_campaign_file),
+            ("Rename", self.rename_current),
+            ("New", self.new_campaign),
+        ):
+            ttk.Button(self.campaign_admin, text=label, command=command).pack(
+                side=tk.RIGHT, padx=4
+            )
         self.campaign_combo = ttk.Combobox(header, state="readonly", width=32)
         self.campaign_combo.pack(side=tk.RIGHT, padx=8)
         self.campaign_combo.bind("<<ComboboxSelected>>", self.on_campaign_selected)
 
         place = ttk.Frame(self.root)
         place.pack(fill=tk.X, padx=15, pady=(0, 8))
-        ttk.Label(place, text="Location").pack(side=tk.LEFT)
+        self.location_label = ttk.Label(place, text="Location")
+        self.location_label.pack(side=tk.LEFT)
         self.location_var = tk.StringVar()
         self.location_entry = ttk.Entry(place, textvariable=self.location_var)
         self.location_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
         self.location_entry.bind("<FocusOut>", lambda _event: self.save_location())
         self.location_entry.bind("<Return>", lambda _event: self.save_location())
 
-        notebook = ttk.Notebook(self.root)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=15)
-        self.characters_module = CharactersModule(notebook, self.db, self)
-        notebook.add(self.characters_module.frame, text="Characters")
-        self.world_module = WorldModule(notebook, self.db)
-        notebook.add(self.world_module.frame, text="World")
-        self.documents_module = DocumentsModule(notebook, self.db)
-        notebook.add(self.documents_module.frame, text="Documents")
-        self.geography_module = GeographyModule(notebook, self.db)
-        notebook.add(self.geography_module.frame, text="Geography")
-        self.items_module = ItemsModule(notebook, self.db)
-        notebook.add(self.items_module.frame, text="Items")
-        self.quests_module = QuestsModule(notebook, self.db)
-        notebook.add(self.quests_module.frame, text="Quests")
-        self.actors_module = ActorsModule(notebook, self.db)
-        notebook.add(self.actors_module.frame, text="Actors")
-        self.skills_module = SkillsModule(notebook, self.db)
-        notebook.add(self.skills_module.frame, text="Skills")
-        self.spells_module = SpellsModule(notebook, self.db)
-        notebook.add(self.spells_module.frame, text="Spells")
-        self.settings_module = SettingsModule(notebook, self.db, self)
-        notebook.add(self.settings_module.frame, text="Settings")
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=15)
+        self.characters_module = CharactersModule(self.notebook, self.db, self)
+        self.world_module = WorldModule(self.notebook, self.db)
+        self.documents_module = DocumentsModule(self.notebook, self.db)
+        self.geography_module = GeographyModule(self.notebook, self.db)
+        self.items_module = ItemsModule(self.notebook, self.db)
+        self.quests_module = QuestsModule(self.notebook, self.db)
+        self.actors_module = ActorsModule(self.notebook, self.db)
+        self.skills_module = SkillsModule(self.notebook, self.db)
+        self.spells_module = SpellsModule(self.notebook, self.db)
+        self.settings_module = SettingsModule(self.notebook, self.db, self)
         self.log_panel = LogPanel(self.root, self.db)
-        notebook.add(self.log_panel.frame, text="Log")
+        self._desk_tabs = [
+            ("characters", self.characters_module.frame, "Characters"),
+            ("world", self.world_module.frame, "World"),
+            ("documents", self.documents_module.frame, "Documents"),
+            ("geography", self.geography_module.frame, "Geography"),
+            ("items", self.items_module.frame, "Items"),
+            ("quests", self.quests_module.frame, "Quests"),
+            ("actors", self.actors_module.frame, "Actors"),
+            ("skills", self.skills_module.frame, "Skills"),
+            ("spells", self.spells_module.frame, "Spells"),
+            ("settings", self.settings_module.frame, "Settings"),
+            ("log", self.log_panel.frame, "Log"),
+        ]
+        for _key, frame, title in self._desk_tabs:
+            self.notebook.add(frame, text=title)
 
         bottom = ttk.Frame(self.root)
         bottom.pack(fill=tk.X, padx=15, pady=(10, 4))
@@ -127,9 +171,10 @@ class MainWindow:
             bottom, text="Copy Prompt", command=self.copy_prompt
         )
         self.copy_prompt_button.pack(side=tk.RIGHT, padx=5)
-        ttk.Button(bottom, text="d20", command=lambda: self.quick_roll(20)).pack(
-            side=tk.RIGHT
+        self.d20_button = ttk.Button(
+            bottom, text="d20", command=lambda: self.quick_roll(20)
         )
+        self.d20_button.pack(side=tk.RIGHT)
 
         status_row = ttk.Frame(self.root)
         status_row.pack(fill=tk.X, padx=15, pady=(0, 8))
@@ -177,6 +222,8 @@ class MainWindow:
         self.location_var.set(row["value"] if row else "")
 
     def save_location(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
         self.db.execute(
             "INSERT OR REPLACE INTO world (key, value) VALUES ('location', ?)",
             (self.location_var.get(),),
@@ -398,15 +445,84 @@ class MainWindow:
         self.action_entry.delete(0, tk.END)
         messagebox.showinfo("Copied", "Prompt copied to clipboard.")
 
+    def on_desk_mode_selected(self, _event=None):
+        mode = normalize_desk_mode(self.desk_mode_var.get())
+        self.desk_mode_var.set(mode)
+        cfg = load_config(self.config_path)
+        if not isinstance(cfg.get("ui"), dict):
+            cfg["ui"] = {}
+        if cfg["ui"].get("desk_mode") == mode:
+            return
+        cfg["ui"]["desk_mode"] = mode
+        save_config(cfg, self.config_path)
+        self.apply_ui_preferences()
+
     def apply_ui_preferences(self):
-        """Show or hide debug-only controls from saved UI settings."""
-        visible = show_gm_reply_debug(load_config(self.config_path))
-        if visible and not self._reply_debug_visible:
+        """Apply desk audience mode and debug-only controls from saved UI settings."""
+        cfg = load_config(self.config_path)
+        mode = desk_mode(cfg)
+        self.desk_mode_var.set(mode)
+        self.apply_desk_audience(mode)
+        debug_ok = show_gm_reply_debug(cfg) and surface_visible("gm_reply_debug", mode)
+        if debug_ok and not self._reply_debug_visible:
             self.reply_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
             self._reply_debug_visible = True
-        elif not visible and self._reply_debug_visible:
+        elif not debug_ok and self._reply_debug_visible:
             self.reply_frame.pack_forget()
             self._reply_debug_visible = False
+
+    def apply_desk_audience(self, mode: str | None = None):
+        """Show GM-only surfaces only in GM mode; strip shared modules in player mode."""
+        mode = normalize_desk_mode(mode if mode is not None else self.desk_mode_var.get())
+        self.desk_mode_hint.configure(
+            text="(full desk)" if mode == "gm" else "(play surfaces; GM tools hidden)"
+        )
+
+        selected = None
+        try:
+            selected = self.notebook.select()
+        except tk.TclError:
+            selected = None
+        for key, frame, title in self._desk_tabs:
+            try:
+                present = str(frame) in self.notebook.tabs()
+            except tk.TclError:
+                present = False
+            visible = surface_visible(key, mode)
+            if visible and not present:
+                self.notebook.add(frame, text=title)
+            elif not visible and present:
+                self.notebook.forget(frame)
+        if selected:
+            try:
+                if selected in self.notebook.tabs():
+                    self.notebook.select(selected)
+                elif self.notebook.tabs():
+                    self.notebook.select(self.notebook.tabs()[0])
+            except tk.TclError:
+                pass
+
+        if surface_visible("campaign_admin", mode):
+            if not self.campaign_admin.winfo_ismapped():
+                self.campaign_admin.pack(side=tk.RIGHT, before=self.campaign_combo)
+        elif self.campaign_admin.winfo_ismapped():
+            self.campaign_admin.pack_forget()
+
+        if surface_visible("copy_prompt", mode):
+            if not self.copy_prompt_button.winfo_ismapped():
+                self.copy_prompt_button.pack(
+                    side=tk.RIGHT, padx=5, before=self.ask_button
+                )
+        elif self.copy_prompt_button.winfo_ismapped():
+            self.copy_prompt_button.pack_forget()
+
+        self.location_entry.configure(
+            state="normal" if mode == "gm" else "disabled"
+        )
+
+        self.characters_module.set_desk_audience(mode)
+        self.world_module.set_desk_audience(mode)
+        self.quests_module.set_desk_audience(mode)
 
     def _set_ask_busy(self, busy: bool, *, model: str = "") -> None:
         self._ask_busy = busy
