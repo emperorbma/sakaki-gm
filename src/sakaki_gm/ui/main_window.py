@@ -752,6 +752,14 @@ class MainWindow:
         except Exception:
             return None
 
+    def _ask_speaker(self) -> str:
+        """Human ask line: Controller on GM desk, Player on a controller desk."""
+        from sakaki_gm.ui.log_panel import SPEAKER_CONTROLLER, SPEAKER_PLAYER
+
+        if normalize_desk_mode(self.desk_mode_var.get()) == "gm":
+            return SPEAKER_CONTROLLER
+        return SPEAKER_PLAYER
+
     def copy_prompt(self):
         action = self.action_entry.get().strip()
         if not action:
@@ -767,7 +775,7 @@ class MainWindow:
             seat_id=desk_seat["id"] if desk_seat else None,
         )
         pyperclip.copy(format_clipboard(system, user))
-        self.log_panel.add_entry("Player", action)
+        self.log_panel.add_entry(self._ask_speaker(), action)
         self.action_entry.delete(0, tk.END)
         messagebox.showinfo("Copied", "Prompt copied to clipboard.")
 
@@ -1106,7 +1114,7 @@ class MainWindow:
         model_name = str(settings.get("model") or "").strip()
         turn_scratch = ScratchContext()
         self._pending_ask_assist = assist
-        self.log_panel.add_entry("Player", action)
+        self.log_panel.add_entry(self._ask_speaker(), action)
         self.action_entry.delete(0, tk.END)
         self._set_ask_busy(True, model=model_name)
         role_note = " as muse" if assist == "muse" else ""
@@ -1116,7 +1124,7 @@ class MainWindow:
         )
         self.log_panel.add_entry(
             "System",
-            f"Asking GM{role_note}"
+            f"Asking model{role_note}"
             f"{' (' + model_name + ')' if model_name else ''}"
             f"{purpose_note}…",
         )
@@ -1193,7 +1201,9 @@ class MainWindow:
             load_config(self.config_path)
         )
         allow_writes = assist == "manager"
-        self.log_panel.add_entry("GM", parsed.narration or reply)
+        from sakaki_gm.ui.log_panel import SPEAKER_MODEL
+
+        self.log_panel.add_entry(SPEAKER_MODEL, parsed.narration or reply)
         for line in citation_messages(scratch, parsed.cited_record_ids):
             self.log_panel.add_entry("System", line)
         if not allow_writes:
@@ -1310,7 +1320,8 @@ class MainWindow:
         if summary:
             # Keep shared active_seat on GM so solo paths match the lease lens.
             self._sync_active_seat("gm")
-            self.log_panel.add_entry("System", summary)
+            # Lease marker is written by set_gm_control_character; refresh UI.
+            self.log_panel.reload()
 
     def gm_reassign_seat(self):
         if normalize_desk_mode(self.desk_mode_var.get()) != "gm":

@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import json
 import secrets
+from datetime import datetime
 from typing import Any, Optional
 
 SEAT_ROLES = ("gm", "player")
@@ -25,6 +26,34 @@ KNOWLEDGE_LEVELS = ("rumored", "known", "present")
 SUBJECT_TYPES = ("character", "actor")
 # Levels that appear on a player roster / awareness list.
 VISIBLE_KNOWLEDGE = frozenset(KNOWLEDGE_LEVELS)
+
+# System log markers: Ask scene packs for a GM lease start *after* the matching
+# "controlling" line so prior possession narration cannot bleed into the lens.
+GM_LEASE_CLEARED_MESSAGE = "GM cleared character lease"
+
+
+def gm_lease_controlling_message(character_name: str) -> str:
+    return f"GM controlling {character_name} (temporary lease)"
+
+
+def _append_system_log(db, message: str, *, commit: bool = False) -> None:
+    """Write a GM-private System line (lease anchors, etc.)."""
+    stamp = datetime.now().isoformat()
+    try:
+        db.execute(
+            """
+            INSERT INTO log (timestamp, speaker, message, visibility)
+            VALUES (?, 'System', ?, 'gm')
+            """,
+            (stamp, message),
+        )
+    except Exception:
+        db.execute(
+            "INSERT INTO log (timestamp, speaker, message) VALUES (?, 'System', ?)",
+            (stamp, message),
+        )
+    if commit:
+        db.commit()
 
 
 def _normalize_role(role: str) -> str:
@@ -255,6 +284,9 @@ def set_gm_control_character(
 
     Clears with ``character_id=None``. When the player seat later claims the
     same PC, ``claim_player_character`` drops this lease.
+
+    Each lease change writes a System log marker so Ask scene packs can drop
+    prior possession / control narration from the model context.
     """
     ensure_default_session(db, commit=False)
     gm = get_seat_by_role(db, "gm")
@@ -266,7 +298,20 @@ def set_gm_control_character(
             raise PermissionError(
                 "That character is controlled by a player who is present."
             )
-    return set_seat_character(db, gm["id"], character_id, commit=commit)
+        row = db.execute(
+            "SELECT name FROM characters WHERE id=?",
+            (int(character_id),),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown character {character_id}.")
+        marker = gm_lease_controlling_message(row["name"])
+    else:
+        marker = GM_LEASE_CLEARED_MESSAGE
+    seat = set_seat_character(db, gm["id"], character_id, commit=False)
+    _append_system_log(db, marker, commit=False)
+    if commit:
+        db.commit()
+    return seat
 
 
 def list_controller_seats(db) -> list[dict[str, Any]]:
@@ -514,6 +559,7 @@ def claim_player_character(
     if gm is not None and gm.get("character_id") is not None:
         if int(gm["character_id"]) == character_id:
             set_seat_character(db, gm["id"], None, commit=False)
+            _append_system_log(db, GM_LEASE_CLEARED_MESSAGE, commit=False)
     bound = set_seat_character(db, seat["id"], character_id, commit=False)
     set_active_seat(db, seat["id"], commit=False)
     if holder_id:

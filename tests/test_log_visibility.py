@@ -51,7 +51,7 @@ def test_player_scene_pack_strips_gm_private_log(tmp_path):
     serina = create_character(
         db, "Serina", {"name": "Serina"}, campaign_role="Protagonist"
     )
-    elara = create_character(
+    create_character(
         db, "Elara Starveil", {"name": "Elara Starveil"}, campaign_role="Ally"
     )
     claim_player_character(db, serina, "")
@@ -59,11 +59,11 @@ def test_player_scene_pack_strips_gm_private_log(tmp_path):
 
     db.execute(
         "INSERT INTO log (timestamp, speaker, message, visibility) VALUES (?, ?, ?, ?)",
-        ("2026-01-01T00:00:00", "System", "GM controlling Elara (temporary lease)", "gm"),
+        ("2026-01-01T00:00:00", "System", "Asking model…", "gm"),
     )
     db.execute(
         "INSERT INTO log (timestamp, speaker, message, visibility) VALUES (?, ?, ?, ?)",
-        ("2026-01-01T00:00:01", "GM", "Moonlight pools on the floor.", "table"),
+        ("2026-01-01T00:00:01", "Model", "Moonlight pools on the floor.", "table"),
     )
     db.commit()
 
@@ -75,10 +75,78 @@ def test_player_scene_pack_strips_gm_private_log(tmp_path):
         "Moonlight" in (entry.get("message") or "")
         for entry in player_scene["recent_log"]
     )
-
-    gm = set_gm_control_character(db, elara)
+    # GM seat without a lease still sees System meta in the pack.
+    gm = get_seat_by_role(db, "gm")
     gm_scene = build_scene_pack(db, "I wait.", seat_id=gm["id"])
     assert any(entry.get("speaker") == "System" for entry in gm_scene["recent_log"])
+    db.close()
+
+
+def test_gm_lease_scene_pack_drops_prior_possession_log(tmp_path):
+    """Switching leases cuts Ask context at the new controlling marker."""
+    from sakaki_gm.gm import build_messages
+    from sakaki_gm.seat_db import gm_lease_controlling_message
+
+    db = get_db(tmp_path / "lease_cut.db")
+    migrate(db)
+    ensure_default_session(db)
+    elara = create_character(
+        db, "Elara Starveil", {"name": "Elara Starveil"}, campaign_role="Ally"
+    )
+    okina = create_character(
+        db, "Okina Matara", {"name": "Okina Matara"}, campaign_role="NPC"
+    )
+
+    gm = set_gm_control_character(db, elara)
+    db.execute(
+        "INSERT INTO log (timestamp, speaker, message, visibility) VALUES (?, ?, ?, ?)",
+        ("2026-01-01T00:00:01", "Model", "Your spellbook rests against your side.", "table"),
+    )
+    db.execute(
+        "INSERT INTO log (timestamp, speaker, message, visibility) VALUES (?, ?, ?, ?)",
+        ("2026-01-01T00:00:02", "Controller", "Who is my present character?", "table"),
+    )
+    db.commit()
+
+    elara_scene = build_scene_pack(db, "Who am I?", seat_id=gm["id"])
+    assert any(
+        "spellbook" in (entry.get("message") or "").lower()
+        for entry in elara_scene["recent_log"]
+    )
+
+    gm = set_gm_control_character(db, okina)
+    okina_scene = build_scene_pack(
+        db, "Describe who I am now.", seat_id=gm["id"]
+    )
+    blob = " ".join(entry.get("message") or "" for entry in okina_scene["recent_log"])
+    assert "spellbook" not in blob.lower()
+    assert "Elara" not in blob
+    assert okina_scene["acting_character"]["name"] == "Okina Matara"
+
+    db.execute(
+        "INSERT INTO log (timestamp, speaker, message, visibility) VALUES (?, ?, ?, ?)",
+        ("2026-01-01T00:00:03", "Model", "You are Okina Matara in the hall.", "table"),
+    )
+    db.commit()
+    okina_scene = build_scene_pack(db, "Who am I?", seat_id=gm["id"])
+    assert any(
+        "Okina Matara" in (entry.get("message") or "")
+        for entry in okina_scene["recent_log"]
+    )
+    assert not any(
+        "spellbook" in (entry.get("message") or "").lower()
+        for entry in okina_scene["recent_log"]
+    )
+
+    _system, user = build_messages(
+        db,
+        "Who is my present character?",
+        include_reference_material=False,
+        seat_id=gm["id"],
+    )
+    assert "lease boundary" in user
+    assert "CONTROLLER ACTION" in user
+    assert gm_lease_controlling_message("Okina Matara") not in user  # cut after marker
     db.close()
 
 

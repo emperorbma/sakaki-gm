@@ -7,6 +7,15 @@ from datetime import datetime
 LOG_VISIBILITY_TABLE = "table"
 LOG_VISIBILITY_GM = "gm"
 
+# Speakers: human desk ask vs AI narration (not the GM-seat login name).
+SPEAKER_PLAYER = "Player"  # human on a player controller desk
+SPEAKER_CONTROLLER = "Controller"  # human on the GM desk (lease / ops ask)
+SPEAKER_MODEL = "Model"  # AI muse/manager narration
+SPEAKER_SYSTEM = "System"
+SPEAKER_CHAT = "Chat"
+
+_HUMAN_SPEAKERS = frozenset({SPEAKER_PLAYER, SPEAKER_CONTROLLER})
+
 
 class LogPanel:
     def __init__(self, parent, db):
@@ -59,7 +68,7 @@ class LogPanel:
         if visibility is None:
             visibility = (
                 LOG_VISIBILITY_GM
-                if str(speaker) == "System"
+                if str(speaker) == SPEAKER_SYSTEM
                 else LOG_VISIBILITY_TABLE
             )
         if visibility not in {LOG_VISIBILITY_TABLE, LOG_VISIBILITY_GM}:
@@ -91,16 +100,23 @@ class LogPanel:
         start = self.log.index(tk.END)
         self.log.insert(tk.END, f"[{clock}] {speaker}: {message}\n\n")
         color = {
-            "Player": "#1b5e20",
+            SPEAKER_PLAYER: "#1b5e20",
+            SPEAKER_CONTROLLER: "#33691e",
+            SPEAKER_MODEL: "#0d47a1",
+            # Legacy bottles labeled model replies as GM before Model existed.
             "GM": "#0d47a1",
-            "System": "#5d4037",
-            "Chat": "#6a1b9a",
+            SPEAKER_SYSTEM: "#5d4037",
+            SPEAKER_CHAT: "#6a1b9a",
         }.get(speaker, "black")
         self.log.tag_add(speaker, start, "end-1c")
         self.log.tag_config(
             speaker,
             foreground=color,
-            font=("Georgia", 11, "bold" if speaker == "Player" else "normal"),
+            font=(
+                "Georgia",
+                11,
+                "bold" if speaker in _HUMAN_SPEAKERS else "normal",
+            ),
         )
         self.log.configure(state="disabled")
         self.log.see(tk.END)

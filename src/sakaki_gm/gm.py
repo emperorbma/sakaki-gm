@@ -232,20 +232,21 @@ def _scene_user_message(
             seat = get_active_seat(db)
         except Exception:
             seat = None
-    parts = ["CURRENT SCENE"]
-    # GM temporary lease: recent log often still narrates another PC as "you".
-    if (
+    gm_lease = (
         seat is not None
         and seat.get("role") == "gm"
         and seat.get("character_id") is not None
         and scene.get("acting_character")
-    ):
+    )
+    parts = ["CURRENT SCENE"]
+    # GM temporary lease: cut prior possession narration; "you" is this body only.
+    if gm_lease:
         acting_name = scene["acting_character"].get("name") or "the acting character"
         parts.append(
-            f"Acting lens: GM temporary lease on {acting_name}. "
+            f"Acting lens: GM desk temporary lease on {acting_name}. "
             "Second-person \"you\", worn gear, and body refer ONLY to that "
-            "character's payload below — never another PC's inventory or "
-            "appearance from the recent log."
+            "character's payload below. Recent log starts at this lease "
+            "boundary — earlier possession/control narration is omitted."
         )
     parts.extend([
         "Acting character:",
@@ -261,9 +262,12 @@ def _scene_user_message(
         "In tools mode, search them with the lookup tools. In context mode, "
         "the app attaches lore only for names outside this scene.",
         "",
-        "PLAYER ACTION",
-        played,
     ])
+    if seat is not None and seat.get("role") == "gm":
+        parts.append("CONTROLLER ACTION (GM desk — human operator, not the model)")
+    else:
+        parts.append("PLAYER ACTION")
+    parts.append(played)
     return "\n".join(parts)
 
 
@@ -297,6 +301,14 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
         except Exception:
             seat = None
     include_gm_private = not (seat and seat.get("role") == "player")
+    after_log_id = None
+    if (
+        seat is not None
+        and seat.get("role") == "gm"
+        and seat.get("character_id") is not None
+        and acting is not None
+    ):
+        after_log_id = _gm_lease_log_anchor_id(db, acting["name"])
     return {
         "acting_character": (
             _short_character_payload(db, acting, action) if acting else None
@@ -314,7 +326,10 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
         ),
         "routes": routes,
         "recent_log": _recent_log(
-            db, SCENE_LOG_LIMIT, include_gm_private=include_gm_private
+            db,
+            SCENE_LOG_LIMIT,
+            include_gm_private=include_gm_private,
+            after_log_id=after_log_id,
         ),
         "coverage_names": _scene_coverage_names(
             acting, place, routes, db, action
@@ -572,33 +587,81 @@ def _quest_payloads(db) -> list[dict]:
     ]
 
 
+def _gm_lease_log_anchor_id(db, character_name: str) -> int | None:
+    """Latest System lease marker for this name; scene packs start after it."""
+    from sakaki_gm.seat_db import gm_lease_controlling_message
+
+    name = (character_name or "").strip()
+    if not name:
+        return None
+    marker = gm_lease_controlling_message(name)
+    try:
+        row = db.execute(
+            """
+            SELECT id FROM log
+            WHERE speaker = 'System' AND message = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (marker,),
+        ).fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    return int(row["id"])
+
+
 def _recent_log(
-    db, limit: int, *, include_gm_private: bool = True
+    db,
+    limit: int,
+    *,
+    include_gm_private: bool = True,
+    after_log_id: int | None = None,
 ) -> list[dict]:
-    """Recent log lines for prompts. GM-private System ops stay off player packs."""
+    """Recent log lines for prompts. GM-private System ops stay off player packs.
+
+    ``after_log_id`` (inclusive of later rows only) cuts context at a GM lease
+    boundary so prior possession narration does not enter the new lens.
+    """
+    after_clause = ""
+    params: list = []
+    if after_log_id is not None:
+        after_clause = " AND id > ?"
+        params.append(int(after_log_id))
     try:
         if include_gm_private:
             log_rows = db.execute(
-                """
+                f"""
                 SELECT speaker, message FROM log
+                WHERE 1=1{after_clause}
                 ORDER BY id DESC LIMIT ?
                 """,
-                (limit,),
+                (*params, limit),
             ).fetchall()
         else:
             log_rows = db.execute(
-                """
+                f"""
                 SELECT speaker, message FROM log
-                WHERE COALESCE(visibility, 'table') != 'gm'
+                WHERE COALESCE(visibility, 'table') != 'gm'{after_clause}
                 ORDER BY id DESC LIMIT ?
                 """,
-                (limit,),
+                (*params, limit),
             ).fetchall()
     except Exception:
-        log_rows = db.execute(
-            "SELECT speaker, message FROM log ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        if after_log_id is not None:
+            log_rows = db.execute(
+                """
+                SELECT speaker, message FROM log
+                WHERE id > ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (int(after_log_id), limit),
+            ).fetchall()
+        else:
+            log_rows = db.execute(
+                "SELECT speaker, message FROM log ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
     return [
         {"speaker": row["speaker"], "message": row["message"]}
         for row in reversed(log_rows)
