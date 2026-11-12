@@ -644,6 +644,15 @@ def sync_place_knowledge_from_world(
     commit: bool = True,
 ) -> list[dict[str, Any]]:
     """Mark places the seat's PC has visited / currently occupies."""
+    table = db.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='place_knowledge'
+        """
+    ).fetchone()
+    if table is None:
+        # Pre-v20 migrate path may call ensure before place_knowledge exists.
+        return []
     seat = get_seat(db, seat_id)
     if seat is None or seat_is_gm(seat):
         return []
@@ -670,11 +679,13 @@ def sync_place_knowledge_from_world(
                 }
             )
 
+    catalog = _geography_place_catalog(db)
+
     object_row = db.execute(
         "SELECT object_id FROM characters WHERE id=?",
         (character_id,),
     ).fetchone()
-    current_place_ids = set()
+    known_place_ids: set[str] = set()
     if object_row and object_row["object_id"]:
         for location in db.execute(
             """
@@ -683,44 +694,23 @@ def sync_place_knowledge_from_world(
             """,
             (object_row["object_id"],),
         ):
-            current_place_ids.add(location["to_object_id"])
+            known_place_ids.add(location["to_object_id"])
             note_place(location["to_object_id"], "present", "located_at")
-        # Historical visits: any prior located_at still recorded counts as known.
-        # (Same query today; present covers current. Keep known for any link.)
-        for location in current_place_ids:
-            note_place(location, "present", "located_at")
 
-    # Match free-text world.location to a geography object name when possible.
+    # world.location may list several places ("Academy…, ritual hall, Eldenport").
     world_loc = db.execute(
         "SELECT value FROM world WHERE key='location'"
     ).fetchone()
     location_text = str(world_loc["value"] if world_loc else "").strip()
     if location_text:
-        match = db.execute(
-            """
-            SELECT object_id, name FROM objects
-            WHERE geography_kind NOT IN ('', 'unspecified')
-              AND name = ? COLLATE NOCASE
-            LIMIT 1
-            """,
-            (location_text,),
-        ).fetchone()
-        if match is None:
-            match = db.execute(
-                """
-                SELECT object_id, name FROM objects
-                WHERE geography_kind NOT IN ('', 'unspecified')
-                  AND instr(lower(?), lower(name)) > 0
-                ORDER BY length(name) DESC
-                LIMIT 1
-                """,
-                (location_text,),
-            ).fetchone()
-        if match is not None:
-            note_place(match["object_id"], "present", "world_location")
+        for segment in _split_location_segments(location_text):
+            for object_id in _match_places_in_text(segment, catalog):
+                known_place_ids.add(object_id)
+                note_place(object_id, "present", "world_location")
 
-    # Place names mentioned in recent events/log → at least rumored/known.
-    blob_parts = []
+    # Full play history — early areas often only appear here / in quests, not
+    # in the short "recent" window.
+    blob_parts: list[str] = []
     events_row = db.execute(
         "SELECT value FROM world WHERE key='events'"
     ).fetchone()
@@ -730,28 +720,134 @@ def sync_place_knowledge_from_world(
         except json.JSONDecodeError:
             events = []
         if isinstance(events, list):
-            blob_parts.extend(str(item) for item in events[-20:])
-    for row in db.execute(
-        "SELECT message FROM log ORDER BY id DESC LIMIT 40"
-    ):
+            blob_parts.extend(str(item) for item in events)
+    for row in db.execute("SELECT message FROM log ORDER BY id"):
         blob_parts.append(str(row["message"] or ""))
+
+    # Done/open quests encode shrine arcs (Stone Circle, Starfall's End, …).
+    for quest in db.execute("SELECT name, description, status FROM quests"):
+        blob_parts.append(str(quest["name"] or ""))
+        blob_parts.append(str(quest["description"] or ""))
+
+    # PC sheet notes — not the campaign atlas note (that lists every place).
+    char_row = db.execute(
+        "SELECT name, data FROM characters WHERE id=?",
+        (character_id,),
+    ).fetchone()
+    if char_row is not None:
+        try:
+            data = json.loads(char_row["data"] or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        if isinstance(data, dict):
+            for key in ("notes", "features", "proficiencies"):
+                blob_parts.append(str(data.get(key) or ""))
+        pc_name = str(char_row["name"] or "").strip()
+        if pc_name:
+            for note in db.execute(
+                "SELECT title, content FROM notes WHERE content != ''"
+            ):
+                title = str(note["title"] or "")
+                title_cf = title.casefold()
+                if "geography of" in title_cf or title_cf.startswith("geography"):
+                    continue
+                if pc_name.casefold() in title_cf or "quest log" in title_cf:
+                    blob_parts.append(title)
+                    blob_parts.append(str(note["content"] or ""))
+
     blob = "\n".join(blob_parts)
     if blob.strip():
-        for place in db.execute(
-            """
-            SELECT object_id, name FROM objects
-            WHERE geography_kind NOT IN ('', 'unspecified')
-            """
-        ):
-            name = str(place["name"] or "").strip()
-            if len(name) < 3:
-                continue
-            if name.casefold() in blob.casefold():
-                note_place(place["object_id"], "known", "recent_mention")
+        for object_id in _match_places_in_text(blob, catalog):
+            known_place_ids.add(object_id)
+            note_place(object_id, "known", "history_mention")
+
+    # Containment parents of known places (ritual hall → academy → …).
+    for object_id in list(known_place_ids):
+        for parent_id in _containing_place_ids(db, object_id):
+            note_place(parent_id, "known", "contains_parent")
 
     if commit:
         db.commit()
     return upgraded
+
+
+def _geography_place_catalog(db) -> list[tuple[str, str, set[str]]]:
+    catalog = []
+    for place in db.execute(
+        """
+        SELECT object_id, name FROM objects
+        WHERE geography_kind NOT IN ('', 'unspecified')
+        """
+    ):
+        name = str(place["name"] or "").strip()
+        if not name:
+            continue
+        aliases = {name.casefold()}
+        if " - " in name:
+            left, right = name.split(" - ", 1)
+            aliases.add(left.strip().casefold())
+            aliases.add(right.strip().casefold())
+        # Drop empty / tiny aliases ("end", "star" alone are too vague).
+        aliases = {alias for alias in aliases if len(alias) >= 5}
+        if aliases:
+            catalog.append((place["object_id"], name, aliases))
+    return catalog
+
+
+def _split_location_segments(text: str) -> list[str]:
+    parts = []
+    for chunk in text.replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if chunk:
+            parts.append(chunk)
+    if text.strip() and text.strip() not in parts:
+        parts.insert(0, text.strip())
+    return parts
+
+
+def _match_places_in_text(
+    text: str, catalog: list[tuple[str, str, set[str]]]
+) -> list[str]:
+    text_cf = text.casefold()
+    hits = []
+    # Longer aliases first so "Academy of Starlight Ritual Hall" wins over
+    # "Academy of Starlight" when both match.
+    ranked = sorted(
+        catalog,
+        key=lambda item: max(len(alias) for alias in item[2]),
+        reverse=True,
+    )
+    for object_id, _name, aliases in ranked:
+        if any(alias in text_cf for alias in aliases):
+            hits.append(object_id)
+    return hits
+
+
+def _containing_place_ids(db, object_id: str) -> list[str]:
+    """Walk contains-parents that are geographic places."""
+    parents = []
+    seen = {object_id}
+    frontier = [object_id]
+    while frontier:
+        current = frontier.pop()
+        for row in db.execute(
+            """
+            SELECT link.from_object_id AS parent_id, obj.geography_kind
+            FROM object_links AS link
+            JOIN objects AS obj ON obj.object_id = link.from_object_id
+            WHERE link.relation='contains' AND link.to_object_id=?
+            """,
+            (current,),
+        ):
+            parent_id = row["parent_id"]
+            kind = str(row["geography_kind"] or "")
+            if parent_id in seen:
+                continue
+            seen.add(parent_id)
+            if kind and kind not in {"", "unspecified"}:
+                parents.append(parent_id)
+                frontier.append(parent_id)
+    return parents
 
 
 def filter_places_for_seat(
