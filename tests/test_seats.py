@@ -142,6 +142,9 @@ def test_place_knowledge_from_visits_and_mentions(tmp_path):
         ) VALUES
         ('place:eldenport', 'Eldenport', 'place', 'settlement', ''),
         ('place:academy', 'Academy of Starlight', 'place', 'point', ''),
+        ('place:hall', 'Academy of Starlight Ritual Hall', 'place', 'room', ''),
+        ('place:stone', 'Second Star - Stone Circle', 'place', 'point', ''),
+        ('place:starfall', 'Fourth Star - Starfall''s End', 'place', 'point', ''),
         ('place:secret', 'Hidden Vault', 'place', 'point', '')
         """
     )
@@ -152,17 +155,37 @@ def test_place_knowledge_from_visits_and_mentions(tmp_path):
         """
         INSERT INTO object_links (
             relation, from_object_id, to_object_id, properties
-        ) VALUES ('located_at', ?, 'place:academy', '{}')
+        ) VALUES
+        ('located_at', ?, 'place:hall', '{}'),
+        ('contains', 'place:academy', 'place:hall', '{}')
         """,
         (char_object,),
     )
     db.execute(
         "INSERT OR REPLACE INTO world (key, value) VALUES ('location', ?)",
-        ("Academy of Starlight",),
+        ("Academy of Starlight, ritual hall, Eldenport",),
     )
     db.execute(
         "INSERT OR REPLACE INTO world (key, value) VALUES ('events', ?)",
         ('["Serina walked through Eldenport to the Academy."]',),
+    )
+    from sakaki_gm.quest_db import save_quest
+
+    save_quest(
+        db,
+        None,
+        "Explore the Stone Circle",
+        "Notes:\nSecond Star (Stone Circle)",
+        [serina],
+        status="Done",
+    )
+    save_quest(
+        db,
+        None,
+        "Starfall's End",
+        "Fourth Star complete.",
+        [serina],
+        status="Done",
     )
     db.commit()
     ensure_default_session(db)
@@ -171,12 +194,18 @@ def test_place_knowledge_from_visits_and_mentions(tmp_path):
     places = [
         {"object_id": "place:eldenport", "name": "Eldenport"},
         {"object_id": "place:academy", "name": "Academy of Starlight"},
+        {"object_id": "place:hall", "name": "Academy of Starlight Ritual Hall"},
+        {"object_id": "place:stone", "name": "Second Star - Stone Circle"},
+        {"object_id": "place:starfall", "name": "Fourth Star - Starfall's End"},
         {"object_id": "place:secret", "name": "Hidden Vault"},
     ]
     visible = filter_places_for_seat(db, places, get_active_seat(db))
     ids = {place["object_id"] for place in visible}
-    assert "place:academy" in ids
-    assert get_place_knowledge(db, player["id"], "place:academy") == "present"
+    assert "place:hall" in ids
+    assert get_place_knowledge(db, player["id"], "place:hall") == "present"
+    assert "place:academy" in ids  # parent + location segment
     assert "place:eldenport" in ids
+    assert "place:stone" in ids  # done quest history
+    assert "place:starfall" in ids
     assert "place:secret" not in ids
     db.close()
