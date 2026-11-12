@@ -431,13 +431,42 @@ def show_gm_reply_debug(cfg: dict | None = None) -> bool:
 
 
 def ai_assist_mode(cfg: dict | None = None) -> str:
-    """Return ``manager`` or ``muse`` for Ask / Run as GM."""
+    """Return desk ``manager`` / ``muse`` toggle for Ask / Run as GM."""
     if cfg is None:
         cfg = load_config()
     ui = cfg.get("ui") if isinstance(cfg, dict) else None
     if not isinstance(ui, dict):
         return "manager"
     return normalize_ai_assist_mode(ui.get("ai_assist_mode"))
+
+
+def normalize_model_purpose(value) -> str:
+    """Normalize a model purpose tag (free text; ``muse`` is special-cased)."""
+    return str(value or "").strip().casefold()
+
+
+def purpose_forces_muse(purpose) -> bool:
+    """True when a model purpose tag means narration-only (no bottle writes)."""
+    tag = normalize_model_purpose(purpose)
+    return tag in {"muse", "narration", "narration-only", "narration_only"}
+
+
+def effective_ai_assist_mode(
+    cfg: dict | None = None,
+    *,
+    model_entry: dict | None = None,
+) -> str:
+    """Assist mode for an Ask turn: desk toggle, overridden by model purpose.
+
+    A model tagged purpose ``muse`` / ``narration`` always runs narration-only,
+    even if the desk AI-role dropdown still says Manager. That keeps
+    purpose-labeled muse models from silently writing the bottle.
+    """
+    if purpose_forces_muse(
+        (model_entry or {}).get("purpose") if isinstance(model_entry, dict) else None
+    ):
+        return "muse"
+    return ai_assist_mode(cfg)
 
 
 def enabled_ai_tools(settings: dict | None = None) -> list[str]:

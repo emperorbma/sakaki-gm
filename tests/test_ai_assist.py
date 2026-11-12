@@ -2,10 +2,12 @@ from sakaki_gm.llm_client import selected_campaign_tools
 from sakaki_gm.llm_config import (
     AI_TOOL_NAMES,
     ai_assist_mode,
+    effective_ai_assist_mode,
     enabled_ai_tools,
     load_config,
     normalize_ai_assist_mode,
     normalize_enabled_ai_tools,
+    purpose_forces_muse,
     resolve_ask_gm_mode,
     save_config,
 )
@@ -52,3 +54,23 @@ def test_muse_and_empty_tools_force_context_mode():
         == "context"
     )
     assert resolve_ask_gm_mode(strong, {}, assist_mode="manager") == "tools"
+
+
+def test_model_purpose_muse_overrides_desk_manager(tmp_path):
+    config = tmp_path / "config.json"
+    cfg = load_config(config)
+    cfg["ui"]["ai_assist_mode"] = "manager"
+    save_config(cfg, config)
+    loaded = load_config(config)
+    assert ai_assist_mode(loaded) == "manager"
+    assert purpose_forces_muse("Muse")
+    assert purpose_forces_muse("narration-only")
+    assert not purpose_forces_muse("manager")
+    assert (
+        effective_ai_assist_mode(loaded, model_entry={"purpose": "muse"})
+        == "muse"
+    )
+    assert (
+        effective_ai_assist_mode(loaded, model_entry={"purpose": ""})
+        == "manager"
+    )
