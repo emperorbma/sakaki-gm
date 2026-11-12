@@ -102,6 +102,44 @@ def test_table_session_host_endpoint_and_solo_allows_switch(tmp_path):
     host.stop()
 
 
+def test_character_occupancy_is_exclusive(tmp_path):
+    state = TableServerState(
+        campaign_id="c1",
+        campaign_name="Occ",
+        campaign_path=str(tmp_path / "x.db"),
+        secret="",
+    )
+    server = TableServer(state, host="127.0.0.1", port=0)
+    _host, port = server.start()
+    client = TableClient(f"http://127.0.0.1:{port}")
+    joined = client.join("P2")
+    session_id = joined["session_id"]
+
+    state.claim_occupancy(
+        session_id=state.host_session_id,
+        character_id=25,
+        desk_role="player",
+        display_name="Host",
+    )
+    try:
+        client.claim_occupancy(character_id=25, desk_role="player")
+        assert False, "expected exclusive occupancy failure"
+    except TableClientError as exc:
+        assert "already seated" in str(exc).lower()
+
+    state.release_occupancy(state.host_session_id)
+    client.claim_occupancy(character_id=25, desk_role="player")
+    assert 25 in state.occupied_character_ids(
+        except_session_id=state.host_session_id
+    )
+    assert 25 not in state.occupied_character_ids(
+        except_session_id=session_id
+    )
+    client.leave()
+    assert 25 not in state.occupied_character_ids()
+    server.stop()
+
+
 def test_bad_secret_rejected(tmp_path):
     state = TableServerState(
         campaign_id="c1",

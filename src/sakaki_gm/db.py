@@ -615,3 +615,19 @@ def migrate(db):
         ensure_default_party(db, commit=False)
         db.execute("PRAGMA user_version = 22")
         db.commit()
+
+    if version < 23:
+        # Exclusive desk occupancy: one live holder per controller character.
+        cur.executescript("""
+        CREATE TABLE IF NOT EXISTS desk_occupancy (
+            character_id INTEGER PRIMARY KEY,
+            seat_id INTEGER REFERENCES seats(id) ON DELETE SET NULL,
+            holder_id TEXT NOT NULL,
+            desk_role TEXT NOT NULL DEFAULT 'player',
+            claimed_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_desk_occupancy_holder
+            ON desk_occupancy(holder_id);
+        """)
+        db.execute("PRAGMA user_version = 23")
+        db.commit()

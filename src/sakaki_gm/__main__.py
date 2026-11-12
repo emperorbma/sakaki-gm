@@ -21,6 +21,10 @@ def main() -> None:
 
     def on_close():
         try:
+            window.release_desk_presence()
+        except Exception:
+            pass
+        try:
             if window.session is not None:
                 window.session.stop()
         finally:

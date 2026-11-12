@@ -112,3 +112,35 @@ class TableClient:
             ).get("revision")
             or 0
         )
+
+    def claim_occupancy(
+        self,
+        *,
+        character_id: int | None,
+        desk_role: str = "player",
+        seat_id: int | None = None,
+        display_name: str = "",
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/occupancy/claim",
+            payload={
+                "session_id": self.session_id,
+                "character_id": character_id,
+                "desk_role": desk_role,
+                "seat_id": seat_id,
+                "display_name": display_name,
+            },
+        )
+
+    def release_occupancy(self) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/occupancy/release",
+            payload={"session_id": self.session_id},
+        )
+
+    def occupancy(self) -> list[dict[str, Any]]:
+        return list(
+            self._request("GET", "/occupancy").get("occupancy") or []
+        )

@@ -122,7 +122,7 @@ def test_session_tables_survive_version_rewind(tmp_path):
     db.execute("PRAGMA user_version = 19")
     db.commit()
     migrate(db)
-    assert db.execute("PRAGMA user_version").fetchone()[0] == 22
+    assert db.execute("PRAGMA user_version").fetchone()[0] == 23
     assert get_seat_by_role(db, "gm") is not None
     cols = {row[1] for row in db.execute("PRAGMA table_info(seats)").fetchall()}
     assert "password_hash" in cols

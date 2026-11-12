@@ -125,6 +125,9 @@ class MainWindow:
             self.db = get_db(path)
         self.root.geometry("1600x950")
         self._seat_session_active = False
+        import uuid
+
+        self.desk_holder_id = uuid.uuid4().hex
         self.setup_ui()
         self.refresh_campaign_chrome()
         if self.session is not None:
@@ -751,6 +754,12 @@ class MainWindow:
         """Modal seat login — required at startup; optional when switching."""
         cfg = load_config(self.config_path)
         current = desk_mode(cfg)
+        occupied = set()
+        if self.session is not None:
+            try:
+                occupied |= self.session.occupied_character_ids()
+            except Exception:
+                pass
         while True:
             choice = run_seat_login(
                 self.root,
@@ -758,26 +767,63 @@ class MainWindow:
                 initial=current,
                 title=title,
                 allow_cancel=allow_cancel and self._seat_session_active,
+                holder_id=self.desk_holder_id,
+                occupied_character_ids=occupied,
             )
             if choice is None:
                 if allow_cancel and self._seat_session_active:
                     return False
                 # Startup: cancel is not allowed — keep prompting.
                 continue
-            self._commit_seat_login(choice)
+            try:
+                self._commit_seat_login(choice)
+            except PermissionError as exc:
+                messagebox.showerror("Seat login", str(exc))
+                continue
             return True
 
     def switch_seat_login(self):
         """Re-open seat login so a solo host can swap GM ↔ player."""
         self.prompt_seat_login(allow_cancel=True, title="Switch seat")
 
+    def release_desk_presence(self):
+        """Drop bottle + table occupancy for this desk process."""
+        from sakaki_gm.seat_db import release_desk_occupancy
+
+        try:
+            release_desk_occupancy(self.db, self.desk_holder_id)
+        except Exception:
+            pass
+        if self.session is not None:
+            try:
+                self.session.release_presence()
+            except Exception:
+                pass
+
     def _commit_seat_login(self, choice: SeatLoginResult | str):
+        from sakaki_gm.seat_db import release_desk_occupancy
+
         if isinstance(choice, SeatLoginResult):
             mode = normalize_desk_mode(choice.role)
             character_id = choice.character_id
         else:
             mode = normalize_desk_mode(choice)
             character_id = None
+        # Table-wide exclusive claim (host/client). Solo relies on bottle occupancy
+        # already recorded during claim_player_character.
+        if mode == "gm":
+            release_desk_occupancy(self.db, self.desk_holder_id, commit=True)
+        if self.session is not None:
+            try:
+                self.session.claim_presence(
+                    desk_role=mode,
+                    character_id=character_id if mode == "player" else None,
+                    display_name=self.session.display_name,
+                )
+            except PermissionError:
+                if mode == "player":
+                    release_desk_occupancy(self.db, self.desk_holder_id, commit=True)
+                raise
         cfg = load_config(self.config_path)
         apply_seat_choice(cfg, mode)
         save_config(cfg, self.config_path)

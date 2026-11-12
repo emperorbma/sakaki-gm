@@ -379,12 +379,93 @@ def list_player_claimable_characters(
     return claimable
 
 
+def bottle_occupied_character_ids(
+    db, *, except_holder_id: str | None = None
+) -> set[int]:
+    """Characters with a live desk holder recorded in this bottle."""
+    try:
+        rows = db.execute(
+            "SELECT character_id, holder_id FROM desk_occupancy"
+        ).fetchall()
+    except Exception:
+        return set()
+    occupied = set()
+    for row in rows:
+        holder = str(row["holder_id"] or "")
+        if except_holder_id and holder == except_holder_id:
+            continue
+        occupied.add(int(row["character_id"]))
+    return occupied
+
+
+def claim_desk_occupancy(
+    db,
+    *,
+    holder_id: str,
+    desk_role: str,
+    character_id: int | None = None,
+    seat_id: int | None = None,
+    commit: bool = True,
+) -> None:
+    """Record exclusive live occupancy for this desk process in the bottle."""
+    from datetime import datetime, timezone
+
+    holder_id = str(holder_id or "").strip()
+    if not holder_id:
+        raise ValueError("holder_id is required for desk occupancy.")
+    desk_role = _normalize_role(desk_role) if desk_role in SEAT_ROLES else "player"
+    # Drop prior claims by this desk.
+    db.execute("DELETE FROM desk_occupancy WHERE holder_id=?", (holder_id,))
+    if desk_role == "player" and character_id is not None:
+        character_id = int(character_id)
+        row = db.execute(
+            "SELECT holder_id FROM desk_occupancy WHERE character_id=?",
+            (character_id,),
+        ).fetchone()
+        if row is not None and str(row["holder_id"]) != holder_id:
+            raise PermissionError(
+                "That character is already seated at another desk."
+            )
+        db.execute(
+            """
+            INSERT INTO desk_occupancy (
+                character_id, seat_id, holder_id, desk_role, claimed_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                character_id,
+                seat_id,
+                holder_id,
+                desk_role,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+    if commit:
+        db.commit()
+
+
+def release_desk_occupancy(
+    db, holder_id: str, *, commit: bool = True
+) -> None:
+    holder_id = str(holder_id or "").strip()
+    if not holder_id:
+        return
+    try:
+        db.execute("DELETE FROM desk_occupancy WHERE holder_id=?", (holder_id,))
+    except Exception:
+        return
+    if commit:
+        db.commit()
+
+
 def claim_player_character(
     db,
     character_id: int,
     password: str = "",
     *,
     seat_id: int | None = None,
+    holder_id: str | None = None,
+    extra_occupied_character_ids: set[int] | list[int] | None = None,
     commit: bool = True,
 ) -> dict[str, Any]:
     """Authenticate a controller seat for its bound PC and end any GM lease."""
@@ -407,14 +488,16 @@ def claim_player_character(
     if seat is None or seat.get("role") != "player":
         raise ValueError("No player controller seat available.")
     seat = authenticate_seat(db, seat, password)
-    occupied = player_occupied_character_ids(db)
-    own = seat.get("character_id")
-    if character_id in occupied and (
-        own is None or int(own) != character_id
-    ):
+    elsewhere = bottle_occupied_character_ids(
+        db, except_holder_id=holder_id
+    )
+    if extra_occupied_character_ids:
+        elsewhere |= {int(item) for item in extra_occupied_character_ids}
+    if character_id in elsewhere:
         raise PermissionError(
-            "That character is controlled by a player who is present."
+            "That character is already seated at another desk."
         )
+    own = seat.get("character_id")
     claimable_ids = {
         item["id"] for item in list_player_claimable_characters(db)
     }
@@ -433,6 +516,15 @@ def claim_player_character(
             set_seat_character(db, gm["id"], None, commit=False)
     bound = set_seat_character(db, seat["id"], character_id, commit=False)
     set_active_seat(db, seat["id"], commit=False)
+    if holder_id:
+        claim_desk_occupancy(
+            db,
+            holder_id=holder_id,
+            desk_role="player",
+            character_id=character_id,
+            seat_id=bound["id"],
+            commit=False,
+        )
     if commit:
         db.commit()
     return bound
