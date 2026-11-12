@@ -38,6 +38,7 @@ from sakaki_gm.ui.modules.characters import CharactersModule
 from sakaki_gm.ui.modules.documents import DocumentsModule
 from sakaki_gm.ui.modules.geography import GeographyModule
 from sakaki_gm.ui.modules.items import ItemsModule
+from sakaki_gm.ui.modules.actors import ActorsModule
 from sakaki_gm.ui.modules.quests import QuestsModule
 from sakaki_gm.ui.modules.settings import SettingsModule
 from sakaki_gm.ui.modules.skills import SkillsModule
@@ -104,6 +105,8 @@ class MainWindow:
         notebook.add(self.items_module.frame, text="Items")
         self.quests_module = QuestsModule(notebook, self.db)
         notebook.add(self.quests_module.frame, text="Quests")
+        self.actors_module = ActorsModule(notebook, self.db)
+        notebook.add(self.actors_module.frame, text="Actors")
         self.skills_module = SkillsModule(notebook, self.db)
         notebook.add(self.skills_module.frame, text="Skills")
         self.spells_module = SpellsModule(notebook, self.db)
@@ -227,6 +230,7 @@ class MainWindow:
         self.geography_module.set_db(new_db)
         self.items_module.set_db(new_db)
         self.quests_module.set_db(new_db)
+        self.actors_module.set_db(new_db)
         self.skills_module.set_db(new_db)
         self.spells_module.set_db(new_db)
         self.settings_module.set_db(new_db)
@@ -324,6 +328,7 @@ class MainWindow:
         self.geography_module.set_db(self.db)
         self.items_module.set_db(self.db)
         self.quests_module.set_db(self.db)
+        self.actors_module.set_db(self.db)
         self.skills_module.set_db(self.db)
         self.spells_module.set_db(self.db)
         self.settings_module.set_db(self.db)
