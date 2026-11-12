@@ -27,7 +27,8 @@ DESK_SURFACES = {
     "location": AUDIENCE_SHARED,
     # GM-only design / catalog / cheat surfaces.
     "documents": AUDIENCE_GM_ONLY,
-    "geography": AUDIENCE_GM_ONLY,
+    # Shared but knowledge-filtered for the player seat (places they've been).
+    "geography": AUDIENCE_SHARED,
     "items": AUDIENCE_GM_ONLY,
     "actors": AUDIENCE_GM_ONLY,
     "skills": AUDIENCE_GM_ONLY,

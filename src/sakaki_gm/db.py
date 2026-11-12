@@ -549,3 +549,19 @@ def migrate(db):
         ensure_default_session(db, commit=False)
         db.execute("PRAGMA user_version = 19")
         db.commit()
+
+    if version < 20:
+        # Player place memory: visited / present geography objects (string object ids).
+        cur.executescript("""
+        CREATE TABLE IF NOT EXISTS place_knowledge (
+            seat_id INTEGER NOT NULL REFERENCES seats(id) ON DELETE CASCADE,
+            object_id TEXT NOT NULL,
+            level TEXT NOT NULL DEFAULT 'known',
+            PRIMARY KEY (seat_id, object_id)
+        );
+        """)
+        from sakaki_gm.seat_db import ensure_default_session
+
+        ensure_default_session(db, commit=False)
+        db.execute("PRAGMA user_version = 20")
+        db.commit()

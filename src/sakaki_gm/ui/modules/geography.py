@@ -95,11 +95,31 @@ class GeographyModule:
             details_frame, wrap=tk.WORD, font=("Georgia", 11), state=tk.DISABLED
         )
         self.details.pack(fill=tk.BOTH, expand=True)
+        self._desk_mode = "gm"
         self._refresh_exits()
 
     def set_db(self, db):
         self.db = db
         self._stack = [SETTING_ROOT]
+        self._refresh_exits()
+
+    def set_desk_audience(self, mode: str):
+        from sakaki_gm.ui.desk_audience import normalize_desk_mode
+
+        self._desk_mode = normalize_desk_mode(mode)
+        # If the player is viewing an unknown place, snap back to setting root.
+        if self._desk_mode == "player" and self._current_object_id() != SETTING_ROOT:
+            from sakaki_gm.seat_db import (
+                ensure_default_session,
+                get_active_seat,
+                place_ids_known_to_seat,
+            )
+
+            ensure_default_session(self.db)
+            seat = get_active_seat(self.db)
+            known = place_ids_known_to_seat(self.db, seat["id"]) if seat else set()
+            if self._current_object_id() not in known:
+                self._stack = [SETTING_ROOT]
         self._refresh_exits()
 
     def _current_object_id(self):
@@ -120,19 +140,24 @@ class GeographyModule:
         query = self.search_var.get().strip().casefold()
         if is_root:
             self._show_setting_details()
+            nodes = get_geography_objects(self.db, self.kind_filter.get())
+            nodes = self._filter_places(nodes)
             rows = [
                 {
                     "relation": "setting",
                     "target": node,
                     "link": {},
                 }
-                for node in get_geography_objects(
-                    self.db, self.kind_filter.get()
-                )
+                for node in nodes
             ]
         else:
             self._show_node_details(current)
             rows = get_navigation_exits(self.db, current)
+            rows = [
+                item
+                for item in rows
+                if self._place_visible(item["target"].get("object_id"))
+            ]
 
         for item in rows:
             target = item["target"]
@@ -158,6 +183,38 @@ class GeographyModule:
                 values=(label, target["name"], target["geography_kind"]),
             )
         self._loading = False
+
+    def _filter_places(self, nodes):
+        from sakaki_gm.seat_db import (
+            ensure_default_session,
+            filter_places_for_seat,
+            get_active_seat,
+        )
+        from sakaki_gm.ui.desk_audience import shared_is_stripped
+
+        if not shared_is_stripped(getattr(self, "_desk_mode", "gm")):
+            return nodes
+        ensure_default_session(self.db)
+        return filter_places_for_seat(self.db, nodes, get_active_seat(self.db))
+
+    def _place_visible(self, object_id: str) -> bool:
+        from sakaki_gm.seat_db import (
+            ensure_default_session,
+            get_active_seat,
+            place_ids_known_to_seat,
+            seat_is_gm,
+        )
+        from sakaki_gm.ui.desk_audience import shared_is_stripped
+
+        if not shared_is_stripped(getattr(self, "_desk_mode", "gm")):
+            return True
+        ensure_default_session(self.db)
+        seat = get_active_seat(self.db)
+        if seat_is_gm(seat):
+            return True
+        if seat is None:
+            return False
+        return object_id in place_ids_known_to_seat(self.db, seat["id"])
 
     def _node_name(self, object_id):
         row = self.db.execute(
@@ -199,6 +256,14 @@ class GeographyModule:
         self.details.configure(state=tk.DISABLED)
 
     def _show_setting_details(self):
+        from sakaki_gm.ui.desk_audience import shared_is_stripped
+
+        if shared_is_stripped(getattr(self, "_desk_mode", "gm")):
+            self._write_details(
+                "Places you know — visited or mentioned in play.\n\n"
+                "Unknown regions stay hidden until your character learns of them."
+            )
+            return
         self._write_details(
             "Geography is a query view over objects classified by geographic "
             "kind.\n\n"
@@ -234,12 +299,15 @@ class GeographyModule:
                 lines.append(f"Precision: {node['coordinate_precision']}")
             if node["coordinate_basis"]:
                 lines.append(f"Basis: {node['coordinate_basis']}")
-        tables = get_encounter_tables(self.db, object_id)
-        if tables:
-            lines.extend(("", "Encounter tables:"))
-            lines.extend(
-                f"  {table['name']} ({table['roll_die']})" for table in tables
-            )
+        from sakaki_gm.ui.desk_audience import shared_is_stripped
+
+        if not shared_is_stripped(getattr(self, "_desk_mode", "gm")):
+            tables = get_encounter_tables(self.db, object_id)
+            if tables:
+                lines.extend(("", "Encounter tables:"))
+                lines.extend(
+                    f"  {table['name']} ({table['roll_die']})" for table in tables
+                )
         self._write_details("\n".join(lines))
 
     def _open_selected(self, _event=None):

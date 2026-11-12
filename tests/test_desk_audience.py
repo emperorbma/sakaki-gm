@@ -28,13 +28,14 @@ def test_gm_only_surfaces_are_classified():
     assert "actors" in gm_only
     assert "settings" in gm_only
     assert "documents" in gm_only
-    assert "geography" in gm_only
+    assert "geography" not in gm_only  # shared; knowledge-filtered for players
     assert "items" in gm_only
     assert "skills" in gm_only
     assert "spells" in gm_only
     assert "characters" not in gm_only
     assert "quests" not in gm_only
     assert "log" not in gm_only
+    assert surface_visible("geography", "player") is True
 
 
 def test_desk_mode_persists_in_config(tmp_path):
