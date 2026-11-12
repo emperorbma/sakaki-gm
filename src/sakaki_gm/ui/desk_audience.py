@@ -1,12 +1,17 @@
-"""Desk audience: GM mode vs player mode visibility.
+"""Desk audience: active-seat lens (GM vs player) visibility.
 
-Surfaces are either ``gm_only`` (hidden in player mode) or ``shared`` (visible
-in both; modules may strip controls when audience is player).
+Surfaces are either ``gm_only`` (hidden for the player seat) or ``shared``
+(visible in both; modules may strip controls when the active seat is player).
+
+``desk_mode`` remains the config key; it is the active seat *role* on a solo
+two-seat table (GM + player).
 """
 
 from __future__ import annotations
 
 DESK_MODES = ("gm", "player")
+# Alias: desk mode values are seat roles on the implicit two-seat table.
+SEAT_ROLES = DESK_MODES
 
 AUDIENCE_GM_ONLY = "gm_only"
 AUDIENCE_SHARED = "shared"
@@ -61,3 +66,8 @@ def surface_visible(surface: str, desk_mode: str) -> bool:
 def shared_is_stripped(desk_mode: str) -> bool:
     """True when shared modules should hide GM-only controls."""
     return normalize_desk_mode(desk_mode) == "player"
+
+
+def active_seat_role(desk_mode: str) -> str:
+    """Map desk toggle value to seat role (gm / player)."""
+    return normalize_desk_mode(desk_mode)

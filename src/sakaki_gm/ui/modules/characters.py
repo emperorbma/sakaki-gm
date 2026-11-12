@@ -158,6 +158,13 @@ class CharactersModule:
         self.refresh()
 
     def _visible_characters(self):
+        from sakaki_gm.seat_db import (
+            ensure_default_session,
+            filter_characters_for_seat,
+            get_active_seat,
+        )
+        from sakaki_gm.ui.desk_audience import shared_is_stripped
+
         want_scaffolds = self.showing_scaffolds()
         visible = []
         for char in get_all_characters(self.db):
@@ -169,6 +176,11 @@ class CharactersModule:
             is_scaffold = _is_stat_block_scaffold(char)
             if is_scaffold == want_scaffolds:
                 visible.append(char)
+        # Player seat: filter by knowledge/visibility (GM seat sees the playbook).
+        if shared_is_stripped(getattr(self, "_desk_mode", "gm")):
+            ensure_default_session(self.db)
+            seat = get_active_seat(self.db)
+            visible = filter_characters_for_seat(self.db, visible, seat)
         return visible
 
     def refresh(self):
