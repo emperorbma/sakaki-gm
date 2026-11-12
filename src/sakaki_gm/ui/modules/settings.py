@@ -211,6 +211,14 @@ class SettingsModule:
         ttk.Label(
             desk,
             text="Off by default. Turn on only when inspecting or re-processing raw replies.",
+        ).pack(anchor="w", padx=10, pady=(0, 4))
+        ttk.Label(
+            desk,
+            text=(
+                "Desk mode (GM / player) is toggled in the header. "
+                "Player mode hides GM-only tabs and strips design controls."
+            ),
+            wraplength=640,
         ).pack(anchor="w", padx=10, pady=(0, 8))
 
     def set_db(self, db):
@@ -357,10 +365,17 @@ class SettingsModule:
         messagebox.showinfo("Saved", "Model settings saved.")
 
     def save_desk_ui(self):
+        from sakaki_gm.ui.desk_audience import normalize_desk_mode
+
         cfg = load_config(self.main_app.config_path)
         if not isinstance(cfg.get("ui"), dict):
             cfg["ui"] = {}
         cfg["ui"]["show_gm_reply_debug"] = bool(self.show_gm_reply_debug.get())
+        # Preserve header desk-mode toggle; Settings is GM-only.
+        current_mode = cfg["ui"].get("desk_mode")
+        if hasattr(self.main_app, "desk_mode_var"):
+            current_mode = self.main_app.desk_mode_var.get() or current_mode
+        cfg["ui"]["desk_mode"] = normalize_desk_mode(current_mode)
         save_config(cfg, self.main_app.config_path)
         self.main_app.apply_ui_preferences()
 

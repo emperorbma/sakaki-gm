@@ -57,17 +57,59 @@ class QuestsModule:
             command=self.remove_character,
         ).pack(anchor="w", pady=(4, 0))
 
-        buttons = ttk.Frame(editor)
-        buttons.pack(fill=tk.X)
-        ttk.Button(buttons, text="New", command=self.new_quest).pack(side=tk.LEFT)
-        ttk.Button(buttons, text="Save", command=self.save_current).pack(side=tk.LEFT, padx=6)
-        ttk.Button(buttons, text="Delete", command=self.delete_current).pack(side=tk.LEFT)
+        self.edit_buttons = ttk.Frame(editor)
+        self.edit_buttons.pack(fill=tk.X)
+        ttk.Button(self.edit_buttons, text="New", command=self.new_quest).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(
+            self.edit_buttons, text="Save", command=self.save_current
+        ).pack(side=tk.LEFT, padx=6)
+        ttk.Button(
+            self.edit_buttons, text="Delete", command=self.delete_current
+        ).pack(side=tk.LEFT)
+        self._desk_mode = "gm"
         self.reload()
 
     def set_db(self, db):
         self.db = db
         self._selected_id = None
         self.reload()
+
+    def set_desk_audience(self, mode: str):
+        from sakaki_gm.ui.desk_audience import normalize_desk_mode, shared_is_stripped
+
+        self._desk_mode = normalize_desk_mode(mode)
+        stripped = shared_is_stripped(self._desk_mode)
+        self._set_fields_state("disabled" if stripped else "normal")
+        if stripped:
+            if self.edit_buttons.winfo_ismapped():
+                self.edit_buttons.pack_forget()
+        elif not self.edit_buttons.winfo_ismapped():
+            self.edit_buttons.pack(fill=tk.X)
+
+    def _player_locked(self) -> bool:
+        from sakaki_gm.ui.desk_audience import shared_is_stripped
+
+        return shared_is_stripped(getattr(self, "_desk_mode", "gm"))
+
+    def _set_fields_state(self, state: str):
+        self.name.configure(state=state)
+        self.status.configure(state=state)
+        self.description.configure(state=state)
+
+    def _write_fields(self, name: str, status: str, description: str):
+        locked = self._player_locked()
+        if locked:
+            self._set_fields_state("normal")
+        self.name.delete(0, tk.END)
+        self.name.insert(0, name)
+        self.status.delete(0, tk.END)
+        self.status.insert(0, status)
+        self.description.delete("1.0", tk.END)
+        self.description.insert("1.0", description)
+        if locked:
+            self._set_fields_state("disabled")
 
     def reload(self, keep_id=None):
         self._loading = True
@@ -92,14 +134,15 @@ class QuestsModule:
         self._loading = True
         self._selected_id = None
         self.list.selection_clear(0, tk.END)
-        self.name.delete(0, tk.END)
-        self.status.delete(0, tk.END)
-        self.description.delete("1.0", tk.END)
+        self._write_fields("", "", "")
         self._show_characters(set())
         self._loading = False
-        self.name.focus_set()
+        if not self._player_locked():
+            self.name.focus_set()
 
     def save_current(self):
+        if self._player_locked():
+            return
         name = self.name.get().strip()
         if not name:
             messagebox.showerror("Quest", "Quest name cannot be empty.", parent=self.frame)
@@ -125,6 +168,8 @@ class QuestsModule:
         self.reload(keep_id=quest_id)
 
     def delete_current(self):
+        if self._player_locked():
+            return
         if self._selected_id is None:
             return
         quest = next(
@@ -152,12 +197,7 @@ class QuestsModule:
     def _show(self, index):
         quest = self._quests[index]
         self._selected_id = quest["id"]
-        self.name.delete(0, tk.END)
-        self.name.insert(0, quest["name"])
-        self.status.delete(0, tk.END)
-        self.status.insert(0, quest["status"])
-        self.description.delete("1.0", tk.END)
-        self.description.insert("1.0", quest["description"])
+        self._write_fields(quest["name"], quest["status"], quest["description"])
 
         assigned = {
             row["id"] for row in get_quest_characters(self.db, quest["id"])
