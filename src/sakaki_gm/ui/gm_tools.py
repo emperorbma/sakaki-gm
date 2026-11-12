@@ -9,11 +9,13 @@ from typing import Any, Optional
 from sakaki_gm.character_db import get_all_characters
 from sakaki_gm.seat_db import (
     TURN_PHASES,
+    characters_available_for_gm_control,
     clear_turn_wait,
     ensure_default_session,
     get_seat_by_role,
     get_session_state,
     request_player_roll,
+    set_gm_control_character,
     set_turn_phase,
     sync_seat_knowledge_from_world,
     upgrade_knowledge,
@@ -310,6 +312,76 @@ def run_set_turn_phase(parent, db) -> Optional[dict[str, Any]]:
     ttk.Button(buttons, text="Set", command=ok).pack(side=tk.RIGHT)
     parent.wait_window(chooser)
     return result["state"]
+
+
+def run_gm_control_character(parent, db) -> Optional[str]:
+    """Pick a temporary GM lens on any character not held by a present player."""
+    ensure_default_session(db)
+    available = characters_available_for_gm_control(db)
+    gm = get_seat_by_role(db, "gm")
+    current_id = gm.get("character_id") if gm else None
+
+    dialog = tk.Toplevel(parent)
+    dialog.title("Control character")
+    dialog.transient(parent)
+    dialog.grab_set()
+    body = ttk.Frame(dialog, padding=12)
+    body.pack(fill=tk.BOTH, expand=True)
+    ttk.Label(
+        body,
+        text=(
+            "Temporary GM lease: any character not controlled by a player "
+            "who is present (includes absentee PCs)."
+        ),
+        wraplength=420,
+    ).pack(anchor="w")
+
+    labels = ["(none — clear lease)"]
+    ids: list[int | None] = [None]
+    for item in available:
+        tag = "absentee PC" if item.get("absentee_pc") else (
+            item.get("campaign_role") or "character"
+        )
+        labels.append(f"{item['name']} ({tag})")
+        ids.append(item["id"])
+
+    pick = tk.StringVar()
+    combo = ttk.Combobox(
+        body, textvariable=pick, values=labels, state="readonly", width=42
+    )
+    combo.pack(anchor="w", pady=(10, 0))
+    if current_id in ids:
+        combo.current(ids.index(current_id))
+    else:
+        combo.current(0)
+
+    result: dict[str, Optional[str]] = {"summary": None}
+
+    def ok():
+        index = combo.current()
+        if index < 0:
+            return
+        character_id = ids[index]
+        try:
+            set_gm_control_character(db, character_id)
+        except (PermissionError, ValueError) as exc:
+            messagebox.showerror("Control character", str(exc), parent=dialog)
+            return
+        if character_id is None:
+            result["summary"] = "GM cleared character lease"
+        else:
+            name = available[index - 1]["name"]
+            result["summary"] = f"GM controlling {name} (temporary lease)"
+        dialog.destroy()
+
+    buttons = ttk.Frame(body)
+    buttons.pack(fill=tk.X, pady=(16, 0))
+    ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(
+        side=tk.RIGHT, padx=(6, 0)
+    )
+    ttk.Button(buttons, text="Apply", command=ok).pack(side=tk.RIGHT)
+    parent.wait_window(dialog)
+    return result["summary"]
 
 
 def run_party_manager(parent, db) -> Optional[str]:

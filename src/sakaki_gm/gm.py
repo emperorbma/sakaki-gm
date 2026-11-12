@@ -141,12 +141,21 @@ SCENE_LOG_LIMIT = 6
 FULL_LOG_LIMIT = 12
 
 
-def build_messages(db, action: str, *, include_reference_material: bool = True):
+def build_messages(
+    db,
+    action: str,
+    *,
+    include_reference_material: bool = True,
+    seat_id: int | None = None,
+):
     """Return (system, user) for one GM turn. The user text is prefixed with [Play].
 
     Ask GM passes include_reference_material=False and receives a scene pack:
     acting character short state, place plus routes, and a short log tail.
     Clipboard copy keeps the full bottle dump when the flag is True.
+
+    ``seat_id`` selects whose bound PC is the acting character when the action
+    does not name someone (multi-player: each player seat owns a character_id).
     """
     played = action.strip()
     if not played.startswith("[Play]"):
@@ -165,7 +174,7 @@ def build_messages(db, action: str, *, include_reference_material: bool = True):
     if include_reference_material:
         user = _full_reference_user_message(db, played)
     else:
-        user = _scene_user_message(db, action, played)
+        user = _scene_user_message(db, action, played, seat_id=seat_id)
     return system, user
 
 
@@ -208,8 +217,10 @@ def _full_reference_user_message(db, played: str) -> str:
     ])
 
 
-def _scene_user_message(db, action: str, played: str) -> str:
-    scene = build_scene_pack(db, action)
+def _scene_user_message(
+    db, action: str, played: str, *, seat_id: int | None = None
+) -> str:
+    scene = build_scene_pack(db, action, seat_id=seat_id)
     return "\n".join([
         "CURRENT SCENE",
         "Acting character:",
@@ -230,7 +241,7 @@ def _scene_user_message(db, action: str, played: str) -> str:
     ])
 
 
-def build_scene_pack(db, action: str) -> dict:
+def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
     """Selective scene for Ask GM: one actor, place, routes, short log."""
     location_text = world_value(db, "location", "Unknown")
     if not isinstance(location_text, str) or not location_text.strip():
@@ -250,7 +261,7 @@ def build_scene_pack(db, action: str) -> dict:
                 })
         except KeyError:
             routes = []
-    acting = _select_acting_character(db, action)
+    acting = _select_acting_character(db, action, seat_id=seat_id)
     return {
         "acting_character": (
             _short_character_payload(db, acting, action) if acting else None
@@ -337,21 +348,52 @@ def _scene_coverage_names(acting, place, routes, db, action: str) -> list[str]:
     return names
 
 
-def _select_acting_character(db, action: str):
+def _select_acting_character(
+    db, action: str, *, seat_id: int | None = None
+):
+    from sakaki_gm.campaign_roles import (
+        campaign_role_tokens,
+        is_playerish_campaign_role,
+    )
+    from sakaki_gm.seat_db import get_active_seat, get_seat
+
     rows = db.execute(
         "SELECT id, name, data, campaign_role, object_id "
         "FROM characters ORDER BY name"
     ).fetchall()
     if not rows:
         return None
+    by_id = {int(row["id"]): row for row in rows}
     action_cf = (action or "").casefold()
     for row in rows:
         name = (row["name"] or "").strip()
         if len(name) >= 2 and name.casefold() in action_cf:
             return row
+
+    # Multi-player: the seated controller's bound character is the default lens.
+    bound_id = None
+    seat = get_seat(db, seat_id) if seat_id is not None else None
+    if seat is None:
+        try:
+            seat = get_active_seat(db)
+        except Exception:
+            seat = None
+    if seat is not None and seat.get("character_id") is not None:
+        bound_id = int(seat["character_id"])
+        if bound_id in by_id:
+            return by_id[bound_id]
+
+    # Prefer an explicit protagonist, then any other playerish role.
+    # Tokenize roles so "pc" does not match inside "NPC".
+    protagonists = [
+        row
+        for row in rows
+        if "protagonist" in campaign_role_tokens(row["campaign_role"])
+    ]
+    if protagonists:
+        return protagonists[0]
     for row in rows:
-        role = (row["campaign_role"] or "").casefold()
-        if any(token in role for token in ("party", "protagonist", "player", "pc")):
+        if is_playerish_campaign_role(row["campaign_role"]):
             return row
     return rows[0]
 

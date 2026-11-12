@@ -52,6 +52,7 @@ from sakaki_gm.ui.desk_audience import (
     surface_visible,
 )
 from sakaki_gm.ui.seat_login import (
+    SeatLoginResult,
     apply_seat_choice,
     run_seat_login,
     seat_login_label,
@@ -59,6 +60,7 @@ from sakaki_gm.ui.seat_login import (
 from sakaki_gm.ui.gm_tools import (
     format_turn_wait_status,
     run_clear_wait,
+    run_gm_control_character,
     run_party_manager,
     run_request_roll,
     run_set_character_knowledge,
@@ -260,6 +262,11 @@ class MainWindow:
             self.gm_tools,
             text="Parties",
             command=self.gm_parties,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Button(
+            self.gm_tools,
+            text="Control PC…",
+            command=self.gm_control_character,
         ).pack(side=tk.LEFT, padx=6, pady=6)
         ttk.Label(self.gm_tools, text="Model").pack(side=tk.LEFT, padx=(12, 4))
         self.gm_model_var = tk.StringVar(value="")
@@ -758,8 +765,13 @@ class MainWindow:
         """Re-open seat login so a solo host can swap GM ↔ player."""
         self.prompt_seat_login(allow_cancel=True, title="Switch seat")
 
-    def _commit_seat_login(self, role: str):
-        mode = normalize_desk_mode(role)
+    def _commit_seat_login(self, choice: SeatLoginResult | str):
+        if isinstance(choice, SeatLoginResult):
+            mode = normalize_desk_mode(choice.role)
+            character_id = choice.character_id
+        else:
+            mode = normalize_desk_mode(choice)
+            character_id = None
         cfg = load_config(self.config_path)
         apply_seat_choice(cfg, mode)
         save_config(cfg, self.config_path)
@@ -767,15 +779,19 @@ class MainWindow:
         self._seat_session_active = True
         self._sync_active_seat(mode)
         self.apply_ui_preferences()
-        self.log_panel.add_entry(
-            "System",
-            f"Seated as {seat_login_label(mode)}",
-        )
+        detail = seat_login_label(mode)
+        if mode == "player" and character_id is not None:
+            row = self.db.execute(
+                "SELECT name FROM characters WHERE id=?", (character_id,)
+            ).fetchone()
+            if row is not None:
+                detail = f"{detail} controlling {row['name']}"
+        self.log_panel.add_entry("System", f"Seated as {detail}")
 
     def on_desk_mode_selected(self, _event=None):
         # Kept for any residual callers; seat changes go through login.
         mode = normalize_desk_mode(self.desk_mode_var.get())
-        self._commit_seat_login(mode)
+        self._commit_seat_login(SeatLoginResult(role=mode))
 
     def _sync_active_seat(self, mode: str):
         """Desk toggle = active seat swap on the implicit two-seat table."""
@@ -992,10 +1008,18 @@ class MainWindow:
         self.world_module.save_prompt(quiet=True)
         self.documents_module.save_current(quiet=True)
         self.settings_module.save_system_prompt(quiet=True)
+        from sakaki_gm.seat_db import get_active_seat
+
+        active_seat = None
+        try:
+            active_seat = get_active_seat(self.db)
+        except Exception:
+            active_seat = None
         system, user = build_messages(
             self.db,
             action,
             include_reference_material=False,
+            seat_id=active_seat["id"] if active_seat else None,
         )
         cfg = load_config(self.config_path)
         seat = normalize_desk_mode(self.desk_mode_var.get())
@@ -1210,6 +1234,13 @@ class MainWindow:
         if summary:
             self.log_panel.add_entry("System", f"GM parties: {summary}")
             self.characters_module.refresh()
+
+    def gm_control_character(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        summary = run_gm_control_character(self.root, self.db)
+        if summary:
+            self.log_panel.add_entry("System", summary)
 
     def gm_set_phase(self):
         if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
