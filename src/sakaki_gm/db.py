@@ -581,3 +581,37 @@ def migrate(db):
         ensure_default_session(db, commit=False)
         db.execute("PRAGMA user_version = 21")
         db.commit()
+
+    if version < 22:
+        # Party stub: membership + merge/split proposals (GM approval).
+        cur.executescript("""
+        CREATE TABLE IF NOT EXISTS parties (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL DEFAULT 'Party',
+            status TEXT NOT NULL DEFAULT 'active',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS party_members (
+            party_id INTEGER NOT NULL REFERENCES parties(id) ON DELETE CASCADE,
+            character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+            PRIMARY KEY (party_id, character_id)
+        );
+        CREATE TABLE IF NOT EXISTS party_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            op TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            requested_by_seat_id INTEGER REFERENCES seats(id) ON DELETE SET NULL,
+            payload TEXT NOT NULL DEFAULT '{}',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            resolved_at TEXT NOT NULL DEFAULT ''
+        );
+        """)
+        from sakaki_gm.party_db import ensure_default_party
+        from sakaki_gm.seat_db import ensure_default_session
+
+        ensure_default_session(db, commit=False)
+        ensure_default_party(db, commit=False)
+        db.execute("PRAGMA user_version = 22")
+        db.commit()

@@ -310,3 +310,220 @@ def run_set_turn_phase(parent, db) -> Optional[dict[str, Any]]:
     ttk.Button(buttons, text="Set", command=ok).pack(side=tk.RIGHT)
     parent.wait_window(chooser)
     return result["state"]
+
+
+def run_party_manager(parent, db) -> Optional[str]:
+    """GM party stub: view parties, approve/reject merge/split proposals, apply ops."""
+    from sakaki_gm.party_db import (
+        approve_party_proposal,
+        ensure_default_party,
+        get_party_with_members,
+        list_parties,
+        list_party_proposals,
+        merge_parties,
+        reject_party_proposal,
+        request_party_merge,
+        request_party_split,
+        split_party,
+    )
+
+    ensure_default_session(db)
+    ensure_default_party(db)
+    dialog = tk.Toplevel(parent)
+    dialog.title("Parties")
+    dialog.transient(parent)
+    dialog.grab_set()
+    body = ttk.Frame(dialog, padding=12)
+    body.pack(fill=tk.BOTH, expand=True)
+    ttk.Label(
+        body,
+        text=(
+            "Parties merge and unmerge with GM approval. Players may request; "
+            "you approve before membership (and later split knowledge) changes."
+        ),
+        wraplength=480,
+    ).pack(anchor="w")
+
+    status = ttk.Label(body, text="")
+    status.pack(anchor="w", pady=(8, 4))
+    listbox = tk.Listbox(body, height=10, font=("Georgia", 11))
+    listbox.pack(fill=tk.BOTH, expand=True, pady=4)
+    result: dict[str, Any] = {"summary": None}
+
+    def refresh():
+        listbox.delete(0, tk.END)
+        parties = list_parties(db, status="active")
+        names = {
+            int(char["id"]): str(char["name"])
+            for char in get_all_characters(db)
+            if "error" not in char
+        }
+        lines = []
+        for party in parties:
+            full = get_party_with_members(db, party["id"]) or party
+            members = [
+                names.get(cid, f"#{cid}") for cid in full.get("member_ids", [])
+            ]
+            lines.append(
+                f"Party {party['id']}: {party['name']} — "
+                + (", ".join(members) if members else "(empty)")
+            )
+        pending = list_party_proposals(db, status="pending")
+        for proposal in pending:
+            lines.append(
+                f"Pending #{proposal['id']} {proposal['op']}: "
+                f"{proposal['payload']} {proposal['note']}".strip()
+            )
+        for line in lines:
+            listbox.insert(tk.END, line)
+        status.configure(
+            text=f"{len(parties)} active party(ies), {len(pending)} pending proposal(s)"
+        )
+
+    def _selected_party_id() -> Optional[int]:
+        parties = list_parties(db, status="active")
+        if not parties:
+            return None
+        selection = listbox.curselection()
+        if selection and selection[0] < len(parties):
+            return parties[selection[0]]["id"]
+        return parties[0]["id"]
+
+    def do_split():
+        party_id = _selected_party_id()
+        if party_id is None:
+            messagebox.showerror("Parties", "No active party.", parent=dialog)
+            return
+        full = get_party_with_members(db, party_id)
+        if not full or len(full.get("member_ids") or []) < 2:
+            messagebox.showerror(
+                "Parties", "Need at least two members to split.", parent=dialog
+            )
+            return
+        names = {
+            int(char["id"]): str(char["name"])
+            for char in get_all_characters(db)
+            if "error" not in char
+        }
+        # Move everyone except the first member into a scout party (stub UX).
+        stay = full["member_ids"][0]
+        moving = full["member_ids"][1:]
+        label = ", ".join(names.get(cid, str(cid)) for cid in moving)
+        if not messagebox.askyesno(
+            "Split party",
+            f"Split {full['name']}?\n\n"
+            f"Stay: {names.get(stay, stay)}\n"
+            f"New party: {label}",
+            parent=dialog,
+        ):
+            return
+        split_party(
+            db,
+            party_id,
+            moving,
+            new_party_name=f"{full['name']} (split)",
+        )
+        result["summary"] = f"Split party {party_id}"
+        refresh()
+
+    def do_merge():
+        parties = list_parties(db, status="active")
+        if len(parties) < 2:
+            messagebox.showerror(
+                "Parties", "Need at least two active parties to merge.", parent=dialog
+            )
+            return
+        ids = [party["id"] for party in parties]
+        labels = ", ".join(f"{p['id']}:{p['name']}" for p in parties)
+        if not messagebox.askyesno(
+            "Merge parties",
+            f"Merge all active parties into {parties[0]['name']}?\n\n{labels}",
+            parent=dialog,
+        ):
+            return
+        merge_parties(db, ids, into_party_id=ids[0])
+        result["summary"] = f"Merged parties {ids}"
+        refresh()
+
+    def do_request_split():
+        party_id = _selected_party_id()
+        if party_id is None:
+            return
+        full = get_party_with_members(db, party_id)
+        if not full or len(full.get("member_ids") or []) < 2:
+            messagebox.showerror(
+                "Parties", "Need at least two members to request a split.", parent=dialog
+            )
+            return
+        player = get_seat_by_role(db, "player")
+        request_party_split(
+            db,
+            from_party_id=party_id,
+            character_ids=full["member_ids"][1:],
+            new_party_name=f"{full['name']} (split)",
+            requested_by_seat_id=player["id"] if player else None,
+            note="Player-requested split (stub)",
+        )
+        result["summary"] = "Queued split proposal"
+        refresh()
+
+    def do_request_merge():
+        parties = list_parties(db, status="active")
+        if len(parties) < 2:
+            messagebox.showerror(
+                "Parties", "Need two active parties to request a merge.", parent=dialog
+            )
+            return
+        player = get_seat_by_role(db, "player")
+        request_party_merge(
+            db,
+            party_ids=[party["id"] for party in parties],
+            into_party_id=parties[0]["id"],
+            requested_by_seat_id=player["id"] if player else None,
+            note="Player-requested merge (stub)",
+        )
+        result["summary"] = "Queued merge proposal"
+        refresh()
+
+    def do_approve():
+        pending = list_party_proposals(db, status="pending")
+        if not pending:
+            messagebox.showinfo("Parties", "No pending proposals.", parent=dialog)
+            return
+        proposal = pending[0]
+        if not messagebox.askyesno(
+            "Approve proposal",
+            f"Approve #{proposal['id']} {proposal['op']}?\n{proposal['payload']}",
+            parent=dialog,
+        ):
+            return
+        approve_party_proposal(db, proposal["id"])
+        result["summary"] = f"Approved proposal {proposal['id']}"
+        refresh()
+
+    def do_reject():
+        pending = list_party_proposals(db, status="pending")
+        if not pending:
+            messagebox.showinfo("Parties", "No pending proposals.", parent=dialog)
+            return
+        proposal = pending[0]
+        reject_party_proposal(db, proposal["id"])
+        result["summary"] = f"Rejected proposal {proposal['id']}"
+        refresh()
+
+    buttons = ttk.Frame(body)
+    buttons.pack(fill=tk.X, pady=(8, 0))
+    ttk.Button(buttons, text="Split (GM)", command=do_split).pack(side=tk.LEFT, padx=2)
+    ttk.Button(buttons, text="Merge (GM)", command=do_merge).pack(side=tk.LEFT, padx=2)
+    ttk.Button(buttons, text="Request split", command=do_request_split).pack(
+        side=tk.LEFT, padx=2
+    )
+    ttk.Button(buttons, text="Request merge", command=do_request_merge).pack(
+        side=tk.LEFT, padx=2
+    )
+    ttk.Button(buttons, text="Approve", command=do_approve).pack(side=tk.LEFT, padx=2)
+    ttk.Button(buttons, text="Reject", command=do_reject).pack(side=tk.LEFT, padx=2)
+    ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side=tk.RIGHT)
+    refresh()
+    parent.wait_window(dialog)
+    return result["summary"]

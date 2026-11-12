@@ -366,6 +366,19 @@ def sync_seat_knowledge_from_world(
     ):
         note(int(peer["id"]), "known", "shared_quest")
 
+    # Active party mates (split parties keep separate membership → separate awareness).
+    try:
+        from sakaki_gm.party_db import active_party_for_character, party_member_ids
+
+        party = active_party_for_character(db, int(character_id))
+        if party is not None:
+            for peer_id in party_member_ids(db, party["id"]):
+                if peer_id != int(character_id):
+                    note(int(peer_id), "present", "party_member")
+    except Exception:
+        # Pre-v22 bottles mid-migrate still get role-based allies below.
+        pass
+
     # Standing allies / party (not enemies, not scaffolds).
     for peer in db.execute(
         """
