@@ -45,6 +45,13 @@ from sakaki_gm.ui.desk_audience import (
     shared_is_stripped,
     surface_visible,
 )
+from sakaki_gm.ui.gm_tools import (
+    format_turn_wait_status,
+    run_clear_wait,
+    run_request_roll,
+    run_set_character_knowledge,
+    run_sync_awareness,
+)
 from sakaki_gm.ui.log_panel import LogPanel
 from sakaki_gm.ui.modules.characters import CharactersModule
 from sakaki_gm.ui.modules.documents import DocumentsModule
@@ -160,8 +167,36 @@ class MainWindow:
         for _key, frame, title in self._desk_tabs:
             self.notebook.add(frame, text=title)
 
-        bottom = ttk.Frame(self.root)
-        bottom.pack(fill=tk.X, padx=15, pady=(10, 4))
+        self.gm_tools = ttk.LabelFrame(self.root, text="GM tools")
+        self.gm_tools.pack(fill=tk.X, padx=15, pady=(8, 0))
+        ttk.Button(
+            self.gm_tools,
+            text="Request roll",
+            command=self.gm_request_roll,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Button(
+            self.gm_tools,
+            text="Clear wait",
+            command=self.gm_clear_wait,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Button(
+            self.gm_tools,
+            text="Sync awareness",
+            command=self.gm_sync_awareness,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Button(
+            self.gm_tools,
+            text="Set knowledge",
+            command=self.gm_set_knowledge,
+        ).pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Label(
+            self.gm_tools,
+            text="Direct engine ops — same powers as the AI GM, with your oversight.",
+        ).pack(side=tk.LEFT, padx=(12, 6))
+
+        self.bottom_bar = ttk.Frame(self.root)
+        self.bottom_bar.pack(fill=tk.X, padx=15, pady=(10, 4))
+        bottom = self.bottom_bar
         self.action_entry = tk.Entry(bottom, font=("Georgia", 12))
         self.action_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.action_entry.bind("<Return>", lambda _event: self.ask_gm())
@@ -185,6 +220,13 @@ class MainWindow:
             foreground="#4a5568",
         )
         self.ask_status.pack(side=tk.LEFT)
+        self.turn_status_var = tk.StringVar(value="")
+        self.turn_status = ttk.Label(
+            status_row,
+            textvariable=self.turn_status_var,
+            foreground="#2c5282",
+        )
+        self.turn_status.pack(side=tk.RIGHT)
 
         self.reply_frame = ttk.LabelFrame(
             self.root,
@@ -498,9 +540,18 @@ class MainWindow:
             phase = "idle"
         if mode == "gm":
             hint = f"(GM seat; phase={phase})"
+            self.ask_button.configure(text="Run as GM")
+            if not self.gm_tools.winfo_ismapped():
+                self.gm_tools.pack(
+                    fill=tk.X, padx=15, pady=(8, 0), before=self.bottom_bar
+                )
         else:
             hint = f"(player seat; phase={phase}; knowledge-filtered)"
+            self.ask_button.configure(text="Ask GM")
+            if self.gm_tools.winfo_ismapped():
+                self.gm_tools.pack_forget()
         self.desk_mode_hint.configure(text=hint)
+        self._refresh_turn_status()
 
         selected = None
         try:
@@ -681,6 +732,60 @@ class MainWindow:
             return
         for line in apply_proposals(self.db, proposals, scratch=scratch):
             self.log_panel.add_entry("System", line)
+
+    def _refresh_turn_status(self):
+        from sakaki_gm.seat_db import ensure_default_session, get_session_state
+
+        try:
+            ensure_default_session(self.db)
+            state = get_session_state(self.db)
+            self.turn_status_var.set(format_turn_wait_status(state))
+        except Exception:
+            self.turn_status_var.set("")
+
+    def gm_request_roll(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        state = run_request_roll(self.root, self.db)
+        if state is None:
+            return
+        wait = state.get("turn_wait") or {}
+        self.log_panel.add_entry(
+            "System",
+            "GM requested roll: "
+            f"{wait.get('character', '?')} · {wait.get('kind', 'check')}"
+            + (f" ({wait['skill']})" if wait.get("skill") else "")
+            + (f" DC {wait['dc']}" if wait.get("dc") is not None else ""),
+        )
+        self._refresh_turn_status()
+        self.apply_desk_audience("gm")
+
+    def gm_clear_wait(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        run_clear_wait(self.root, self.db)
+        self.log_panel.add_entry("System", "GM cleared pending wait")
+        self._refresh_turn_status()
+        self.apply_desk_audience("gm")
+
+    def gm_sync_awareness(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        upgraded = run_sync_awareness(self.root, self.db)
+        self.log_panel.add_entry(
+            "System", f"GM synced player awareness ({len(upgraded)} updates)"
+        )
+        self.characters_module.refresh()
+        self.geography_module.set_desk_audience(
+            normalize_desk_mode(self.desk_mode_var.get())
+        )
+
+    def gm_set_knowledge(self):
+        if normalize_desk_mode(self.desk_mode_var.get()) != "gm":
+            return
+        if run_set_character_knowledge(self.root, self.db):
+            self.log_panel.add_entry("System", "GM set character knowledge")
+            self.characters_module.refresh()
 
     def quick_roll(self, sides):
         import random
