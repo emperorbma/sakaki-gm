@@ -155,14 +155,18 @@ def test_gm_lease_scene_pack_drops_prior_possession_log(tmp_path):
 
 
 def test_gm_temporary_party_scene_choice_recorded_vs_table(tmp_path):
-    """Temporary party Ask can stay at recorded place or join table focus."""
+    """Ask focus can define place from character, join table, or stay pinned."""
     from sakaki_gm.gm import build_messages, build_scene_pack
     from sakaki_gm.object_graph_db import create_object, create_object_link
     from sakaki_gm.party_db import (
         GM_CONTROL_PARTY_NOTE,
         active_party_for_character,
     )
-    from sakaki_gm.seat_db import GM_CONTROL_SCENE_TABLE, get_gm_control_scene
+    from sakaki_gm.seat_db import (
+        GM_CONTROL_SCENE_CHARACTER,
+        GM_CONTROL_SCENE_TABLE,
+        get_gm_control_scene,
+    )
 
     db = get_db(tmp_path / "scene_choice.db")
     migrate(db)
@@ -187,13 +191,14 @@ def test_gm_temporary_party_scene_choice_recorded_vs_table(tmp_path):
     )
     db.commit()
 
-    # Default: temporary party stays at recorded place.
+    # Default: define from character (follows recorded place at Ask time).
     gm = set_gm_control_character(db, snake)
     party = active_party_for_character(db, snake)
     assert party is not None
     assert party["notes"].startswith(GM_CONTROL_PARTY_NOTE)
-    assert get_gm_control_scene(db) == "first-star"
+    assert get_gm_control_scene(db) == GM_CONTROL_SCENE_CHARACTER
     scene = build_scene_pack(db, "Who are we?", seat_id=gm["id"])
+    assert scene["scene_mode"] == GM_CONTROL_SCENE_CHARACTER
     assert scene["place"]["name"] == "First Star, Where Waters Sing"
     assert scene["table_focus"]["name"] == "Ritual Hall"
     _system, user = build_messages(
@@ -212,6 +217,73 @@ def test_gm_temporary_party_scene_choice_recorded_vs_table(tmp_path):
     scene = build_scene_pack(db, "Who are we?", seat_id=gm["id"])
     assert scene["place"]["name"] == "Ritual Hall"
     assert scene.get("table_focus") is None
+    db.close()
+
+
+def test_gm_focus_scene_indeterminate_and_character_follows_move(tmp_path):
+    """Indeterminate for faction spread; character mode re-resolves located_at."""
+    from sakaki_gm.gm import build_messages, build_scene_pack
+    from sakaki_gm.object_graph_db import create_object, create_object_link
+    from sakaki_gm.party_db import ensure_default_party
+    from sakaki_gm.seat_db import (
+        GM_CONTROL_SCENE_CHARACTER,
+        GM_CONTROL_SCENE_INDETERMINATE,
+        get_gm_control_scene,
+        set_gm_control_character,
+        set_gm_focus_group,
+    )
+
+    db = get_db(tmp_path / "scene_modes.db")
+    migrate(db)
+    ensure_default_session(db)
+    ensure_default_party(db)
+    a = create_character(
+        db, "Bandit A", {"name": "Bandit A"}, campaign_role="NPC"
+    )
+    b = create_character(
+        db, "Bandit B", {"name": "Bandit B"}, campaign_role="NPC"
+    )
+    row = db.execute(
+        "SELECT object_id FROM characters WHERE id=?", (a,)
+    ).fetchone()
+    create_object(db, "road", "Old Road", "location", "Dusty track.")
+    create_object(db, "camp", "Bandit Camp", "location", "Hidden clearing.")
+    create_object(db, "hall", "Ritual Hall", "location", "Academy.")
+    create_object_link(db, "located_at", row["object_id"], "road")
+    db.execute(
+        "UPDATE world SET value=? WHERE key='location'",
+        ("Ritual Hall",),
+    )
+    db.commit()
+
+    seat = set_gm_focus_group(db, [a, b], name="Road bandits")
+    assert get_gm_control_scene(db) == GM_CONTROL_SCENE_INDETERMINATE
+    scene = build_scene_pack(db, "Raid the caravan.", seat_id=seat["id"])
+    assert scene["scene_mode"] == GM_CONTROL_SCENE_INDETERMINATE
+    assert scene["place"] is None
+    assert scene["location_text"] == "Indeterminate"
+    assert scene["table_focus"]["name"] == "Ritual Hall"
+    _system, user = build_messages(
+        db,
+        "Raid the caravan.",
+        include_reference_material=False,
+        seat_id=seat["id"],
+    )
+    assert "Location is indeterminate" in user
+    assert "main table is at Ritual Hall" in user
+
+    gm = set_gm_control_character(db, a, scene=GM_CONTROL_SCENE_CHARACTER)
+    scene = build_scene_pack(db, "Watch the road.", seat_id=gm["id"])
+    assert scene["place"]["name"] == "Old Road"
+    # Character moves — define-from-character follows.
+    db.execute(
+        "DELETE FROM object_links WHERE from_object_id=? AND relation='located_at'",
+        (row["object_id"],),
+    )
+    create_object_link(db, "located_at", row["object_id"], "camp")
+    db.commit()
+    scene = build_scene_pack(db, "Watch the road.", seat_id=gm["id"])
+    assert scene["place"]["name"] == "Bandit Camp"
     db.close()
 
 

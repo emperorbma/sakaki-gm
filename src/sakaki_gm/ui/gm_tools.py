@@ -11,6 +11,8 @@ from sakaki_gm.gm import world_value
 from sakaki_gm.party_db import list_gm_focus_parties
 from sakaki_gm.seat_db import (
     GM_CONTROL_CLEARED_MESSAGE,
+    GM_CONTROL_SCENE_CHARACTER,
+    GM_CONTROL_SCENE_INDETERMINATE,
     GM_CONTROL_SCENE_TABLE,
     TURN_PHASES,
     activate_gm_focus_party,
@@ -22,6 +24,7 @@ from sakaki_gm.seat_db import (
     get_seat_by_role,
     get_session_state,
     gm_control_party_message,
+    gm_control_scene_label,
     gm_focus_group_message,
     list_controller_seats,
     list_player_claimable_characters,
@@ -349,7 +352,8 @@ def run_gm_control_character(parent, db) -> Optional[str]:
         text=(
             "GM Ask focus is seat/party control — not Actors (AI faction minds). "
             "Lease one character, focus a group/faction band, or switch to a "
-            "saved focus. Members keep home-party membership."
+            "saved focus. Scene: table, define from character (off-table "
+            "entities), indeterminate (faction spread), or pin a place."
         ),
         wraplength=460,
     ).pack(anchor="w")
@@ -490,8 +494,18 @@ def run_gm_control_character(parent, db) -> Optional[str]:
         choices: list[tuple[str, str]] = [
             (
                 GM_CONTROL_SCENE_TABLE,
-                f"Main table focus — {table_location}",
-            )
+                gm_control_scene_label(
+                    GM_CONTROL_SCENE_TABLE, table_location=table_location
+                ),
+            ),
+            (
+                GM_CONTROL_SCENE_CHARACTER,
+                gm_control_scene_label(GM_CONTROL_SCENE_CHARACTER),
+            ),
+            (
+                GM_CONTROL_SCENE_INDETERMINATE,
+                gm_control_scene_label(GM_CONTROL_SCENE_INDETERMINATE),
+            ),
         ]
         oid = _primary_object_id()
         if oid:
@@ -499,15 +513,19 @@ def run_gm_control_character(parent, db) -> Optional[str]:
                 choices.append(
                     (
                         place["object_id"],
-                        f"This focus's place — {place['name']}",
+                        f"Pin place — {place['name']}",
                     )
                 )
         current = scene_var.get()
         valid = {value for value, _label in choices}
         if current not in valid:
-            scene_var.set(
-                choices[1][0] if len(choices) > 1 else GM_CONTROL_SCENE_TABLE
-            )
+            mode = mode_var.get()
+            if mode == "group":
+                scene_var.set(GM_CONTROL_SCENE_INDETERMINATE)
+            elif mode == "lease" and combo.current() > 0:
+                scene_var.set(GM_CONTROL_SCENE_CHARACTER)
+            else:
+                scene_var.set(GM_CONTROL_SCENE_TABLE)
         clearing = mode_var.get() == "lease" and combo.current() <= 0
         for value, label in choices:
             btn = ttk.Radiobutton(
