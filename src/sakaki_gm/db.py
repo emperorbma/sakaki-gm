@@ -671,3 +671,40 @@ def migrate(db):
                 )
         db.execute("PRAGMA user_version = 25")
         db.commit()
+
+    if version < 26:
+        # Party → Members; Seat optionally attaches to a Party and binds one Member.
+        # Non-seated members are normal (allies/NPCs traveling with the party).
+        tables = {
+            row[0]
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "seats" in tables and "parties" in tables:
+            cols = {
+                row[1]
+                for row in db.execute("PRAGMA table_info(seats)").fetchall()
+            }
+            if "party_id" not in cols:
+                db.execute(
+                    """
+                    ALTER TABLE seats
+                    ADD COLUMN party_id INTEGER REFERENCES parties(id)
+                        ON DELETE SET NULL
+                    """
+                )
+            from sakaki_gm.party_db import ensure_default_party
+            from sakaki_gm.seat_db import ensure_default_session
+
+            ensure_default_session(db, commit=False)
+            party = ensure_default_party(db, commit=False)
+            db.execute(
+                """
+                UPDATE seats SET party_id=?
+                WHERE party_id IS NULL
+                """,
+                (party["id"],),
+            )
+        db.execute("PRAGMA user_version = 26")
+        db.commit()

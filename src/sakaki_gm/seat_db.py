@@ -1,14 +1,21 @@
 """Multiuser ontology shell: seats, turn phase, and knowledge/visibility.
 
-Solo play is implicitly two seats (GM + one player) on one machine. Seat login
-chooses the active seat; knowledge edges gate what a player seat may see; the
-GM seat sees the full playbook.
+Entity shape with parties (see ``party_db``)::
 
-Per-seat ``password_hash``: blank string = open seat (no password). Any
-non-empty hash requires the matching password at login. Passwords are seat-
-scoped only — the controlled PC is a separate binding (and GM may take a
-temporary lease on an absentee PC). Password recovery is out of scope locally;
-a future server lobby can own that.
+    Party → Members (characters, seated or not)
+          ↘ Seats (optional controllers; ``seats.party_id`` + ``character_id``)
+
+Solo play is implicitly two seats (GM + one player) on one machine, both
+attached to the default party. Seat login chooses the active seat; knowledge
+edges gate what a player seat may see; the GM seat sees the full playbook.
+
+``character_id`` is the member this seat controls (if any). Non-seated party
+members are normal. The GM seat may attach to a temporary one-member party to
+run an NPC/absentee PC for Ask, then return to the main party.
+
+Per-seat ``password_hash``: blank string = open seat (no password). Passwords
+are seat-scoped; the controlled PC is a separate binding. Password recovery is
+out of scope locally; a future server lobby can own that.
 """
 
 from __future__ import annotations
@@ -147,6 +154,16 @@ def _seat_password_hash(row) -> str:
         return ""
 
 
+def _seat_party_id(row) -> int | None:
+    try:
+        value = row["party_id"]
+    except (KeyError, IndexError):
+        return None
+    if value is None:
+        return None
+    return int(value)
+
+
 def _seat_row(row) -> dict[str, Any]:
     password_hash = _seat_password_hash(row)
     return {
@@ -155,8 +172,52 @@ def _seat_row(row) -> dict[str, Any]:
         "display_name": row["display_name"] or "",
         "role": row["role"],
         "character_id": row["character_id"],
+        "party_id": _seat_party_id(row),
         "has_password": bool(password_hash.strip()),
     }
+
+
+def set_seat_party(
+    db, seat_id: int, party_id: int | None, *, commit: bool = True
+) -> dict[str, Any]:
+    """Attach a seat to a party (or clear). Members without seats stay valid."""
+    if get_seat(db, seat_id) is None:
+        raise ValueError(f"Unknown seat {seat_id}.")
+    if party_id is not None:
+        party_id = int(party_id)
+        row = db.execute(
+            "SELECT id FROM parties WHERE id=?", (party_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown party {party_id}.")
+    try:
+        db.execute(
+            "UPDATE seats SET party_id=? WHERE id=?",
+            (party_id, int(seat_id)),
+        )
+    except Exception as exc:
+        raise ValueError("Seat party column unavailable; migrate the bottle.") from exc
+    if commit:
+        db.commit()
+    seat = get_seat(db, seat_id)
+    assert seat is not None
+    return seat
+
+
+def seats_for_party(db, party_id: int) -> list[dict[str, Any]]:
+    """Seats currently attached to this party (controllers, not all members)."""
+    try:
+        rows = db.execute(
+            """
+            SELECT * FROM seats
+            WHERE party_id=?
+            ORDER BY role, seat_key COLLATE NOCASE
+            """,
+            (int(party_id),),
+        ).fetchall()
+    except Exception:
+        return []
+    return [_seat_row(row) for row in rows]
 
 
 def hash_seat_password(password: str, *, salt: bytes | None = None) -> str:
@@ -365,22 +426,23 @@ def set_gm_control_character(
     scene: str | None = None,
     commit: bool = True,
 ) -> dict[str, Any]:
-    """GM temporary party: bind the GM seat to a character not held by a player.
+    """Attach the GM seat to a temporary party focused on one character.
 
     Clears with ``character_id=None``. When the player seat later claims the
     same PC, ``claim_player_character`` drops this binding.
 
-    Conceptually this is a one-character party the GM runs for Ask — not a
-    separate ontology from split-party play. ``scene`` chooses where that
-    temporary party is framed: ``table`` (main table / world.location) or a
-    geography ``object_id`` (typically one of the character's located_at
-    places). Default prefers the first recorded place when present.
+    Party → Members; Seat attaches to a Party and may bind one Member.
+    Non-seated members remain valid. Temporary control creates/uses a
+    one-member party and moves the GM seat onto it. ``scene`` chooses Ask
+    framing: ``table`` (main world.location) or a geography ``object_id``.
+    Default prefers the first recorded place when present.
 
     Each change writes a System log marker so Ask scene packs can drop prior
     possession narration from the model context.
     """
     from sakaki_gm.party_db import (
         clear_gm_control_parties,
+        ensure_default_party,
         ensure_gm_control_party,
     )
 
@@ -410,16 +472,19 @@ def set_gm_control_character(
             )
         else:
             scene = normalize_gm_control_scene(scene)
-        ensure_gm_control_party(
+        temp_party = ensure_gm_control_party(
             db,
             int(character_id),
             display_name=row["name"],
             commit=False,
         )
+        set_seat_party(db, gm["id"], temp_party["id"], commit=False)
     else:
         marker = GM_CONTROL_CLEARED_MESSAGE
         scene = GM_CONTROL_SCENE_TABLE
         clear_gm_control_parties(db, commit=False)
+        main = ensure_default_party(db, commit=False)
+        set_seat_party(db, gm["id"], main["id"], commit=False)
     seat = set_seat_character(db, gm["id"], character_id, commit=False)
     set_gm_control_scene(db, scene, commit=False)
     _append_system_log(db, marker, commit=False)
@@ -672,12 +737,27 @@ def claim_player_character(
     gm = get_seat_by_role(db, "gm")
     if gm is not None and gm.get("character_id") is not None:
         if int(gm["character_id"]) == character_id:
-            set_seat_character(db, gm["id"], None, commit=False)
-            from sakaki_gm.party_db import clear_gm_control_parties
+            from sakaki_gm.party_db import (
+                clear_gm_control_parties,
+                ensure_default_party,
+            )
 
+            set_seat_character(db, gm["id"], None, commit=False)
             clear_gm_control_parties(db, commit=False)
+            main = ensure_default_party(db, commit=False)
+            set_seat_party(db, gm["id"], main["id"], commit=False)
             _append_system_log(db, GM_CONTROL_CLEARED_MESSAGE, commit=False)
     bound = set_seat_character(db, seat["id"], character_id, commit=False)
+    # Player seat attaches to the character's active party when known.
+    from sakaki_gm.party_db import active_party_for_character, ensure_default_party
+
+    member_party = active_party_for_character(db, character_id)
+    attach_id = (
+        member_party["id"]
+        if member_party is not None
+        else ensure_default_party(db, commit=False)["id"]
+    )
+    set_seat_party(db, bound["id"], attach_id, commit=False)
     set_active_seat(db, seat["id"], commit=False)
     if holder_id:
         claim_desk_occupancy(
@@ -793,6 +873,26 @@ def ensure_default_session(db, *, commit: bool = True) -> dict[str, Any]:
                 "UPDATE session_state SET active_seat_id=? WHERE id=1",
                 (gm["id"],),
             )
+
+    # Attach seats with no party only when a party already exists. Do not
+    # bootstrap a party here — that would freeze membership before later PCs
+    # are created (Party → Members grows as characters are added).
+    try:
+        row = db.execute(
+            """
+            SELECT id FROM parties
+            WHERE status='active'
+            ORDER BY id LIMIT 1
+            """
+        ).fetchone()
+        if row is not None:
+            db.execute(
+                "UPDATE seats SET party_id=? WHERE party_id IS NULL",
+                (int(row["id"]),),
+            )
+    except Exception:
+        pass
+
     if commit:
         db.commit()
     return get_session_state(db)
