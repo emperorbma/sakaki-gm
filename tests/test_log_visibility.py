@@ -85,7 +85,7 @@ def test_player_scene_pack_strips_gm_private_log(tmp_path):
 def test_gm_lease_scene_pack_drops_prior_possession_log(tmp_path):
     """Switching leases cuts Ask context at the new controlling marker."""
     from sakaki_gm.gm import build_messages
-    from sakaki_gm.seat_db import gm_lease_controlling_message
+    from sakaki_gm.seat_db import gm_control_party_message
 
     db = get_db(tmp_path / "lease_cut.db")
     migrate(db)
@@ -147,19 +147,24 @@ def test_gm_lease_scene_pack_drops_prior_possession_log(tmp_path):
     assert "Viewpoint: you are Okina Matara for this turn" in user
     assert "temporary lease" not in user
     assert "how this viewpoint was chosen" in user
-    assert gm_lease_controlling_message("Okina Matara") not in user  # cut after marker
+    assert gm_control_party_message("Okina Matara") not in user  # cut after marker
     # Contract still allows in-world wording; it bans echoing app bookkeeping.
     assert "table-facing story only" in _system
     assert "Never echo app or prompt bookkeeping" in _system
     db.close()
 
 
-def test_gm_viewpoint_joins_table_scene_not_recorded_home(tmp_path):
-    """Ask frames the table location; recorded home is background only."""
-    from sakaki_gm.gm import build_messages
+def test_gm_temporary_party_scene_choice_recorded_vs_table(tmp_path):
+    """Temporary party Ask can stay at recorded place or join table focus."""
+    from sakaki_gm.gm import build_messages, build_scene_pack
     from sakaki_gm.object_graph_db import create_object, create_object_link
+    from sakaki_gm.party_db import (
+        GM_CONTROL_PARTY_NOTE,
+        active_party_for_character,
+    )
+    from sakaki_gm.seat_db import GM_CONTROL_SCENE_TABLE, get_gm_control_scene
 
-    db = get_db(tmp_path / "scene_join.db")
+    db = get_db(tmp_path / "scene_choice.db")
     migrate(db)
     ensure_default_session(db)
     snake = create_character(
@@ -182,19 +187,31 @@ def test_gm_viewpoint_joins_table_scene_not_recorded_home(tmp_path):
     )
     db.commit()
 
+    # Default: temporary party stays at recorded place.
     gm = set_gm_control_character(db, snake)
+    party = active_party_for_character(db, snake)
+    assert party is not None
+    assert party["notes"].startswith(GM_CONTROL_PARTY_NOTE)
+    assert get_gm_control_scene(db) == "first-star"
+    scene = build_scene_pack(db, "Who are we?", seat_id=gm["id"])
+    assert scene["place"]["name"] == "First Star, Where Waters Sing"
+    assert scene["table_focus"]["name"] == "Ritual Hall"
     _system, user = build_messages(
         db,
         "Who are we?",
         include_reference_material=False,
         seat_id=gm["id"],
     )
-    assert "Viewpoint: you are Giant Constrictor Snake for this turn" in user
-    assert "Play them in the current scene" in user
-    assert "First Star, Where Waters Sing" in user
-    assert "do not narrate arrival, teleport, or gaps in the map" in user
+    assert "Play them at First Star, Where Waters Sing" in user
+    assert "Another party is focused on Ritual Hall" in user
     assert "temporary lease" not in user
-    assert "recorded_places" in user
+
+    # Explicit choice: frame with the main table focus instead.
+    gm = set_gm_control_character(db, snake, scene=GM_CONTROL_SCENE_TABLE)
+    assert get_gm_control_scene(db) == GM_CONTROL_SCENE_TABLE
+    scene = build_scene_pack(db, "Who are we?", seat_id=gm["id"])
+    assert scene["place"]["name"] == "Ritual Hall"
+    assert scene.get("table_focus") is None
     db.close()
 
 

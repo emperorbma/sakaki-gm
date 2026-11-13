@@ -648,3 +648,26 @@ def migrate(db):
         )
         db.execute("PRAGMA user_version = 24")
         db.commit()
+
+    if version < 25:
+        # GM temporary party: Ask scene framing (table focus vs a place object).
+        tables = {
+            row[0]
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "session_state" in tables:
+            cols = {
+                row[1]
+                for row in db.execute("PRAGMA table_info(session_state)").fetchall()
+            }
+            if "gm_control_scene" not in cols:
+                db.execute(
+                    """
+                    ALTER TABLE session_state
+                    ADD COLUMN gm_control_scene TEXT NOT NULL DEFAULT 'table'
+                    """
+                )
+        db.execute("PRAGMA user_version = 25")
+        db.commit()

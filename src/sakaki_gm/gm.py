@@ -246,12 +246,6 @@ def _scene_user_message(
     # Keep bookkeeping out of table-facing words the model might echo.
     if gm_lease:
         acting_name = scene["acting_character"].get("name") or "the acting character"
-        recorded = scene["acting_character"].get("recorded_places") or []
-        recorded_names = [
-            place.get("name")
-            for place in recorded
-            if isinstance(place, dict) and place.get("name")
-        ]
         scene_place = (scene.get("place") or {}).get("name") or scene.get(
             "location_text"
         )
@@ -262,25 +256,19 @@ def _scene_user_message(
             "omitted on purpose — do not carry them over, and do not explain "
             "how this viewpoint was chosen."
         )
-        # Ask always frames the table's current scene; a recorded home elsewhere
-        # is background, not a reason to narrate teleport or missing map links.
-        if scene_place and recorded_names:
-            scene_cf = str(scene_place).casefold()
-            elsewhere = [
-                name
-                for name in recorded_names
-                if name.casefold() not in scene_cf and scene_cf not in name.casefold()
-            ]
-            if elsewhere:
-                viewpoint += (
-                    f" Play them in the current scene ({scene_place}). "
-                    f"They are also recorded at {', '.join(elsewhere)} — "
-                    "use that as background if useful, but do not narrate "
-                    "arrival, teleport, or gaps in the map."
-                )
-        else:
+        if scene_place:
+            viewpoint += f" Play them at {scene_place}."
+        table_focus = scene.get("table_focus")
+        if (
+            isinstance(table_focus, dict)
+            and table_focus.get("name")
+            and scene_place
+            and str(table_focus["name"]).casefold() != str(scene_place).casefold()
+        ):
             viewpoint += (
-                " Play them in the current scene location below."
+                f" Another party is focused on {table_focus['name']}; "
+                "stay where you are unless the action says otherwise, and do "
+                "not narrate teleport or map gaps."
             )
         parts.append(viewpoint)
     parts.extend([
@@ -289,6 +277,13 @@ def _scene_user_message(
         f"Location: {scene['location_text']}",
         "Place:",
         json.dumps(scene["place"], ensure_ascii=False),
+    ])
+    if scene.get("table_focus"):
+        parts.extend([
+            "Other party focus (may differ from this viewpoint):",
+            json.dumps(scene["table_focus"], ensure_ascii=False),
+        ])
+    parts.extend([
         "Routes:",
         json.dumps(scene["routes"], ensure_ascii=False),
         "Recent log:",
@@ -308,12 +303,58 @@ def _scene_user_message(
 
 def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
     """Selective scene for Ask GM: one actor, place, routes, short log."""
-    from sakaki_gm.seat_db import get_active_seat, get_seat
+    from sakaki_gm.seat_db import (
+        GM_CONTROL_SCENE_TABLE,
+        get_active_seat,
+        get_gm_control_scene,
+        get_seat,
+    )
 
-    location_text = world_value(db, "location", "Unknown")
-    if not isinstance(location_text, str) or not location_text.strip():
-        location_text = "Unknown"
-    place = _resolve_location_object(db, location_text)
+    table_location_text = world_value(db, "location", "Unknown")
+    if not isinstance(table_location_text, str) or not table_location_text.strip():
+        table_location_text = "Unknown"
+    table_place = _resolve_location_object(db, table_location_text)
+
+    acting = _select_acting_character(db, action, seat_id=seat_id)
+    seat = get_seat(db, seat_id) if seat_id is not None else None
+    if seat is None:
+        try:
+            seat = get_active_seat(db)
+        except Exception:
+            seat = None
+
+    location_text = table_location_text
+    place = table_place
+    table_focus = None
+    gm_lease = (
+        seat is not None
+        and seat.get("role") == "gm"
+        and seat.get("character_id") is not None
+        and acting is not None
+    )
+    if gm_lease:
+        scene_choice = get_gm_control_scene(db)
+        if scene_choice != GM_CONTROL_SCENE_TABLE:
+            chosen = _place_object_by_id(db, scene_choice)
+            if chosen is not None:
+                place = chosen
+                location_text = chosen["name"] or table_location_text
+        # When framing away from the party, keep table focus visible.
+        if table_place is not None and (
+            place is None
+            or place.get("object_id") != table_place.get("object_id")
+        ):
+            table_focus = {
+                "object_id": table_place["object_id"],
+                "name": table_place["name"],
+                "object_type": table_place["object_type"],
+                "geography_kind": table_place["geography_kind"],
+                "description": (table_place["description"] or "")[:1200],
+                "location_text": table_location_text,
+            }
+        elif place is None and table_location_text != location_text:
+            table_focus = {"location_text": table_location_text}
+
     routes = []
     if place is not None:
         try:
@@ -328,23 +369,12 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
                 })
         except KeyError:
             routes = []
-    acting = _select_acting_character(db, action, seat_id=seat_id)
-    seat = get_seat(db, seat_id) if seat_id is not None else None
-    if seat is None:
-        try:
-            seat = get_active_seat(db)
-        except Exception:
-            seat = None
+
     include_gm_private = not (seat and seat.get("role") == "player")
     after_log_id = None
-    if (
-        seat is not None
-        and seat.get("role") == "gm"
-        and seat.get("character_id") is not None
-        and acting is not None
-    ):
+    if gm_lease:
         after_log_id = _gm_lease_log_anchor_id(db, acting["name"])
-    return {
+    pack = {
         "acting_character": (
             _short_character_payload(db, acting, action) if acting else None
         ),
@@ -370,6 +400,29 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
             acting, place, routes, db, action
         ),
     }
+    if table_focus is not None:
+        pack["table_focus"] = table_focus
+    return pack
+
+
+def _place_object_by_id(db, object_id: str):
+    """Return a geography/object row by object_id, or None."""
+    oid = (object_id or "").strip()
+    if not oid:
+        return None
+    try:
+        row = db.execute(
+            """
+            SELECT object_id, name, object_type, geography_kind, description
+            FROM objects WHERE object_id=?
+            """,
+            (oid,),
+        ).fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    return dict(row)
 
 
 def out_of_scene_lore_query(db, action: str, coverage_names=None) -> str | None:
@@ -553,30 +606,15 @@ def _short_character_payload(db, row, action: str) -> dict:
 
 def _character_recorded_places(db, character_object_id) -> list[dict]:
     """Compact located_at targets for scene packs (name + object_id)."""
-    object_id = (character_object_id or "").strip()
-    if not object_id:
-        return []
-    try:
-        rows = db.execute(
-            """
-            SELECT target.object_id, target.name, target.geography_kind
-            FROM object_links AS link
-            JOIN objects AS target ON target.object_id = link.to_object_id
-            WHERE link.relation = 'located_at'
-              AND link.from_object_id = ?
-            ORDER BY target.name COLLATE NOCASE, target.object_id
-            """,
-            (object_id,),
-        ).fetchall()
-    except Exception:
-        return []
+    from sakaki_gm.seat_db import character_recorded_places
+
     return [
         {
-            "object_id": row["object_id"],
-            "name": row["name"],
-            "geography_kind": row["geography_kind"],
+            "object_id": place["object_id"],
+            "name": place["name"],
+            "geography_kind": place.get("geography_kind"),
         }
-        for row in rows
+        for place in character_recorded_places(db, character_object_id)
     ]
 
 
@@ -656,21 +694,25 @@ def _quest_payloads(db) -> list[dict]:
 
 
 def _gm_lease_log_anchor_id(db, character_name: str) -> int | None:
-    """Latest System lease marker for this name; scene packs start after it."""
-    from sakaki_gm.seat_db import gm_lease_controlling_message
+    """Latest System temporary-party marker; scene packs start after it."""
+    from sakaki_gm.seat_db import gm_control_party_message
 
     name = (character_name or "").strip()
     if not name:
         return None
-    marker = gm_lease_controlling_message(name)
+    markers = (
+        gm_control_party_message(name),
+        # Older bottles may still have the pre-party lease wording.
+        f"GM controlling {name} (temporary lease)",
+    )
     try:
         row = db.execute(
             """
             SELECT id FROM log
-            WHERE speaker = 'System' AND message = ?
+            WHERE speaker = 'System' AND message IN (?, ?)
             ORDER BY id DESC LIMIT 1
             """,
-            (marker,),
+            markers,
         ).fetchone()
     except Exception:
         return None

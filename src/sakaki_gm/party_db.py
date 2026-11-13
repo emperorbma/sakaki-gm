@@ -15,6 +15,8 @@ from typing import Any, Optional
 PARTY_STATUSES = ("active", "disbanded")
 PROPOSAL_OPS = ("split", "merge")
 PROPOSAL_STATUSES = ("pending", "approved", "rejected")
+# Notes marker: GM temporary control is a one-character "fake party".
+GM_CONTROL_PARTY_NOTE = "gm_control_party"
 
 
 def _utcnow() -> str:
@@ -184,6 +186,145 @@ def remove_party_member(
     )
     if commit:
         db.commit()
+
+
+def disband_party(db, party_id: int, *, commit: bool = True) -> None:
+    """Mark a party disbanded and clear its membership rows."""
+    party_id = int(party_id)
+    db.execute(
+        "UPDATE parties SET status='disbanded' WHERE id=?",
+        (party_id,),
+    )
+    db.execute("DELETE FROM party_members WHERE party_id=?", (party_id,))
+    if commit:
+        db.commit()
+
+
+def _is_gm_control_party(party: dict[str, Any] | None) -> bool:
+    if not party:
+        return False
+    notes = str(party.get("notes") or "")
+    return notes == GM_CONTROL_PARTY_NOTE or notes.startswith(
+        GM_CONTROL_PARTY_NOTE + ";"
+    )
+
+
+def _gm_control_origin_party_id(party: dict[str, Any] | None) -> int | None:
+    if not party:
+        return None
+    notes = str(party.get("notes") or "")
+    for part in notes.split(";"):
+        if part.startswith("origin="):
+            raw = part.split("=", 1)[1].strip()
+            try:
+                return int(raw)
+            except ValueError:
+                return None
+    return None
+
+
+def clear_gm_control_parties(
+    db, *, keep_character_id: int | None = None, commit: bool = True
+) -> None:
+    """Disband GM temporary parties, optionally restoring a prior membership."""
+    keep = int(keep_character_id) if keep_character_id is not None else None
+    for party in list_parties(db, status="active"):
+        if not _is_gm_control_party(party):
+            continue
+        members = party_member_ids(db, party["id"])
+        if keep is not None and members == [keep]:
+            continue
+        origin_id = _gm_control_origin_party_id(party)
+        for character_id in list(members):
+            remove_party_member(db, party["id"], character_id, commit=False)
+            if origin_id is not None:
+                origin = get_party(db, origin_id)
+                if origin is not None and origin.get("status") == "active":
+                    try:
+                        add_party_member(
+                            db, origin_id, character_id, commit=False
+                        )
+                        continue
+                    except ValueError:
+                        pass
+        disband_party(db, party["id"], commit=False)
+    if commit:
+        db.commit()
+
+
+def ensure_gm_control_party(
+    db,
+    character_id: int,
+    *,
+    display_name: str = "",
+    commit: bool = True,
+) -> dict[str, Any]:
+    """Make a one-character temporary party for GM Ask focus.
+
+    If the character already sits alone in a GM control party, reuse it. If they
+    share a larger active party, split them out and remember the origin so clear
+    can restore. Otherwise create a fresh temporary party.
+    """
+    character_id = int(character_id)
+    row = db.execute(
+        "SELECT id, name FROM characters WHERE id=?", (character_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown character {character_id}.")
+    label = (display_name or row["name"] or "Character").strip() or "Character"
+    clear_gm_control_parties(
+        db, keep_character_id=character_id, commit=False
+    )
+    existing = active_party_for_character(db, character_id)
+    if existing is not None and _is_gm_control_party(existing):
+        members = party_member_ids(db, existing["id"])
+        if members == [character_id]:
+            if commit:
+                db.commit()
+            party = get_party_with_members(db, existing["id"])
+            assert party is not None
+            return party
+    if existing is not None:
+        members = party_member_ids(db, existing["id"])
+        if len(members) > 1 and character_id in members:
+            split = split_party(
+                db,
+                existing["id"],
+                [character_id],
+                new_party_name=f"{label} (GM)",
+                commit=False,
+            )
+            party_id = int(split["split"]["id"])
+            db.execute(
+                "UPDATE parties SET notes=? WHERE id=?",
+                (f"{GM_CONTROL_PARTY_NOTE};origin={existing['id']}", party_id),
+            )
+            if commit:
+                db.commit()
+            party = get_party_with_members(db, party_id)
+            assert party is not None
+            return party
+        # Solo non-control party: retag as the temporary GM party.
+        if members == [character_id]:
+            db.execute(
+                "UPDATE parties SET name=?, notes=? WHERE id=?",
+                (f"{label} (GM)", GM_CONTROL_PARTY_NOTE, existing["id"]),
+            )
+            if commit:
+                db.commit()
+            party = get_party_with_members(db, existing["id"])
+            assert party is not None
+            return party
+    party = create_party(
+        db,
+        f"{label} (GM)",
+        member_ids=[character_id],
+        notes=GM_CONTROL_PARTY_NOTE,
+        commit=False,
+    )
+    if commit:
+        db.commit()
+    return party
 
 
 def _bootstrap_member_ids(db) -> list[int]:

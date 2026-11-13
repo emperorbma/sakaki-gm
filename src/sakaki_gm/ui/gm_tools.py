@@ -7,19 +7,23 @@ from tkinter import messagebox, ttk
 from typing import Any, Optional
 
 from sakaki_gm.character_db import get_all_characters
+from sakaki_gm.gm import world_value
 from sakaki_gm.seat_db import (
+    GM_CONTROL_CLEARED_MESSAGE,
+    GM_CONTROL_SCENE_TABLE,
     TURN_PHASES,
+    character_recorded_places,
     characters_available_for_gm_control,
     clear_turn_wait,
     ensure_default_session,
+    get_gm_control_scene,
     get_seat_by_role,
     get_session_state,
+    gm_control_party_message,
     list_controller_seats,
     list_player_claimable_characters,
     reassign_controller_seat,
     request_player_roll,
-    GM_LEASE_CLEARED_MESSAGE,
-    gm_lease_controlling_message,
     set_gm_control_character,
     set_turn_phase,
     sync_seat_knowledge_from_world,
@@ -320,14 +324,17 @@ def run_set_turn_phase(parent, db) -> Optional[dict[str, Any]]:
 
 
 def run_gm_control_character(parent, db) -> Optional[str]:
-    """Pick a temporary GM lens on any character not held by a present player."""
+    """Start a temporary one-character party for GM Ask focus."""
     ensure_default_session(db)
     available = characters_available_for_gm_control(db)
     gm = get_seat_by_role(db, "gm")
     current_id = gm.get("character_id") if gm else None
+    table_location = world_value(db, "location", "Unknown")
+    if not isinstance(table_location, str) or not table_location.strip():
+        table_location = "Unknown"
 
     dialog = tk.Toplevel(parent)
-    dialog.title("Control character")
+    dialog.title("Temporary party")
     dialog.transient(parent)
     dialog.grab_set()
     body = ttk.Frame(dialog, padding=12)
@@ -335,20 +342,26 @@ def run_gm_control_character(parent, db) -> Optional[str]:
     ttk.Label(
         body,
         text=(
-            "Temporary GM lease: any character not controlled by a player "
-            "who is present (includes absentee PCs)."
+            "Run a temporary party of one: any character not held by a present "
+            "player (includes absentee PCs). Pick where that party is for Ask "
+            "when places differ — their recorded place, or the main table focus."
         ),
-        wraplength=420,
+        wraplength=440,
     ).pack(anchor="w")
 
-    labels = ["(none — clear lease)"]
+    labels = ["(none — clear temporary party)"]
     ids: list[int | None] = [None]
+    object_ids: list[str | None] = [None]
     for item in available:
         tag = "absentee PC" if item.get("absentee_pc") else (
             item.get("campaign_role") or "character"
         )
         labels.append(f"{item['name']} ({tag})")
         ids.append(item["id"])
+        row = db.execute(
+            "SELECT object_id FROM characters WHERE id=?", (item["id"],)
+        ).fetchone()
+        object_ids.append(row["object_id"] if row else None)
 
     pick = tk.StringVar()
     combo = ttk.Combobox(
@@ -360,6 +373,53 @@ def run_gm_control_character(parent, db) -> Optional[str]:
     else:
         combo.current(0)
 
+    ttk.Label(body, text="Where is this temporary party?").pack(
+        anchor="w", pady=(14, 0)
+    )
+    scene_var = tk.StringVar(value=get_gm_control_scene(db))
+    scene_frame = ttk.Frame(body)
+    scene_frame.pack(fill=tk.X, pady=(4, 0))
+    scene_buttons: list[ttk.Radiobutton] = []
+
+    def _rebuild_scene_choices(*_args):
+        for child in scene_frame.winfo_children():
+            child.destroy()
+        scene_buttons.clear()
+        index = combo.current()
+        choices: list[tuple[str, str]] = [
+            (
+                GM_CONTROL_SCENE_TABLE,
+                f"Main table focus — {table_location}",
+            )
+        ]
+        if index > 0 and object_ids[index]:
+            for place in character_recorded_places(db, object_ids[index]):
+                choices.append(
+                    (
+                        place["object_id"],
+                        f"This party's place — {place['name']}",
+                    )
+                )
+        current = scene_var.get()
+        valid = {value for value, _label in choices}
+        if current not in valid:
+            # Default: stay where they are recorded when one exists.
+            scene_var.set(
+                choices[1][0] if len(choices) > 1 else GM_CONTROL_SCENE_TABLE
+            )
+        for value, label in choices:
+            btn = ttk.Radiobutton(
+                scene_frame, text=label, value=value, variable=scene_var
+            )
+            btn.pack(anchor="w")
+            scene_buttons.append(btn)
+        state = "disabled" if index <= 0 else "normal"
+        for btn in scene_buttons:
+            btn.configure(state=state)
+
+    combo.bind("<<ComboboxSelected>>", _rebuild_scene_choices)
+    _rebuild_scene_choices()
+
     result: dict[str, Optional[str]] = {"summary": None}
 
     def ok():
@@ -367,16 +427,17 @@ def run_gm_control_character(parent, db) -> Optional[str]:
         if index < 0:
             return
         character_id = ids[index]
+        scene = scene_var.get() if character_id is not None else GM_CONTROL_SCENE_TABLE
         try:
-            set_gm_control_character(db, character_id)
+            set_gm_control_character(db, character_id, scene=scene)
         except (PermissionError, ValueError) as exc:
-            messagebox.showerror("Control character", str(exc), parent=dialog)
+            messagebox.showerror("Temporary party", str(exc), parent=dialog)
             return
         if character_id is None:
-            result["summary"] = GM_LEASE_CLEARED_MESSAGE
+            result["summary"] = GM_CONTROL_CLEARED_MESSAGE
         else:
             name = available[index - 1]["name"]
-            result["summary"] = gm_lease_controlling_message(name)
+            result["summary"] = gm_control_party_message(name)
         dialog.destroy()
 
     buttons = ttk.Frame(body)

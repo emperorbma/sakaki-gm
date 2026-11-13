@@ -269,7 +269,7 @@ class MainWindow:
         ).pack(side=tk.LEFT, padx=6, pady=6)
         ttk.Button(
             self.gm_tools,
-            text="Control PC…",
+            text="Temporary party…",
             command=self.gm_control_character,
         ).pack(side=tk.LEFT, padx=6, pady=6)
         ttk.Button(
@@ -1320,8 +1320,9 @@ class MainWindow:
         if summary:
             # Keep shared active_seat on GM so solo paths match the lease lens.
             self._sync_active_seat("gm")
-            # Lease marker is written by set_gm_control_character; refresh UI.
+            # Temporary-party marker is written by set_gm_control_character.
             self.log_panel.reload()
+            self.characters_module.refresh()
 
     def gm_reassign_seat(self):
         if normalize_desk_mode(self.desk_mode_var.get()) != "gm":

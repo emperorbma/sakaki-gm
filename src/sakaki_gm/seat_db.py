@@ -27,13 +27,61 @@ SUBJECT_TYPES = ("character", "actor")
 # Levels that appear on a player roster / awareness list.
 VISIBLE_KNOWLEDGE = frozenset(KNOWLEDGE_LEVELS)
 
-# System log markers: Ask scene packs for a GM lease start *after* the matching
-# "controlling" line so prior possession narration cannot bleed into the lens.
-GM_LEASE_CLEARED_MESSAGE = "GM cleared character lease"
+# System log markers: Ask scene packs for a GM temporary party start *after*
+# the matching line so prior possession narration cannot bleed into the lens.
+GM_CONTROL_CLEARED_MESSAGE = "GM cleared temporary party"
+# Back-compat with bottles that still have the old lease wording in the log.
+GM_LEASE_CLEARED_MESSAGE = GM_CONTROL_CLEARED_MESSAGE
+# session_state.gm_control_scene: "table" or a geography object_id.
+GM_CONTROL_SCENE_TABLE = "table"
+
+
+def gm_control_party_message(character_name: str) -> str:
+    return f"GM temporary party: {character_name}"
 
 
 def gm_lease_controlling_message(character_name: str) -> str:
-    return f"GM controlling {character_name} (temporary lease)"
+    """Deprecated alias — temporary control is a one-character party."""
+    return gm_control_party_message(character_name)
+
+
+def character_recorded_places(db, character_object_id) -> list[dict[str, Any]]:
+    """Compact located_at targets (name + object_id) for control / scene packs."""
+    object_id = str(character_object_id or "").strip()
+    if not object_id:
+        return []
+    try:
+        rows = db.execute(
+            """
+            SELECT target.object_id, target.name, target.geography_kind,
+                   target.object_type, target.description
+            FROM object_links AS link
+            JOIN objects AS target ON target.object_id = link.to_object_id
+            WHERE link.relation = 'located_at'
+              AND link.from_object_id = ?
+            ORDER BY target.name COLLATE NOCASE, target.object_id
+            """,
+            (object_id,),
+        ).fetchall()
+    except Exception:
+        return []
+    return [
+        {
+            "object_id": row["object_id"],
+            "name": row["name"],
+            "geography_kind": row["geography_kind"],
+            "object_type": row["object_type"],
+            "description": row["description"],
+        }
+        for row in rows
+    ]
+
+
+def normalize_gm_control_scene(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return GM_CONTROL_SCENE_TABLE
+    return text
 
 
 def _append_system_log(db, message: str, *, commit: bool = False) -> None:
@@ -277,17 +325,65 @@ def _character_has_player_claim(db, character_id: int) -> bool:
     return row is not None
 
 
+def get_gm_control_scene(db) -> str:
+    """Where Ask frames a GM temporary control: ``table`` or a place object_id."""
+    ensure_default_session(db, commit=False)
+    try:
+        row = db.execute(
+            "SELECT gm_control_scene FROM session_state WHERE id=1"
+        ).fetchone()
+    except Exception:
+        return GM_CONTROL_SCENE_TABLE
+    if row is None:
+        return GM_CONTROL_SCENE_TABLE
+    return normalize_gm_control_scene(row["gm_control_scene"])
+
+
+def set_gm_control_scene(db, scene: str, *, commit: bool = True) -> str:
+    """Persist Ask scene framing for the current GM temporary control."""
+    ensure_default_session(db, commit=False)
+    scene = normalize_gm_control_scene(scene)
+    try:
+        db.execute(
+            "UPDATE session_state SET gm_control_scene=? WHERE id=1",
+            (scene,),
+        )
+    except Exception:
+        # Pre-v25 bottles mid-migrate: ignore until migrate lands.
+        if commit:
+            db.commit()
+        return GM_CONTROL_SCENE_TABLE
+    if commit:
+        db.commit()
+    return scene
+
+
 def set_gm_control_character(
-    db, character_id: int | None, *, commit: bool = True
+    db,
+    character_id: int | None,
+    *,
+    scene: str | None = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
-    """Temporary GM lease on a character not held by a present player.
+    """GM temporary party: bind the GM seat to a character not held by a player.
 
     Clears with ``character_id=None``. When the player seat later claims the
-    same PC, ``claim_player_character`` drops this lease.
+    same PC, ``claim_player_character`` drops this binding.
 
-    Each lease change writes a System log marker so Ask scene packs can drop
-    prior possession / control narration from the model context.
+    Conceptually this is a one-character party the GM runs for Ask — not a
+    separate ontology from split-party play. ``scene`` chooses where that
+    temporary party is framed: ``table`` (main table / world.location) or a
+    geography ``object_id`` (typically one of the character's located_at
+    places). Default prefers the first recorded place when present.
+
+    Each change writes a System log marker so Ask scene packs can drop prior
+    possession narration from the model context.
     """
+    from sakaki_gm.party_db import (
+        clear_gm_control_parties,
+        ensure_gm_control_party,
+    )
+
     ensure_default_session(db, commit=False)
     gm = get_seat_by_role(db, "gm")
     if gm is None:
@@ -299,15 +395,33 @@ def set_gm_control_character(
                 "That character is controlled by a player who is present."
             )
         row = db.execute(
-            "SELECT name FROM characters WHERE id=?",
+            "SELECT id, name, object_id FROM characters WHERE id=?",
             (int(character_id),),
         ).fetchone()
         if row is None:
             raise ValueError(f"Unknown character {character_id}.")
-        marker = gm_lease_controlling_message(row["name"])
+        marker = gm_control_party_message(row["name"])
+        if scene is None:
+            recorded = character_recorded_places(db, row["object_id"])
+            scene = (
+                recorded[0]["object_id"]
+                if recorded
+                else GM_CONTROL_SCENE_TABLE
+            )
+        else:
+            scene = normalize_gm_control_scene(scene)
+        ensure_gm_control_party(
+            db,
+            int(character_id),
+            display_name=row["name"],
+            commit=False,
+        )
     else:
-        marker = GM_LEASE_CLEARED_MESSAGE
+        marker = GM_CONTROL_CLEARED_MESSAGE
+        scene = GM_CONTROL_SCENE_TABLE
+        clear_gm_control_parties(db, commit=False)
     seat = set_seat_character(db, gm["id"], character_id, commit=False)
+    set_gm_control_scene(db, scene, commit=False)
     _append_system_log(db, marker, commit=False)
     if commit:
         db.commit()
@@ -559,7 +673,10 @@ def claim_player_character(
     if gm is not None and gm.get("character_id") is not None:
         if int(gm["character_id"]) == character_id:
             set_seat_character(db, gm["id"], None, commit=False)
-            _append_system_log(db, GM_LEASE_CLEARED_MESSAGE, commit=False)
+            from sakaki_gm.party_db import clear_gm_control_parties
+
+            clear_gm_control_parties(db, commit=False)
+            _append_system_log(db, GM_CONTROL_CLEARED_MESSAGE, commit=False)
     bound = set_seat_character(db, seat["id"], character_id, commit=False)
     set_active_seat(db, seat["id"], commit=False)
     if holder_id:
@@ -1011,11 +1128,17 @@ def get_session_state(db) -> dict[str, Any]:
         wait = {}
     if not isinstance(wait, dict):
         wait = {}
+    scene = GM_CONTROL_SCENE_TABLE
+    try:
+        scene = normalize_gm_control_scene(ensure_row["gm_control_scene"])
+    except (KeyError, IndexError):
+        scene = GM_CONTROL_SCENE_TABLE
     return {
         "active_seat_id": ensure_row["active_seat_id"],
         "turn_phase": ensure_row["turn_phase"] or "idle",
         "hotseat_seat_id": ensure_row["hotseat_seat_id"],
         "turn_wait": wait,
+        "gm_control_scene": scene,
     }
 
 
