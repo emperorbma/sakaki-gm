@@ -12,8 +12,13 @@ Maps ordinary campaign practice, not a formal bureaucracy:
 - **Seated member** — that seat controls them.
 - **Unseated NPC in the party** — the table runs them as a small committee
   (agree, or one member steers), unless the GM takes **override**.
-- **GM override** — dual membership: still in the player party, also on the
-  GM seat's implicit party for Ask. Clear drops only the GM-party link.
+- **GM override / Ask focus** — dual membership: still in the home party, also
+  on a GM focus party (singleton lease or multi-member group). Clearing Ask
+  focus returns the GM seat to the main party; singleton leases dissolve,
+  multi-member focus groups may stay dormant for later reactivation.
+
+**Actors** (see ``actor_db``) are separate: automatic AI faction/person minds,
+not GM Ask focus. GM portrayal can feed Actors via observed-play notes.
 
 Ordinary (non-GM) parties stay exclusive; real splits/merges still move
 exclusive membership.
@@ -32,8 +37,11 @@ from typing import Any, Optional
 PARTY_STATUSES = ("active", "disbanded")
 PROPOSAL_OPS = ("split", "merge")
 PROPOSAL_STATUSES = ("pending", "approved", "rejected")
-# Notes marker: GM temporary control is a one-character "fake party".
-GM_CONTROL_PARTY_NOTE = "gm_control_party"
+# Notes marker: GM Ask focus parties (singleton lease or multi-member group).
+GM_FOCUS_PARTY_NOTE = "gm_focus_party"
+GM_CONTROL_PARTY_NOTE = GM_FOCUS_PARTY_NOTE  # back-compat alias
+GM_FOCUS_KIND_LEASE = "lease"  # singleton character override
+GM_FOCUS_KIND_GROUP = "group"  # faction / subgroup / enemy band
 # How a party member is controlled right now.
 CONTROL_SEATED = "seated"
 # Unseated NPC in the party's midst: table agreement / one member steers.
@@ -175,10 +183,11 @@ def resolve_member_control(db, character_id: int) -> dict[str, Any]:
     """Resolve how a party member is controlled (seated / committee / GM override).
 
     Same control idea for everyone: a dedicated seat, a party committee for an
-    unseated NPC in their midst, or GM override via the GM seat's implicit
-    party (dual membership with the home party).
+    unseated NPC in their midst, or GM Ask focus via the GM seat's focus party
+    (dual membership with the home party). Dormant focus-group membership
+    without the GM seat attached is not override.
     """
-    from sakaki_gm.seat_db import get_seats
+    from sakaki_gm.seat_db import get_seat_by_role, get_seats
 
     character_id = int(character_id)
     home = active_party_for_character(db, character_id)
@@ -191,8 +200,15 @@ def resolve_member_control(db, character_id: int) -> dict[str, Any]:
     ]
     player_controllers = [s for s in controllers if s.get("role") == "player"]
     gm_controllers = [s for s in controllers if s.get("role") == "gm"]
+    gm_seat = get_seat_by_role(db, "gm")
+    active_focus = (
+        gm_party is not None
+        and gm_seat is not None
+        and gm_seat.get("party_id") is not None
+        and int(gm_seat["party_id"]) == int(gm_party["id"])
+    )
 
-    if gm_party is not None or gm_controllers:
+    if gm_controllers or active_focus:
         mode = CONTROL_GM_OVERRIDE
     elif player_controllers:
         mode = CONTROL_SEATED
@@ -293,42 +309,183 @@ def disband_party(db, party_id: int, *, commit: bool = True) -> None:
 
 
 def _is_gm_control_party(party: dict[str, Any] | None) -> bool:
+    """True for GM Ask focus parties (lease or group), including legacy notes."""
     if not party:
         return False
     notes = str(party.get("notes") or "")
-    return notes == GM_CONTROL_PARTY_NOTE or notes.startswith(
-        GM_CONTROL_PARTY_NOTE + ";"
+    return (
+        notes == GM_FOCUS_PARTY_NOTE
+        or notes.startswith(GM_FOCUS_PARTY_NOTE + ";")
+        or notes == "gm_control_party"
+        or notes.startswith("gm_control_party;")
     )
 
 
-def _gm_control_origin_party_id(party: dict[str, Any] | None) -> int | None:
+def _gm_focus_kind(party: dict[str, Any] | None) -> str:
     if not party:
-        return None
+        return GM_FOCUS_KIND_LEASE
     notes = str(party.get("notes") or "")
     for part in notes.split(";"):
-        if part.startswith("origin="):
-            raw = part.split("=", 1)[1].strip()
-            try:
-                return int(raw)
-            except ValueError:
-                return None
-    return None
+        if part.startswith("kind="):
+            kind = part.split("=", 1)[1].strip().lower()
+            if kind in {GM_FOCUS_KIND_LEASE, GM_FOCUS_KIND_GROUP}:
+                return kind
+    # Legacy one-member control notes count as lease.
+    return GM_FOCUS_KIND_LEASE
+
+
+def _gm_focus_notes(kind: str) -> str:
+    kind = str(kind or GM_FOCUS_KIND_LEASE).strip().lower()
+    if kind not in {GM_FOCUS_KIND_LEASE, GM_FOCUS_KIND_GROUP}:
+        kind = GM_FOCUS_KIND_LEASE
+    return f"{GM_FOCUS_PARTY_NOTE};kind={kind}"
+
+
+def list_gm_focus_parties(db) -> list[dict[str, Any]]:
+    """All active GM Ask focus parties (singleton leases and multi-member groups)."""
+    parties = []
+    for party in list_parties(db, status="active"):
+        if not _is_gm_control_party(party):
+            continue
+        full = get_party_with_members(db, party["id"])
+        if full is None:
+            continue
+        full["focus_kind"] = _gm_focus_kind(party)
+        parties.append(full)
+    return parties
+
+
+def dissolve_gm_focus_parties(
+    db,
+    *,
+    party_id: int | None = None,
+    keep_character_id: int | None = None,
+    commit: bool = True,
+) -> None:
+    """Disband GM focus parties without touching home-party membership.
+
+    ``party_id`` dissolves one. Otherwise dissolves all except an optional
+    one-member lease kept for ``keep_character_id``.
+    """
+    keep = int(keep_character_id) if keep_character_id is not None else None
+    target = int(party_id) if party_id is not None else None
+    for party in list_parties(db, status="active"):
+        if not _is_gm_control_party(party):
+            continue
+        if target is not None and int(party["id"]) != target:
+            continue
+        members = party_member_ids(db, party["id"])
+        if (
+            target is None
+            and keep is not None
+            and members == [keep]
+            and _gm_focus_kind(party) == GM_FOCUS_KIND_LEASE
+        ):
+            continue
+        disband_party(db, party["id"], commit=False)
+    if commit:
+        db.commit()
 
 
 def clear_gm_control_parties(
     db, *, keep_character_id: int | None = None, commit: bool = True
 ) -> None:
-    """Disband GM temporary parties without touching home-party membership."""
-    keep = int(keep_character_id) if keep_character_id is not None else None
-    for party in list_parties(db, status="active"):
-        if not _is_gm_control_party(party):
+    """Back-compat alias — dissolves GM focus parties (prefer dissolve_gm_focus_parties)."""
+    dissolve_gm_focus_parties(
+        db, keep_character_id=keep_character_id, commit=commit
+    )
+
+
+def release_character_from_gm_focus(
+    db, character_id: int, *, commit: bool = True
+) -> None:
+    """Drop a character from GM Ask focus when a player claims them.
+
+    Dissolves singleton leases that only contain them. Removes them from
+    multi-member focus groups (disbands the group if emptied). Does not
+    dissolve unrelated focus groups.
+    """
+    character_id = int(character_id)
+    for party in list(list_gm_focus_parties(db)):
+        members = [int(mid) for mid in party.get("member_ids") or []]
+        if character_id not in members:
             continue
-        members = party_member_ids(db, party["id"])
-        if keep is not None and members == [keep]:
+        if len(members) <= 1 or _gm_focus_kind(party) == GM_FOCUS_KIND_LEASE:
+            disband_party(db, party["id"], commit=False)
             continue
-        disband_party(db, party["id"], commit=False)
+        remove_party_member(db, party["id"], character_id, commit=False)
+        remaining = party_member_ids(db, party["id"])
+        if not remaining:
+            disband_party(db, party["id"], commit=False)
     if commit:
         db.commit()
+
+
+def ensure_gm_focus_party(
+    db,
+    member_ids: list[int],
+    *,
+    name: str = "",
+    kind: str = GM_FOCUS_KIND_LEASE,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """Create or reuse a GM Ask focus party (lease or multi-member group).
+
+    Does **not** dissolve other focus parties — the GM may keep several groups
+    (enemy bands, factions) and switch the GM seat between them. Members with a
+    home party gain dual membership; enemies with no home party simply join the
+    focus party.
+    """
+    ids = list(dict.fromkeys(int(cid) for cid in member_ids))
+    if not ids:
+        raise ValueError("Focus party needs at least one member.")
+    kind = str(kind or GM_FOCUS_KIND_LEASE).strip().lower()
+    if kind not in {GM_FOCUS_KIND_LEASE, GM_FOCUS_KIND_GROUP}:
+        kind = GM_FOCUS_KIND_LEASE
+    if kind == GM_FOCUS_KIND_LEASE and len(ids) != 1:
+        kind = GM_FOCUS_KIND_GROUP
+
+    labels = []
+    for character_id in ids:
+        row = db.execute(
+            "SELECT id, name FROM characters WHERE id=?", (character_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown character {character_id}.")
+        labels.append((row["name"] or f"#{character_id}").strip())
+
+    if kind == GM_FOCUS_KIND_LEASE:
+        existing = gm_control_party_for_character(db, ids[0])
+        if existing is not None and _gm_focus_kind(existing) == GM_FOCUS_KIND_LEASE:
+            members = party_member_ids(db, existing["id"])
+            if members == ids:
+                if commit:
+                    db.commit()
+                party = get_party_with_members(db, existing["id"])
+                assert party is not None
+                party["focus_kind"] = GM_FOCUS_KIND_LEASE
+                return party
+
+    if name.strip():
+        label = name.strip()
+    elif kind == GM_FOCUS_KIND_LEASE:
+        label = f"{labels[0]} (GM)"
+    else:
+        label = f"{labels[0]} band (GM)" if len(labels) == 1 else (
+            f"{labels[0]} +{len(labels) - 1} (GM)"
+        )
+
+    party = create_party(
+        db,
+        label,
+        member_ids=ids,
+        notes=_gm_focus_notes(kind),
+        commit=False,
+    )
+    party["focus_kind"] = kind
+    if commit:
+        db.commit()
+    return party
 
 
 def ensure_gm_control_party(
@@ -338,12 +495,7 @@ def ensure_gm_control_party(
     display_name: str = "",
     commit: bool = True,
 ) -> dict[str, Any]:
-    """GM seat's implicit party for Ask — dual membership with the home party.
-
-    The character remains in their player/home party. They are also added to a
-    one-member GM control party the GM seat attaches to. No split/remove from
-    the home party.
-    """
+    """Singleton GM lease focus — dual membership; other focus groups kept."""
     character_id = int(character_id)
     row = db.execute(
         "SELECT id, name FROM characters WHERE id=?", (character_id,)
@@ -351,30 +503,13 @@ def ensure_gm_control_party(
     if row is None:
         raise ValueError(f"Unknown character {character_id}.")
     label = (display_name or row["name"] or "Character").strip() or "Character"
-    clear_gm_control_parties(
-        db, keep_character_id=character_id, commit=False
-    )
-    existing_gm = gm_control_party_for_character(db, character_id)
-    if existing_gm is not None:
-        members = party_member_ids(db, existing_gm["id"])
-        if members == [character_id]:
-            if commit:
-                db.commit()
-            party = get_party_with_members(db, existing_gm["id"])
-            assert party is not None
-            return party
-        # Unexpected extra members — start clean.
-        clear_gm_control_parties(db, commit=False)
-    party = create_party(
+    return ensure_gm_focus_party(
         db,
-        f"{label} (GM)",
-        member_ids=[character_id],
-        notes=GM_CONTROL_PARTY_NOTE,
-        commit=False,
+        [character_id],
+        name=f"{label} (GM)",
+        kind=GM_FOCUS_KIND_LEASE,
+        commit=commit,
     )
-    if commit:
-        db.commit()
-    return party
 
 
 def _bootstrap_member_ids(db) -> list[int]:

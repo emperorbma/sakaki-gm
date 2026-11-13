@@ -142,7 +142,9 @@ def test_gm_override_is_dual_membership_not_a_split(tmp_path):
     assert elara in party_member_ids(db, party["id"])
     gm_party = gm_control_party_for_character(db, elara)
     assert gm_party is not None
-    assert gm_party["notes"].startswith("gm_control_party")
+    assert gm_party["notes"].startswith("gm_focus_party") or gm_party[
+        "notes"
+    ].startswith("gm_control_party")
     assert active_party_for_character(db, elara)["id"] == party["id"]
     assert resolve_member_control(db, elara)["mode"] == CONTROL_GM_OVERRIDE
 
@@ -237,4 +239,97 @@ def test_party_members_may_lack_seats_and_gm_seat_attaches(tmp_path):
     assert gm["party_id"] == party["id"]
     assert gm["character_id"] is None
     assert snake in party_member_ids(db, party["id"])
+    db.close()
+
+
+def test_gm_focus_group_persists_when_cleared_and_reactivates(tmp_path):
+    """Multi-member Ask focus stays dormant; Actors are not this path."""
+    from sakaki_gm.character_db import create_character
+    from sakaki_gm.gm import build_scene_pack
+    from sakaki_gm.party_db import (
+        CONTROL_COMMITTEE,
+        CONTROL_GM_OVERRIDE,
+        add_party_member,
+        list_gm_focus_parties,
+        resolve_member_control,
+    )
+    from sakaki_gm.seat_db import (
+        activate_gm_focus_party,
+        set_gm_focus_group,
+    )
+
+    db = get_db(tmp_path / "campaign.db")
+    _pc(db, "Serina")
+    a = create_character(
+        db, "Bandit A", {"name": "Bandit A"}, campaign_role="NPC"
+    )
+    b = create_character(
+        db, "Bandit B", {"name": "Bandit B"}, campaign_role="NPC"
+    )
+    party = ensure_default_party(db)
+    ensure_default_session(db)
+    add_party_member(db, party["id"], a)
+    add_party_member(db, party["id"], b)
+
+    seat = set_gm_focus_group(db, [a, b], name="Road bandits")
+    assert seat["character_id"] == a
+    focuses = list_gm_focus_parties(db)
+    assert len(focuses) == 1
+    assert focuses[0]["focus_kind"] == "group"
+    assert set(focuses[0]["member_ids"]) == {a, b}
+    assert resolve_member_control(db, a)["mode"] == CONTROL_GM_OVERRIDE
+    assert resolve_member_control(db, b)["mode"] == CONTROL_GM_OVERRIDE
+
+    scene = build_scene_pack(db, "Hold the road.", seat_id=seat["id"])
+    assert scene["acting_character"]["name"] == "Bandit A"
+    assert len(scene["focus_companions"]) == 1
+    assert scene["focus_companions"][0]["name"] == "Bandit B"
+
+    set_gm_control_character(db, None)
+    # Group stays; without GM seat attached it is not active override.
+    assert len(list_gm_focus_parties(db)) == 1
+    assert resolve_member_control(db, a)["mode"] == CONTROL_COMMITTEE
+    assert resolve_member_control(db, b)["mode"] == CONTROL_COMMITTEE
+
+    seat = activate_gm_focus_party(db, focuses[0]["id"], primary_character_id=b)
+    assert seat["character_id"] == b
+    assert resolve_member_control(db, b)["mode"] == CONTROL_GM_OVERRIDE
+    scene = build_scene_pack(db, "Hold the road.", seat_id=seat["id"])
+    assert scene["acting_character"]["name"] == "Bandit B"
+    assert scene["focus_companions"][0]["name"] == "Bandit A"
+    db.close()
+
+
+def test_player_claim_releases_character_from_focus_not_other_groups(tmp_path):
+    from sakaki_gm.character_db import create_character
+    from sakaki_gm.party_db import list_gm_focus_parties
+    from sakaki_gm.seat_db import (
+        claim_player_character,
+        get_seat_by_role,
+        set_gm_focus_group,
+    )
+
+    db = get_db(tmp_path / "campaign.db")
+    serina = _pc(db, "Serina")
+    elara = _pc(db, "Elara")
+    bandit = create_character(
+        db, "Bandit", {"name": "Bandit"}, campaign_role="NPC"
+    )
+    ensure_default_party(db)
+    ensure_default_session(db)
+    set_gm_focus_group(db, [bandit, elara], name="Mixed band")
+    set_gm_control_character(db, serina)  # separate lease focus kept
+
+    player = get_seat_by_role(db, "player")
+    claim_player_character(db, player["id"], elara)
+    focuses = list_gm_focus_parties(db)
+    # Elara removed from the mixed group; Serina lease remains.
+    assert any(
+        f.get("focus_kind") == "lease" and serina in f["member_ids"]
+        for f in focuses
+    )
+    mixed = [f for f in focuses if f.get("focus_kind") == "group"]
+    assert len(mixed) == 1
+    assert elara not in mixed[0]["member_ids"]
+    assert bandit in mixed[0]["member_ids"]
     db.close()

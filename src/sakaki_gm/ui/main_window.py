@@ -269,7 +269,7 @@ class MainWindow:
         ).pack(side=tk.LEFT, padx=6, pady=6)
         ttk.Button(
             self.gm_tools,
-            text="Temporary party…",
+            text="Ask focus…",
             command=self.gm_control_character,
         ).pack(side=tk.LEFT, padx=6, pady=6)
         ttk.Button(
@@ -1203,9 +1203,12 @@ class MainWindow:
         allow_writes = assist == "manager"
         from sakaki_gm.ui.log_panel import SPEAKER_MODEL
 
-        self.log_panel.add_entry(SPEAKER_MODEL, parsed.narration or reply)
+        narration = parsed.narration or reply
+        self.log_panel.add_entry(SPEAKER_MODEL, narration)
         for line in citation_messages(scratch, parsed.cited_record_ids):
             self.log_panel.add_entry("System", line)
+        # Actors are AI minds, not GM Ask focus — still feed portrayed play.
+        self._feed_actors_from_gm_ask(narration)
         if not allow_writes:
             if parsed.updates or parsed.proposals:
                 self.log_panel.add_entry(
@@ -1225,6 +1228,27 @@ class MainWindow:
         self.characters_module.refresh()
         self.load_location()
         self.world_module.reload()
+
+    def _feed_actors_from_gm_ask(self, narration: str) -> None:
+        """Append observed GM play onto Actors linked to the Ask focus."""
+        desk = self._desk_seat()
+        if desk is None or desk.get("role") != "gm":
+            return
+        if desk.get("character_id") is None:
+            return
+        try:
+            from sakaki_gm.gm import note_gm_ask_for_actors
+
+            updated = note_gm_ask_for_actors(
+                self.db, narration, seat_id=desk.get("id")
+            )
+        except Exception:
+            return
+        if updated:
+            self.log_panel.add_entry(
+                "System",
+                f"Actors noted GM play ({len(updated)}).",
+            )
 
     def _review_proposals(self, proposals, *, scratch=None):
         proposal_record_ids = [

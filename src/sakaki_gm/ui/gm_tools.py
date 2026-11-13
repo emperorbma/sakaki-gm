@@ -8,10 +8,12 @@ from typing import Any, Optional
 
 from sakaki_gm.character_db import get_all_characters
 from sakaki_gm.gm import world_value
+from sakaki_gm.party_db import list_gm_focus_parties
 from sakaki_gm.seat_db import (
     GM_CONTROL_CLEARED_MESSAGE,
     GM_CONTROL_SCENE_TABLE,
     TURN_PHASES,
+    activate_gm_focus_party,
     character_recorded_places,
     characters_available_for_gm_control,
     clear_turn_wait,
@@ -20,11 +22,13 @@ from sakaki_gm.seat_db import (
     get_seat_by_role,
     get_session_state,
     gm_control_party_message,
+    gm_focus_group_message,
     list_controller_seats,
     list_player_claimable_characters,
     reassign_controller_seat,
     request_player_roll,
     set_gm_control_character,
+    set_gm_focus_group,
     set_turn_phase,
     sync_seat_knowledge_from_world,
     upgrade_knowledge,
@@ -324,9 +328,10 @@ def run_set_turn_phase(parent, db) -> Optional[dict[str, Any]]:
 
 
 def run_gm_control_character(parent, db) -> Optional[str]:
-    """Start a temporary one-character party for GM Ask focus."""
+    """GM Ask focus: singleton lease, multi-member group, or reactivate saved."""
     ensure_default_session(db)
     available = characters_available_for_gm_control(db)
+    saved = list_gm_focus_parties(db)
     gm = get_seat_by_role(db, "gm")
     current_id = gm.get("character_id") if gm else None
     table_location = world_value(db, "location", "Unknown")
@@ -334,7 +339,7 @@ def run_gm_control_character(parent, db) -> Optional[str]:
         table_location = "Unknown"
 
     dialog = tk.Toplevel(parent)
-    dialog.title("Temporary party")
+    dialog.title("Ask focus")
     dialog.transient(parent)
     dialog.grab_set()
     body = ttk.Frame(dialog, padding=12)
@@ -342,15 +347,30 @@ def run_gm_control_character(parent, db) -> Optional[str]:
     ttk.Label(
         body,
         text=(
-            "GM override for a party member (or absentee PC) not held by a "
-            "present player. They stay in the player party; Ask runs through "
-            "the GM seat's temporary party. Pick where that focus is — their "
-            "recorded place, or the main table focus."
+            "GM Ask focus is seat/party control — not Actors (AI faction minds). "
+            "Lease one character, focus a group/faction band, or switch to a "
+            "saved focus. Members keep home-party membership."
         ),
-        wraplength=440,
+        wraplength=460,
     ).pack(anchor="w")
 
-    labels = ["(none — clear temporary party)"]
+    mode_var = tk.StringVar(value="lease")
+    mode_row = ttk.Frame(body)
+    mode_row.pack(anchor="w", pady=(10, 0))
+    for value, label in (
+        ("lease", "Lease one"),
+        ("group", "Focus group"),
+        ("saved", "Saved focuses"),
+    ):
+        ttk.Radiobutton(
+            mode_row, text=label, value=value, variable=mode_var
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+    lease_frame = ttk.Frame(body)
+    group_frame = ttk.Frame(body)
+    saved_frame = ttk.Frame(body)
+
+    labels = ["(none — clear Ask focus)"]
     ids: list[int | None] = [None]
     object_ids: list[str | None] = [None]
     for item in available:
@@ -366,79 +386,219 @@ def run_gm_control_character(parent, db) -> Optional[str]:
 
     pick = tk.StringVar()
     combo = ttk.Combobox(
-        body, textvariable=pick, values=labels, state="readonly", width=42
+        lease_frame, textvariable=pick, values=labels, state="readonly", width=42
     )
-    combo.pack(anchor="w", pady=(10, 0))
+    combo.pack(anchor="w", pady=(8, 0))
     if current_id in ids:
         combo.current(ids.index(current_id))
     else:
         combo.current(0)
 
-    ttk.Label(body, text="Where is this temporary party?").pack(
-        anchor="w", pady=(14, 0)
+    ttk.Label(group_frame, text="Members (Ctrl/Cmd-click multi-select)").pack(
+        anchor="w", pady=(8, 0)
     )
+    group_list = tk.Listbox(
+        group_frame, selectmode=tk.EXTENDED, height=8, exportselection=False
+    )
+    group_list.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+    for item in available:
+        tag = "absentee PC" if item.get("absentee_pc") else (
+            item.get("campaign_role") or "character"
+        )
+        group_list.insert(tk.END, f"{item['name']} ({tag})")
+    group_name_var = tk.StringVar()
+    ttk.Label(group_frame, text="Group label (optional)").pack(
+        anchor="w", pady=(8, 0)
+    )
+    ttk.Entry(group_frame, textvariable=group_name_var, width=42).pack(
+        anchor="w", pady=(2, 0)
+    )
+
+    ttk.Label(saved_frame, text="Reactivate a dormant focus party").pack(
+        anchor="w", pady=(8, 0)
+    )
+    saved_labels = []
+    saved_ids: list[int] = []
+    for party in saved:
+        kind = party.get("focus_kind") or "lease"
+        name_bits = []
+        for mid in party.get("member_ids") or []:
+            row = db.execute(
+                "SELECT name FROM characters WHERE id=?", (int(mid),)
+            ).fetchone()
+            name_bits.append(
+                (row["name"] if row else None) or f"#{mid}"
+            )
+        members = ", ".join(name_bits) or "(empty)"
+        saved_labels.append(
+            f"[{kind}] {party.get('name') or 'Focus'} — {members}"
+        )
+        saved_ids.append(int(party["id"]))
+    saved_var = tk.StringVar()
+    saved_combo = ttk.Combobox(
+        saved_frame,
+        textvariable=saved_var,
+        values=saved_labels or ["(none saved)"],
+        state="readonly",
+        width=52,
+    )
+    saved_combo.pack(anchor="w", pady=(4, 0))
+    if saved_labels:
+        saved_combo.current(0)
+
+    ttk.Label(body, text="Where is this focus?").pack(anchor="w", pady=(14, 0))
     scene_var = tk.StringVar(value=get_gm_control_scene(db))
     scene_frame = ttk.Frame(body)
     scene_frame.pack(fill=tk.X, pady=(4, 0))
     scene_buttons: list[ttk.Radiobutton] = []
 
+    def _primary_object_id() -> str | None:
+        mode = mode_var.get()
+        if mode == "lease":
+            index = combo.current()
+            if index > 0:
+                return object_ids[index]
+            return None
+        if mode == "group":
+            selection = list(group_list.curselection())
+            if selection:
+                return object_ids[selection[0] + 1]
+            return None
+        if mode == "saved" and saved_ids:
+            index = saved_combo.current()
+            if index < 0:
+                return None
+            party = next(
+                (p for p in saved if int(p["id"]) == saved_ids[index]), None
+            )
+            if not party:
+                return None
+            member_ids = party.get("member_ids") or []
+            if not member_ids:
+                return None
+            row = db.execute(
+                "SELECT object_id FROM characters WHERE id=?",
+                (int(member_ids[0]),),
+            ).fetchone()
+            return row["object_id"] if row else None
+        return None
+
     def _rebuild_scene_choices(*_args):
         for child in scene_frame.winfo_children():
             child.destroy()
         scene_buttons.clear()
-        index = combo.current()
         choices: list[tuple[str, str]] = [
             (
                 GM_CONTROL_SCENE_TABLE,
                 f"Main table focus — {table_location}",
             )
         ]
-        if index > 0 and object_ids[index]:
-            for place in character_recorded_places(db, object_ids[index]):
+        oid = _primary_object_id()
+        if oid:
+            for place in character_recorded_places(db, oid):
                 choices.append(
                     (
                         place["object_id"],
-                        f"This party's place — {place['name']}",
+                        f"This focus's place — {place['name']}",
                     )
                 )
         current = scene_var.get()
         valid = {value for value, _label in choices}
         if current not in valid:
-            # Default: stay where they are recorded when one exists.
             scene_var.set(
                 choices[1][0] if len(choices) > 1 else GM_CONTROL_SCENE_TABLE
             )
+        clearing = mode_var.get() == "lease" and combo.current() <= 0
         for value, label in choices:
             btn = ttk.Radiobutton(
                 scene_frame, text=label, value=value, variable=scene_var
             )
             btn.pack(anchor="w")
             scene_buttons.append(btn)
-        state = "disabled" if index <= 0 else "normal"
+        state = "disabled" if clearing else "normal"
         for btn in scene_buttons:
             btn.configure(state=state)
 
+    def _show_mode(*_args):
+        lease_frame.pack_forget()
+        group_frame.pack_forget()
+        saved_frame.pack_forget()
+        mode = mode_var.get()
+        if mode == "lease":
+            lease_frame.pack(fill=tk.X)
+        elif mode == "group":
+            group_frame.pack(fill=tk.BOTH, expand=True)
+        else:
+            saved_frame.pack(fill=tk.X)
+        _rebuild_scene_choices()
+
     combo.bind("<<ComboboxSelected>>", _rebuild_scene_choices)
-    _rebuild_scene_choices()
+    group_list.bind("<<ListboxSelect>>", _rebuild_scene_choices)
+    saved_combo.bind("<<ComboboxSelected>>", _rebuild_scene_choices)
+    mode_var.trace_add("write", _show_mode)
+    _show_mode()
 
     result: dict[str, Optional[str]] = {"summary": None}
 
     def ok():
-        index = combo.current()
-        if index < 0:
-            return
-        character_id = ids[index]
-        scene = scene_var.get() if character_id is not None else GM_CONTROL_SCENE_TABLE
+        mode = mode_var.get()
+        scene = scene_var.get()
         try:
-            set_gm_control_character(db, character_id, scene=scene)
+            if mode == "lease":
+                index = combo.current()
+                if index < 0:
+                    return
+                character_id = ids[index]
+                scene_use = (
+                    scene if character_id is not None else GM_CONTROL_SCENE_TABLE
+                )
+                set_gm_control_character(db, character_id, scene=scene_use)
+                if character_id is None:
+                    result["summary"] = GM_CONTROL_CLEARED_MESSAGE
+                else:
+                    result["summary"] = gm_control_party_message(
+                        available[index - 1]["name"]
+                    )
+            elif mode == "group":
+                selection = list(group_list.curselection())
+                if not selection:
+                    messagebox.showerror(
+                        "Ask focus",
+                        "Select at least one member for the group.",
+                        parent=dialog,
+                    )
+                    return
+                member_ids = [available[i]["id"] for i in selection]
+                party_name = group_name_var.get().strip()
+                seat = set_gm_focus_group(
+                    db,
+                    member_ids,
+                    name=party_name,
+                    scene=scene,
+                )
+                label = party_name or (
+                    f"{available[selection[0]]['name']} band"
+                    if len(selection) == 1
+                    else f"{available[selection[0]]['name']} +{len(selection) - 1}"
+                )
+                result["summary"] = gm_focus_group_message(label)
+                _ = seat
+            else:
+                if not saved_ids:
+                    messagebox.showerror(
+                        "Ask focus", "No saved focuses yet.", parent=dialog
+                    )
+                    return
+                index = saved_combo.current()
+                if index < 0:
+                    return
+                activate_gm_focus_party(
+                    db, saved_ids[index], scene=scene
+                )
+                result["summary"] = saved_labels[index]
         except (PermissionError, ValueError) as exc:
-            messagebox.showerror("Temporary party", str(exc), parent=dialog)
+            messagebox.showerror("Ask focus", str(exc), parent=dialog)
             return
-        if character_id is None:
-            result["summary"] = GM_CONTROL_CLEARED_MESSAGE
-        else:
-            name = available[index - 1]["name"]
-            result["summary"] = gm_control_party_message(name)
         dialog.destroy()
 
     buttons = ttk.Frame(body)

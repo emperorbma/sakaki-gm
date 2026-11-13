@@ -278,6 +278,11 @@ def _scene_user_message(
         "Place:",
         json.dumps(scene["place"], ensure_ascii=False),
     ])
+    if scene.get("focus_companions"):
+        parts.extend([
+            "Focus companions (same GM Ask group; not separate Actors):",
+            json.dumps(scene["focus_companions"], ensure_ascii=False),
+        ])
     if scene.get("table_focus"):
         parts.extend([
             "Other party focus (may differ from this viewpoint):",
@@ -372,12 +377,17 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
 
     include_gm_private = not (seat and seat.get("role") == "player")
     after_log_id = None
+    focus_companions: list[dict] = []
     if gm_lease:
-        after_log_id = _gm_lease_log_anchor_id(db, acting["name"])
+        after_log_id = _gm_focus_log_anchor_id(db, acting["name"])
+        focus_companions = _gm_focus_companions(
+            db, seat, acting_id=int(acting["id"]), action=action
+        )
     pack = {
         "acting_character": (
             _short_character_payload(db, acting, action) if acting else None
         ),
+        "focus_companions": focus_companions,
         "location_text": location_text,
         "place": (
             {
@@ -397,7 +407,7 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
             after_log_id=after_log_id,
         ),
         "coverage_names": _scene_coverage_names(
-            acting, place, routes, db, action
+            acting, place, routes, db, action, companions=focus_companions
         ),
     }
     if table_focus is not None:
@@ -470,13 +480,18 @@ def out_of_scene_lore_query(db, action: str, coverage_names=None) -> str | None:
     return " ".join(mentions[:12])
 
 
-def _scene_coverage_names(acting, place, routes, db, action: str) -> list[str]:
+def _scene_coverage_names(
+    acting, place, routes, db, action: str, *, companions: list | None = None
+) -> list[str]:
     names = []
     if acting is not None:
         names.append(acting["name"])
         for item in _character_item_assignments(db, acting["id"]):
             if item.get("name"):
                 names.append(item["name"])
+    for companion in companions or []:
+        if companion.get("name"):
+            names.append(companion["name"])
     if place is not None and place.get("name"):
         names.append(place["name"])
     for route in routes:
@@ -486,6 +501,77 @@ def _scene_coverage_names(acting, place, routes, db, action: str) -> list[str]:
     if isinstance(location_text, str) and location_text.strip():
         names.append(location_text.strip())
     return names
+
+
+def _gm_focus_companions(
+    db, seat, *, acting_id: int, action: str
+) -> list[dict]:
+    """Other members of the GM seat's Ask focus party (lease has none)."""
+    from sakaki_gm.party_db import (
+        _is_gm_control_party,
+        get_party,
+        party_member_ids,
+    )
+
+    if seat is None or seat.get("party_id") is None:
+        return []
+    party = get_party(db, int(seat["party_id"]))
+    if party is None or not _is_gm_control_party(party):
+        return []
+    companions = []
+    for member_id in party_member_ids(db, party["id"]):
+        if int(member_id) == int(acting_id):
+            continue
+        row = db.execute(
+            "SELECT id, name, data, campaign_role, object_id "
+            "FROM characters WHERE id=?",
+            (int(member_id),),
+        ).fetchone()
+        if row is None:
+            continue
+        companions.append(_short_character_payload(db, row, action))
+    return companions
+
+
+def note_gm_ask_for_actors(
+    db, narration: str, *, seat_id: int | None = None
+) -> list[int]:
+    """Feed GM Ask narration into linked Actors for the current focus.
+
+    Actors remain AI-driven; this only records what the GM just portrayed so
+    later inferences can follow the table.
+    """
+    from sakaki_gm.actor_db import observe_gm_play_for_actors
+    from sakaki_gm.party_db import (
+        _is_gm_control_party,
+        get_party,
+        party_member_ids,
+    )
+    from sakaki_gm.seat_db import get_active_seat, get_seat
+
+    text = (narration or "").strip()
+    if not text:
+        return []
+    seat = get_seat(db, seat_id) if seat_id is not None else None
+    if seat is None:
+        try:
+            seat = get_active_seat(db)
+        except Exception:
+            seat = None
+    if seat is None or seat.get("role") != "gm":
+        return []
+    character_ids: list[int] = []
+    if seat.get("party_id") is not None:
+        party = get_party(db, int(seat["party_id"]))
+        if party is not None and _is_gm_control_party(party):
+            character_ids = [int(mid) for mid in party_member_ids(db, party["id"])]
+    if not character_ids and seat.get("character_id") is not None:
+        character_ids = [int(seat["character_id"])]
+    if not character_ids:
+        return []
+    return observe_gm_play_for_actors(
+        db, narration=text, character_ids=character_ids, commit=True
+    )
 
 
 def _select_acting_character(
@@ -694,26 +780,47 @@ def _quest_payloads(db) -> list[dict]:
 
 
 def _gm_lease_log_anchor_id(db, character_name: str) -> int | None:
-    """Latest System temporary-party marker; scene packs start after it."""
+    """Back-compat alias for :func:`_gm_focus_log_anchor_id`."""
+    return _gm_focus_log_anchor_id(db, character_name)
+
+
+def _gm_focus_log_anchor_id(db, character_name: str) -> int | None:
+    """Latest System GM-focus marker; scene packs start after it."""
     from sakaki_gm.seat_db import gm_control_party_message
 
     name = (character_name or "").strip()
-    if not name:
-        return None
-    markers = (
-        gm_control_party_message(name),
-        # Older bottles may still have the pre-party lease wording.
-        f"GM controlling {name} (temporary lease)",
-    )
+    markers = []
+    if name:
+        markers.extend(
+            [
+                gm_control_party_message(name),
+                # Older bottles may still have the pre-party lease wording.
+                f"GM controlling {name} (temporary lease)",
+                f"GM temporary party: {name}",
+            ]
+        )
     try:
-        row = db.execute(
-            """
-            SELECT id FROM log
-            WHERE speaker = 'System' AND message IN (?, ?)
-            ORDER BY id DESC LIMIT 1
-            """,
-            markers,
-        ).fetchone()
+        if markers:
+            placeholders = ", ".join("?" for _ in markers)
+            row = db.execute(
+                f"""
+                SELECT id FROM log
+                WHERE speaker = 'System' AND (
+                    message IN ({placeholders})
+                    OR message LIKE 'GM focus (%'
+                )
+                ORDER BY id DESC LIMIT 1
+                """,
+                markers,
+            ).fetchone()
+        else:
+            row = db.execute(
+                """
+                SELECT id FROM log
+                WHERE speaker = 'System' AND message LIKE 'GM focus (%'
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
     except Exception:
         return None
     if row is None:

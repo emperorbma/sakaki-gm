@@ -1,9 +1,14 @@
 """Actor / brain shell: minds with drive, goals, traits, and affect.
 
-Actors may be persons, organizations, pantheon entities, or political bodies—
-anything with anima / esprit de corps the GM can run. Desk edits are design and
-debug access (a logical "cheat" outside initial population or Dreamtime); live
-play should prefer plot-generated actors and between-session refresh.
+Actors are the meta-architecture for **automatic AI control** of persons,
+factions, pantheon entities, and political bodies — not the GM's direct Ask
+focus. GM direct control uses seat/party focus (singleton lease or multi-member
+group). When the GM portrays those characters, call
+``observe_gm_play_for_actors`` so later AI inferences can follow the table.
+
+Desk edits are design/debug access (a logical "cheat" outside initial
+population or Dreamtime); live play should prefer plot-generated actors and
+between-session refresh.
 """
 
 from __future__ import annotations
@@ -633,3 +638,47 @@ def ensure_derived_character_actor(
     if commit:
         db.commit()
     return actor_id
+
+
+def observe_gm_play_for_actors(
+    db,
+    *,
+    narration: str,
+    character_ids: Iterable[int],
+    commit: bool = True,
+) -> list[int]:
+    """Feed GM-portrayed play into linked Actors so AI control can follow the table.
+
+    Does not put Actors under GM Ask control. Appends a short observed-play
+    note to each Actor already linked to the given characters. Returns actor
+    ids that were updated.
+    """
+    text = (narration or "").strip()
+    if not text:
+        return []
+    # Keep notes bounded; Actors still own their own goals/drive.
+    snippet = text if len(text) <= 900 else text[:897].rstrip() + "…"
+    stamp = f"\n\n[Observed GM play]\n{snippet}"
+    updated: list[int] = []
+    seen: set[int] = set()
+    for raw_id in character_ids:
+        try:
+            character_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        actor = get_actor_for_character(db, character_id)
+        if actor is None or actor["id"] in seen:
+            continue
+        seen.add(actor["id"])
+        notes = (actor.get("notes") or "").rstrip()
+        # Avoid stacking identical back-to-back observations.
+        if notes.endswith(snippet):
+            continue
+        new_notes = (notes + stamp).strip()
+        if len(new_notes) > 8000:
+            new_notes = new_notes[-8000:].lstrip()
+        update_actor(db, actor["id"], notes=new_notes, commit=False)
+        updated.append(actor["id"])
+    if commit and updated:
+        db.commit()
+    return updated
