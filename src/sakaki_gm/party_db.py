@@ -1,9 +1,19 @@
 """Party stub: membership, split/merge, and GM-approved proposals.
 
-Knowledge stays seat-scoped for now, but party membership is the grouping
-that will drive split-party awareness (different subgroups, different views).
-Players may request merge/unmerge; the GM approves or rejects before state
-changes. The GM may also apply split/merge directly.
+Entity shape (conceptual)::
+
+    Party
+      └── Members (characters)     — seated or not; allies/NPCs need no seat
+            └── Seat? (optional)   — controller bound via seats.character_id
+      └── Seats attached           — seats.party_id = which party this seat is with
+
+A seat does not *own* the party; it attaches to one party and may control one
+member. The GM seat's temporary control creates/attaches to a one-member party
+for Ask focus (same split-party idea), then returns to the main party.
+
+Knowledge stays seat-scoped for now; party membership drives split-party
+awareness. Players may request merge/unmerge; the GM approves or applies
+directly.
 """
 
 from __future__ import annotations
@@ -104,6 +114,10 @@ def get_party_with_members(db, party_id: int) -> Optional[dict[str, Any]]:
     if party is None:
         return None
     party["member_ids"] = party_member_ids(db, party_id)
+    # Seats attached to this party (controllers). Many members have no seat.
+    from sakaki_gm.seat_db import seats_for_party
+
+    party["seat_ids"] = [seat["id"] for seat in seats_for_party(db, party_id)]
     return party
 
 

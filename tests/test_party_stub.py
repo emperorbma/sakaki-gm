@@ -135,3 +135,53 @@ def test_gm_temporary_party_splits_and_restores(tmp_path):
     assert active_party_for_character(db, elara)["id"] == party["id"]
     assert elara in party_member_ids(db, party["id"])
     db.close()
+
+
+def test_party_members_may_lack_seats_and_gm_seat_attaches(tmp_path):
+    """Party → Members; Seat attaches optionally (Members ↔ Seat)."""
+    from sakaki_gm.character_db import create_character
+    from sakaki_gm.party_db import add_party_member, get_party_with_members
+    from sakaki_gm.seat_db import get_seat_by_role, seats_for_party
+
+    db = get_db(tmp_path / "campaign.db")
+    assert db.execute("PRAGMA user_version").fetchone()[0] >= 26
+    serina = _pc(db, "Serina")
+    snake = create_character(
+        db,
+        "Giant Constrictor Snake",
+        {"name": "Giant Constrictor Snake"},
+        campaign_role="NPC",
+    )
+    party = ensure_default_party(db)
+    ensure_default_session(db)
+    add_party_member(db, party["id"], snake)
+    full = get_party_with_members(db, party["id"])
+    assert set(full["member_ids"]) >= {serina, snake}
+    # Snake is a member with no controller seat.
+    player = get_seat_by_role(db, "player")
+    gm = get_seat_by_role(db, "gm")
+    assert player["party_id"] == party["id"]
+    assert gm["party_id"] == party["id"]
+    assert {s["id"] for s in seats_for_party(db, party["id"])} >= {
+        player["id"],
+        gm["id"],
+    }
+
+    set_gm_control_character(db, snake)
+    gm = get_seat_by_role(db, "gm")
+    ctrl = active_party_for_character(db, snake)
+    assert gm["party_id"] == ctrl["id"]
+    assert gm["character_id"] == snake
+    # Main party still has Serina; GM seat left for the temporary party.
+    assert player["id"] in {
+        s["id"] for s in seats_for_party(db, party["id"])
+    }
+    assert gm["id"] not in {
+        s["id"] for s in seats_for_party(db, party["id"])
+    }
+
+    set_gm_control_character(db, None)
+    gm = get_seat_by_role(db, "gm")
+    assert gm["party_id"] == party["id"]
+    assert gm["character_id"] is None
+    db.close()
