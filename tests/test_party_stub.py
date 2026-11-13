@@ -116,24 +116,72 @@ def test_party_membership_feeds_seat_knowledge(tmp_path):
     db.close()
 
 
-def test_gm_temporary_party_splits_and_restores(tmp_path):
-    """GM control is a one-character temporary party, not a separate lease ontology."""
+def test_gm_override_is_dual_membership_not_a_split(tmp_path):
+    """GM control keeps home-party membership and adds the GM implicit party."""
+    from sakaki_gm.party_db import (
+        CONTROL_GM_OVERRIDE,
+        CONTROL_SEATED,
+        active_parties_for_character,
+        gm_control_party_for_character,
+        resolve_member_control,
+    )
+
     db = get_db(tmp_path / "campaign.db")
     serina = _pc(db, "Serina")
     elara = _pc(db, "Elara")
     party = ensure_default_party(db)
     ensure_default_session(db)
 
+    assert resolve_member_control(db, serina)["mode"] == CONTROL_SEATED
+    # Elara is playerish with a controller seat after creation.
+    assert resolve_member_control(db, elara)["mode"] == CONTROL_SEATED
+
     set_gm_control_character(db, elara)
-    ctrl = active_party_for_character(db, elara)
-    assert ctrl is not None
-    assert ctrl["notes"].startswith("gm_control_party")
-    assert elara not in party_member_ids(db, party["id"])
-    assert serina in party_member_ids(db, party["id"])
+    parties = active_parties_for_character(db, elara)
+    assert len(parties) == 2
+    assert elara in party_member_ids(db, party["id"])
+    gm_party = gm_control_party_for_character(db, elara)
+    assert gm_party is not None
+    assert gm_party["notes"].startswith("gm_control_party")
+    assert active_party_for_character(db, elara)["id"] == party["id"]
+    assert resolve_member_control(db, elara)["mode"] == CONTROL_GM_OVERRIDE
 
     set_gm_control_character(db, None)
-    assert active_party_for_character(db, elara)["id"] == party["id"]
+    assert active_parties_for_character(db, elara) == [
+        active_party_for_character(db, elara)
+    ]
     assert elara in party_member_ids(db, party["id"])
+    assert gm_control_party_for_character(db, elara) is None
+    db.close()
+
+
+def test_unseated_npc_member_is_committee_until_gm_override(tmp_path):
+    from sakaki_gm.character_db import create_character
+    from sakaki_gm.party_db import (
+        CONTROL_COMMITTEE,
+        CONTROL_GM_OVERRIDE,
+        add_party_member,
+        resolve_member_control,
+    )
+
+    db = get_db(tmp_path / "campaign.db")
+    _pc(db, "Serina")
+    snake = create_character(
+        db,
+        "Giant Constrictor Snake",
+        {"name": "Giant Constrictor Snake"},
+        campaign_role="NPC",
+    )
+    party = ensure_default_party(db)
+    ensure_default_session(db)
+    add_party_member(db, party["id"], snake)
+    assert resolve_member_control(db, snake)["mode"] == CONTROL_COMMITTEE
+
+    set_gm_control_character(db, snake)
+    assert snake in party_member_ids(db, party["id"])
+    assert resolve_member_control(db, snake)["mode"] == CONTROL_GM_OVERRIDE
+    set_gm_control_character(db, None)
+    assert resolve_member_control(db, snake)["mode"] == CONTROL_COMMITTEE
     db.close()
 
 
@@ -169,10 +217,14 @@ def test_party_members_may_lack_seats_and_gm_seat_attaches(tmp_path):
 
     set_gm_control_character(db, snake)
     gm = get_seat_by_role(db, "gm")
-    ctrl = active_party_for_character(db, snake)
+    from sakaki_gm.party_db import gm_control_party_for_character
+
+    ctrl = gm_control_party_for_character(db, snake)
+    assert ctrl is not None
     assert gm["party_id"] == ctrl["id"]
     assert gm["character_id"] == snake
-    # Main party still has Serina; GM seat left for the temporary party.
+    # Dual membership: still in the player party; GM seat is on the override party.
+    assert snake in full["member_ids"] or snake in party_member_ids(db, party["id"])
     assert player["id"] in {
         s["id"] for s in seats_for_party(db, party["id"])
     }
@@ -184,4 +236,5 @@ def test_party_members_may_lack_seats_and_gm_seat_attaches(tmp_path):
     gm = get_seat_by_role(db, "gm")
     assert gm["party_id"] == party["id"]
     assert gm["character_id"] is None
+    assert snake in party_member_ids(db, party["id"])
     db.close()

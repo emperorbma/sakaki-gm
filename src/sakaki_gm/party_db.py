@@ -7,9 +7,16 @@ Entity shape (conceptual)::
             └── Seat? (optional)   — controller bound via seats.character_id
       └── Seats attached           — seats.party_id = which party this seat is with
 
-A seat does not *own* the party; it attaches to one party and may control one
-member. The GM seat's temporary control creates/attaches to a one-member party
-for Ask focus (same split-party idea), then returns to the main party.
+Maps ordinary campaign practice, not a formal bureaucracy:
+
+- **Seated member** — that seat controls them.
+- **Unseated NPC in the party** — the table runs them as a small committee
+  (agree, or one member steers), unless the GM takes **override**.
+- **GM override** — dual membership: still in the player party, also on the
+  GM seat's implicit party for Ask. Clear drops only the GM-party link.
+
+Ordinary (non-GM) parties stay exclusive; real splits/merges still move
+exclusive membership.
 
 Knowledge stays seat-scoped for now; party membership drives split-party
 awareness. Players may request merge/unmerge; the GM approves or applies
@@ -27,6 +34,12 @@ PROPOSAL_OPS = ("split", "merge")
 PROPOSAL_STATUSES = ("pending", "approved", "rejected")
 # Notes marker: GM temporary control is a one-character "fake party".
 GM_CONTROL_PARTY_NOTE = "gm_control_party"
+# How a party member is controlled right now.
+CONTROL_SEATED = "seated"
+# Unseated NPC in the party's midst: table agreement / one member steers.
+CONTROL_COMMITTEE = "committee"
+CONTROL_JOINT = CONTROL_COMMITTEE  # back-compat alias
+CONTROL_GM_OVERRIDE = "gm_override"
 
 
 def _utcnow() -> str:
@@ -121,8 +134,11 @@ def get_party_with_members(db, party_id: int) -> Optional[dict[str, Any]]:
     return party
 
 
-def active_party_for_character(db, character_id: int) -> Optional[dict[str, Any]]:
-    row = db.execute(
+def active_parties_for_character(
+    db, character_id: int
+) -> list[dict[str, Any]]:
+    """All active parties containing this character (home + optional GM party)."""
+    rows = db.execute(
         """
         SELECT parties.*
         FROM party_members
@@ -130,13 +146,66 @@ def active_party_for_character(db, character_id: int) -> Optional[dict[str, Any]
         WHERE party_members.character_id=?
           AND parties.status='active'
         ORDER BY parties.id
-        LIMIT 1
         """,
-        (character_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    return _party_row(row)
+        (int(character_id),),
+    ).fetchall()
+    return [_party_row(row) for row in rows]
+
+
+def active_party_for_character(db, character_id: int) -> Optional[dict[str, Any]]:
+    """Home party for a character — prefers a non-GM party when dual-membered."""
+    parties = active_parties_for_character(db, character_id)
+    for party in parties:
+        if not _is_gm_control_party(party):
+            return party
+    return parties[0] if parties else None
+
+
+def gm_control_party_for_character(
+    db, character_id: int
+) -> Optional[dict[str, Any]]:
+    """GM implicit party membership, if any."""
+    for party in active_parties_for_character(db, character_id):
+        if _is_gm_control_party(party):
+            return party
+    return None
+
+
+def resolve_member_control(db, character_id: int) -> dict[str, Any]:
+    """Resolve how a party member is controlled (seated / committee / GM override).
+
+    Same control idea for everyone: a dedicated seat, a party committee for an
+    unseated NPC in their midst, or GM override via the GM seat's implicit
+    party (dual membership with the home party).
+    """
+    from sakaki_gm.seat_db import get_seats
+
+    character_id = int(character_id)
+    home = active_party_for_character(db, character_id)
+    gm_party = gm_control_party_for_character(db, character_id)
+    controllers = [
+        seat
+        for seat in get_seats(db)
+        if seat.get("character_id") is not None
+        and int(seat["character_id"]) == character_id
+    ]
+    player_controllers = [s for s in controllers if s.get("role") == "player"]
+    gm_controllers = [s for s in controllers if s.get("role") == "gm"]
+
+    if gm_party is not None or gm_controllers:
+        mode = CONTROL_GM_OVERRIDE
+    elif player_controllers:
+        mode = CONTROL_SEATED
+    else:
+        mode = CONTROL_COMMITTEE
+
+    return {
+        "character_id": character_id,
+        "mode": mode,
+        "home_party_id": home["id"] if home else None,
+        "gm_party_id": gm_party["id"] if gm_party else None,
+        "controller_seat_ids": [int(s["id"]) for s in controllers],
+    }
 
 
 def create_party(
@@ -174,8 +243,17 @@ def add_party_member(
     ).fetchone()
     if char is None:
         raise ValueError(f"Unknown character {character_id}.")
-    existing = active_party_for_character(db, character_id)
-    if existing is not None and existing["id"] != party_id:
+    party_id = int(party_id)
+    character_id = int(character_id)
+    # Ordinary parties stay exclusive. GM control parties may dual-member with
+    # a home party (action via GM seat's party; still a player-party member).
+    for existing in active_parties_for_character(db, character_id):
+        if existing["id"] == party_id:
+            break
+        joining_gm = _is_gm_control_party(party)
+        existing_gm = _is_gm_control_party(existing)
+        if joining_gm or existing_gm:
+            continue
         raise ValueError(
             f"Character {character_id} is already in active party "
             f"{existing['id']} ({existing['name']}). Split or merge first."
@@ -240,7 +318,7 @@ def _gm_control_origin_party_id(party: dict[str, Any] | None) -> int | None:
 def clear_gm_control_parties(
     db, *, keep_character_id: int | None = None, commit: bool = True
 ) -> None:
-    """Disband GM temporary parties, optionally restoring a prior membership."""
+    """Disband GM temporary parties without touching home-party membership."""
     keep = int(keep_character_id) if keep_character_id is not None else None
     for party in list_parties(db, status="active"):
         if not _is_gm_control_party(party):
@@ -248,19 +326,6 @@ def clear_gm_control_parties(
         members = party_member_ids(db, party["id"])
         if keep is not None and members == [keep]:
             continue
-        origin_id = _gm_control_origin_party_id(party)
-        for character_id in list(members):
-            remove_party_member(db, party["id"], character_id, commit=False)
-            if origin_id is not None:
-                origin = get_party(db, origin_id)
-                if origin is not None and origin.get("status") == "active":
-                    try:
-                        add_party_member(
-                            db, origin_id, character_id, commit=False
-                        )
-                        continue
-                    except ValueError:
-                        pass
         disband_party(db, party["id"], commit=False)
     if commit:
         db.commit()
@@ -273,11 +338,11 @@ def ensure_gm_control_party(
     display_name: str = "",
     commit: bool = True,
 ) -> dict[str, Any]:
-    """Make a one-character temporary party for GM Ask focus.
+    """GM seat's implicit party for Ask — dual membership with the home party.
 
-    If the character already sits alone in a GM control party, reuse it. If they
-    share a larger active party, split them out and remember the origin so clear
-    can restore. Otherwise create a fresh temporary party.
+    The character remains in their player/home party. They are also added to a
+    one-member GM control party the GM seat attaches to. No split/remove from
+    the home party.
     """
     character_id = int(character_id)
     row = db.execute(
@@ -289,46 +354,17 @@ def ensure_gm_control_party(
     clear_gm_control_parties(
         db, keep_character_id=character_id, commit=False
     )
-    existing = active_party_for_character(db, character_id)
-    if existing is not None and _is_gm_control_party(existing):
-        members = party_member_ids(db, existing["id"])
+    existing_gm = gm_control_party_for_character(db, character_id)
+    if existing_gm is not None:
+        members = party_member_ids(db, existing_gm["id"])
         if members == [character_id]:
             if commit:
                 db.commit()
-            party = get_party_with_members(db, existing["id"])
+            party = get_party_with_members(db, existing_gm["id"])
             assert party is not None
             return party
-    if existing is not None:
-        members = party_member_ids(db, existing["id"])
-        if len(members) > 1 and character_id in members:
-            split = split_party(
-                db,
-                existing["id"],
-                [character_id],
-                new_party_name=f"{label} (GM)",
-                commit=False,
-            )
-            party_id = int(split["split"]["id"])
-            db.execute(
-                "UPDATE parties SET notes=? WHERE id=?",
-                (f"{GM_CONTROL_PARTY_NOTE};origin={existing['id']}", party_id),
-            )
-            if commit:
-                db.commit()
-            party = get_party_with_members(db, party_id)
-            assert party is not None
-            return party
-        # Solo non-control party: retag as the temporary GM party.
-        if members == [character_id]:
-            db.execute(
-                "UPDATE parties SET name=?, notes=? WHERE id=?",
-                (f"{label} (GM)", GM_CONTROL_PARTY_NOTE, existing["id"]),
-            )
-            if commit:
-                db.commit()
-            party = get_party_with_members(db, existing["id"])
-            assert party is not None
-            return party
+        # Unexpected extra members — start clean.
+        clear_gm_control_parties(db, commit=False)
     party = create_party(
         db,
         f"{label} (GM)",
