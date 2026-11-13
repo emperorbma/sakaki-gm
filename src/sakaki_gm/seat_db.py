@@ -37,7 +37,7 @@ VISIBLE_KNOWLEDGE = frozenset(KNOWLEDGE_LEVELS)
 
 # System log markers: Ask scene packs for a GM temporary party start *after*
 # the matching line so prior possession narration cannot bleed into the lens.
-GM_CONTROL_CLEARED_MESSAGE = "GM cleared temporary party"
+GM_CONTROL_CLEARED_MESSAGE = "GM cleared Ask focus"
 # Back-compat with bottles that still have the old lease wording in the log.
 GM_LEASE_CLEARED_MESSAGE = GM_CONTROL_CLEARED_MESSAGE
 # session_state.gm_control_scene: "table" or a geography object_id.
@@ -45,11 +45,15 @@ GM_CONTROL_SCENE_TABLE = "table"
 
 
 def gm_control_party_message(character_name: str) -> str:
-    return f"GM temporary party: {character_name}"
+    return f"GM focus (lease): {character_name}"
+
+
+def gm_focus_group_message(group_name: str) -> str:
+    return f"GM focus (group): {group_name}"
 
 
 def gm_lease_controlling_message(character_name: str) -> str:
-    """Deprecated alias — temporary control is a one-character party."""
+    """Deprecated alias — singleton lease is one GM focus party."""
     return gm_control_party_message(character_name)
 
 
@@ -427,24 +431,25 @@ def set_gm_control_character(
     scene: str | None = None,
     commit: bool = True,
 ) -> dict[str, Any]:
-    """GM override: attach the GM seat to an implicit party for one character.
+    """Singleton GM lease focus — or clear Ask focus.
 
-    Clears with ``character_id=None``. When the player seat later claims the
-    same PC, ``claim_player_character`` drops this binding.
+    ``character_id=None`` returns the GM seat to the main party, dissolves the
+    active singleton lease (if any), and **keeps** multi-member focus groups
+    dormant for later reactivation. Use ``dissolve_gm_focus_parties`` to tear
+    groups down.
 
-    The character keeps home-party membership (dual membership). Unseated NPC
-    members otherwise fall under party committee control; this is the GM
-    override path so control stays consistent with seated PCs. ``scene``
-    chooses Ask framing: ``table`` (main world.location) or a geography
-    ``object_id``. Default prefers the first recorded place when present.
-
-    Each change writes a System log marker so Ask scene packs can drop prior
-    possession narration from the model context.
+    The leased character keeps home-party membership (dual membership).
+    Actors (AI minds) are not this path — see ``actor_db``.
     """
     from sakaki_gm.party_db import (
-        clear_gm_control_parties,
+        GM_FOCUS_KIND_LEASE,
+        _gm_focus_kind,
+        _is_gm_control_party,
+        dissolve_gm_focus_parties,
         ensure_default_party,
         ensure_gm_control_party,
+        get_party,
+        gm_control_party_for_character,
     )
 
     ensure_default_session(db, commit=False)
@@ -483,12 +488,162 @@ def set_gm_control_character(
     else:
         marker = GM_CONTROL_CLEARED_MESSAGE
         scene = GM_CONTROL_SCENE_TABLE
-        clear_gm_control_parties(db, commit=False)
+        focus_id = gm.get("party_id")
+        prior_cid = gm.get("character_id")
+        if focus_id is not None:
+            party = get_party(db, int(focus_id))
+            if (
+                party is not None
+                and _is_gm_control_party(party)
+                and _gm_focus_kind(party) == GM_FOCUS_KIND_LEASE
+            ):
+                dissolve_gm_focus_parties(
+                    db, party_id=int(focus_id), commit=False
+                )
+        elif prior_cid is not None:
+            lease = gm_control_party_for_character(db, int(prior_cid))
+            if (
+                lease is not None
+                and _gm_focus_kind(lease) == GM_FOCUS_KIND_LEASE
+            ):
+                dissolve_gm_focus_parties(
+                    db, party_id=int(lease["id"]), commit=False
+                )
         main = ensure_default_party(db, commit=False)
         set_seat_party(db, gm["id"], main["id"], commit=False)
     seat = set_seat_character(db, gm["id"], character_id, commit=False)
     set_gm_control_scene(db, scene, commit=False)
     _append_system_log(db, marker, commit=False)
+    if commit:
+        db.commit()
+    return seat
+
+
+def set_gm_focus_group(
+    db,
+    member_ids: list[int],
+    *,
+    name: str = "",
+    primary_character_id: int | None = None,
+    scene: str | None = None,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """GM Ask focus on a multi-member group (faction, enemy band, subgroup).
+
+    Creates/reuses a focus party, attaches the GM seat, and binds
+    ``primary_character_id`` (default: first member) as the acting lens.
+    Other focus parties are left intact for later switching.
+    """
+    from sakaki_gm.party_db import (
+        GM_FOCUS_KIND_GROUP,
+        ensure_gm_focus_party,
+        party_member_ids,
+    )
+
+    ensure_default_session(db, commit=False)
+    gm = get_seat_by_role(db, "gm")
+    if gm is None:
+        raise ValueError("GM seat missing.")
+    occupied = player_occupied_character_ids(db)
+    ids = list(dict.fromkeys(int(cid) for cid in member_ids))
+    if not ids:
+        raise ValueError("Focus group needs at least one member.")
+    for character_id in ids:
+        if character_id in occupied:
+            raise PermissionError(
+                f"Character {character_id} is controlled by a present player."
+            )
+    primary = (
+        int(primary_character_id)
+        if primary_character_id is not None
+        else ids[0]
+    )
+    if primary not in ids:
+        raise ValueError("Primary character must be in the focus group.")
+    party = ensure_gm_focus_party(
+        db,
+        ids,
+        name=name,
+        kind=GM_FOCUS_KIND_GROUP,
+        commit=False,
+    )
+    if scene is None:
+        row = db.execute(
+            "SELECT object_id FROM characters WHERE id=?", (primary,)
+        ).fetchone()
+        recorded = character_recorded_places(
+            db, row["object_id"] if row else None
+        )
+        scene = (
+            recorded[0]["object_id"] if recorded else GM_CONTROL_SCENE_TABLE
+        )
+    else:
+        scene = normalize_gm_control_scene(scene)
+    set_seat_party(db, gm["id"], party["id"], commit=False)
+    seat = set_seat_character(db, gm["id"], primary, commit=False)
+    set_gm_control_scene(db, scene, commit=False)
+    _append_system_log(
+        db, gm_focus_group_message(party.get("name") or "group"), commit=False
+    )
+    if commit:
+        db.commit()
+    seat["focus_party_id"] = party["id"]
+    seat["focus_member_ids"] = party_member_ids(db, party["id"])
+    return seat
+
+
+def activate_gm_focus_party(
+    db,
+    party_id: int,
+    *,
+    primary_character_id: int | None = None,
+    scene: str | None = None,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """Switch the GM seat onto an existing focus party (lease or group)."""
+    from sakaki_gm.party_db import (
+        _is_gm_control_party,
+        get_party,
+        party_member_ids,
+    )
+
+    ensure_default_session(db, commit=False)
+    gm = get_seat_by_role(db, "gm")
+    if gm is None:
+        raise ValueError("GM seat missing.")
+    party = get_party(db, int(party_id))
+    if party is None or party.get("status") != "active":
+        raise ValueError(f"Active focus party {party_id} not found.")
+    if not _is_gm_control_party(party):
+        raise ValueError("That party is not a GM Ask focus party.")
+    members = party_member_ids(db, party["id"])
+    if not members:
+        raise ValueError("Focus party has no members.")
+    primary = (
+        int(primary_character_id)
+        if primary_character_id is not None
+        else members[0]
+    )
+    if primary not in members:
+        raise ValueError("Primary character must be in the focus party.")
+    if scene is None:
+        scene = get_gm_control_scene(db)
+    else:
+        scene = normalize_gm_control_scene(scene)
+    set_seat_party(db, gm["id"], party["id"], commit=False)
+    seat = set_seat_character(db, gm["id"], primary, commit=False)
+    set_gm_control_scene(db, scene, commit=False)
+    _append_system_log(
+        db,
+        gm_focus_group_message(party.get("name") or "group")
+        if len(members) > 1
+        else gm_control_party_message(
+            db.execute(
+                "SELECT name FROM characters WHERE id=?", (primary,)
+            ).fetchone()["name"]
+        ),
+        commit=False,
+    )
     if commit:
         db.commit()
     return seat
@@ -736,17 +891,22 @@ def claim_player_character(
             raise ValueError(f"Unknown character {character_id}.")
         raise PermissionError("That character is not available for player login.")
     gm = get_seat_by_role(db, "gm")
-    if gm is not None and gm.get("character_id") is not None:
-        if int(gm["character_id"]) == character_id:
-            from sakaki_gm.party_db import (
-                clear_gm_control_parties,
-                ensure_default_party,
-            )
+    if gm is not None:
+        from sakaki_gm.party_db import (
+            ensure_default_party,
+            release_character_from_gm_focus,
+        )
 
+        was_focusing = (
+            gm.get("character_id") is not None
+            and int(gm["character_id"]) == character_id
+        )
+        release_character_from_gm_focus(db, character_id, commit=False)
+        if was_focusing:
             set_seat_character(db, gm["id"], None, commit=False)
-            clear_gm_control_parties(db, commit=False)
             main = ensure_default_party(db, commit=False)
             set_seat_party(db, gm["id"], main["id"], commit=False)
+            set_gm_control_scene(db, GM_CONTROL_SCENE_TABLE, commit=False)
             _append_system_log(db, GM_CONTROL_CLEARED_MESSAGE, commit=False)
     bound = set_seat_character(db, seat["id"], character_id, commit=False)
     # Player seat attaches to the character's active party when known.

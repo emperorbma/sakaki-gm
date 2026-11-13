@@ -135,3 +135,47 @@ def test_actor_tables_survive_user_version_rewind(tmp_path):
         == 1
     )
     db.close()
+
+
+def test_observe_gm_play_feeds_linked_actors_not_ask_control(tmp_path):
+    """Actors stay AI minds; GM Ask narration is observed for later inference."""
+    from sakaki_gm.actor_db import get_brain, observe_gm_play_for_actors
+    from sakaki_gm.gm import note_gm_ask_for_actors
+    from sakaki_gm.party_db import ensure_default_party
+    from sakaki_gm.seat_db import ensure_default_session, set_gm_control_character
+
+    db = get_db(tmp_path / "campaign.db")
+    char_id = create_character(
+        db,
+        "Okina Matara",
+        {"name": "Okina Matara"},
+        campaign_role="NPC",
+    )
+    actor_id = ensure_derived_character_actor(
+        db,
+        char_id,
+        drive="Hidden seasons",
+        notes="Seed mind.",
+    )
+    ensure_default_party(db)
+    ensure_default_session(db)
+    gm = set_gm_control_character(db, char_id)
+
+    updated = note_gm_ask_for_actors(
+        db,
+        "You slip through the back door of the hall.",
+        seat_id=gm["id"],
+    )
+    assert updated == [actor_id]
+    brain = get_brain(db, actor_id)
+    assert "[Observed GM play]" in (brain.get("notes") or "")
+    assert "back door of the hall" in (brain.get("notes") or "")
+
+    # Idempotent-ish: identical snippet is not stacked again.
+    again = observe_gm_play_for_actors(
+        db,
+        narration="You slip through the back door of the hall.",
+        character_ids=[char_id],
+    )
+    assert again == []
+    db.close()
