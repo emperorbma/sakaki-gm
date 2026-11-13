@@ -40,8 +40,19 @@ VISIBLE_KNOWLEDGE = frozenset(KNOWLEDGE_LEVELS)
 GM_CONTROL_CLEARED_MESSAGE = "GM cleared Ask focus"
 # Back-compat with bottles that still have the old lease wording in the log.
 GM_LEASE_CLEARED_MESSAGE = GM_CONTROL_CLEARED_MESSAGE
-# session_state.gm_control_scene: "table" or a geography object_id.
+# session_state.gm_control_scene markers (or a geography object_id pin).
 GM_CONTROL_SCENE_TABLE = "table"
+# Resolve place from the acting character's located_at at Ask time.
+GM_CONTROL_SCENE_CHARACTER = "character"
+# No single place — whole-faction / spread actions.
+GM_CONTROL_SCENE_INDETERMINATE = "indeterminate"
+GM_CONTROL_SCENE_MARKERS = frozenset(
+    {
+        GM_CONTROL_SCENE_TABLE,
+        GM_CONTROL_SCENE_CHARACTER,
+        GM_CONTROL_SCENE_INDETERMINATE,
+    }
+)
 
 
 def gm_control_party_message(character_name: str) -> str:
@@ -90,10 +101,43 @@ def character_recorded_places(db, character_object_id) -> list[dict[str, Any]]:
 
 
 def normalize_gm_control_scene(value) -> str:
+    """Normalize Ask focus scene: marker, geography object_id, or table."""
     text = str(value or "").strip()
     if not text:
         return GM_CONTROL_SCENE_TABLE
+    lowered = text.casefold()
+    aliases = {
+        "table": GM_CONTROL_SCENE_TABLE,
+        "main": GM_CONTROL_SCENE_TABLE,
+        "character": GM_CONTROL_SCENE_CHARACTER,
+        "from_character": GM_CONTROL_SCENE_CHARACTER,
+        "define_from_character": GM_CONTROL_SCENE_CHARACTER,
+        "define-from-character": GM_CONTROL_SCENE_CHARACTER,
+        "indeterminate": GM_CONTROL_SCENE_INDETERMINATE,
+        "any": GM_CONTROL_SCENE_INDETERMINATE,
+        "spread": GM_CONTROL_SCENE_INDETERMINATE,
+        "faction": GM_CONTROL_SCENE_INDETERMINATE,
+    }
+    if lowered in aliases:
+        return aliases[lowered]
     return text
+
+
+def is_gm_control_scene_marker(value) -> bool:
+    return normalize_gm_control_scene(value) in GM_CONTROL_SCENE_MARKERS
+
+
+def gm_control_scene_label(scene: str, *, table_location: str = "") -> str:
+    """Short UI / log label for a scene choice."""
+    scene = normalize_gm_control_scene(scene)
+    if scene == GM_CONTROL_SCENE_TABLE:
+        loc = (table_location or "").strip() or "table"
+        return f"Main table focus — {loc}"
+    if scene == GM_CONTROL_SCENE_CHARACTER:
+        return "Define from character (recorded place at Ask time)"
+    if scene == GM_CONTROL_SCENE_INDETERMINATE:
+        return "Indeterminate (faction / spread — no single place)"
+    return f"Pinned place — {scene}"
 
 
 def _append_system_log(db, message: str, *, commit: bool = False) -> None:
@@ -470,12 +514,8 @@ def set_gm_control_character(
             raise ValueError(f"Unknown character {character_id}.")
         marker = gm_control_party_message(row["name"])
         if scene is None:
-            recorded = character_recorded_places(db, row["object_id"])
-            scene = (
-                recorded[0]["object_id"]
-                if recorded
-                else GM_CONTROL_SCENE_TABLE
-            )
+            # Off-table entities: follow their recorded place at Ask time.
+            scene = GM_CONTROL_SCENE_CHARACTER
         else:
             scene = normalize_gm_control_scene(scene)
         temp_party = ensure_gm_control_party(
@@ -568,15 +608,8 @@ def set_gm_focus_group(
         commit=False,
     )
     if scene is None:
-        row = db.execute(
-            "SELECT object_id FROM characters WHERE id=?", (primary,)
-        ).fetchone()
-        recorded = character_recorded_places(
-            db, row["object_id"] if row else None
-        )
-        scene = (
-            recorded[0]["object_id"] if recorded else GM_CONTROL_SCENE_TABLE
-        )
+        # Whole-faction / multi-member bands default to spread location.
+        scene = GM_CONTROL_SCENE_INDETERMINATE
     else:
         scene = normalize_gm_control_scene(scene)
     set_seat_party(db, gm["id"], party["id"], commit=False)

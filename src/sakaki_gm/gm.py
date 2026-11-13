@@ -246,6 +246,7 @@ def _scene_user_message(
     # Keep bookkeeping out of table-facing words the model might echo.
     if gm_lease:
         acting_name = scene["acting_character"].get("name") or "the acting character"
+        scene_mode = scene.get("scene_mode") or ""
         scene_place = (scene.get("place") or {}).get("name") or scene.get(
             "location_text"
         )
@@ -256,12 +257,22 @@ def _scene_user_message(
             "omitted on purpose — do not carry them over, and do not explain "
             "how this viewpoint was chosen."
         )
-        if scene_place:
+        if scene_mode == "indeterminate":
+            viewpoint += (
+                " Location is indeterminate — this focus spans wherever the "
+                "faction or group exists. Do not force a single place unless "
+                "the action names one."
+            )
+        elif scene_place and scene_place.casefold() not in {
+            "indeterminate",
+            "unknown",
+        }:
             viewpoint += f" Play them at {scene_place}."
         table_focus = scene.get("table_focus")
         if (
             isinstance(table_focus, dict)
             and table_focus.get("name")
+            and scene_mode != "indeterminate"
             and scene_place
             and str(table_focus["name"]).casefold() != str(scene_place).casefold()
         ):
@@ -269,6 +280,15 @@ def _scene_user_message(
                 f" Another party is focused on {table_focus['name']}; "
                 "stay where you are unless the action says otherwise, and do "
                 "not narrate teleport or map gaps."
+            )
+        elif (
+            isinstance(table_focus, dict)
+            and table_focus.get("name")
+            and scene_mode == "indeterminate"
+        ):
+            viewpoint += (
+                f" The main table is at {table_focus['name']}; do not collapse "
+                "this focus onto that place unless the action says so."
             )
         parts.append(viewpoint)
     parts.extend([
@@ -309,10 +329,14 @@ def _scene_user_message(
 def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
     """Selective scene for Ask GM: one actor, place, routes, short log."""
     from sakaki_gm.seat_db import (
+        GM_CONTROL_SCENE_CHARACTER,
+        GM_CONTROL_SCENE_INDETERMINATE,
         GM_CONTROL_SCENE_TABLE,
+        character_recorded_places,
         get_active_seat,
         get_gm_control_scene,
         get_seat,
+        normalize_gm_control_scene,
     )
 
     table_location_text = world_value(db, "location", "Unknown")
@@ -331,6 +355,7 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
     location_text = table_location_text
     place = table_place
     table_focus = None
+    scene_mode = GM_CONTROL_SCENE_TABLE
     gm_lease = (
         seat is not None
         and seat.get("role") == "gm"
@@ -338,27 +363,66 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
         and acting is not None
     )
     if gm_lease:
-        scene_choice = get_gm_control_scene(db)
-        if scene_choice != GM_CONTROL_SCENE_TABLE:
+        scene_choice = normalize_gm_control_scene(get_gm_control_scene(db))
+        scene_mode = scene_choice
+        if scene_choice == GM_CONTROL_SCENE_TABLE:
+            place = table_place
+            location_text = table_location_text
+        elif scene_choice == GM_CONTROL_SCENE_INDETERMINATE:
+            place = None
+            location_text = "Indeterminate"
+            scene_mode = GM_CONTROL_SCENE_INDETERMINATE
+        elif scene_choice == GM_CONTROL_SCENE_CHARACTER:
+            recorded = character_recorded_places(db, acting["object_id"])
+            if recorded:
+                chosen = _place_object_by_id(db, recorded[0]["object_id"])
+                place = chosen
+                location_text = (
+                    (chosen["name"] if chosen else None)
+                    or recorded[0]["name"]
+                    or "Unknown"
+                )
+            else:
+                place = None
+                location_text = "Unknown (from character)"
+            scene_mode = GM_CONTROL_SCENE_CHARACTER
+        else:
+            # Pinned geography object_id.
             chosen = _place_object_by_id(db, scene_choice)
             if chosen is not None:
                 place = chosen
                 location_text = chosen["name"] or table_location_text
+            else:
+                place = None
+                location_text = scene_choice
+            scene_mode = "pinned"
         # When framing away from the party, keep table focus visible.
-        if table_place is not None and (
-            place is None
-            or place.get("object_id") != table_place.get("object_id")
-        ):
-            table_focus = {
-                "object_id": table_place["object_id"],
-                "name": table_place["name"],
-                "object_type": table_place["object_type"],
-                "geography_kind": table_place["geography_kind"],
-                "description": (table_place["description"] or "")[:1200],
-                "location_text": table_location_text,
+        away_from_table = (
+            scene_mode in {
+                GM_CONTROL_SCENE_INDETERMINATE,
+                GM_CONTROL_SCENE_CHARACTER,
+                "pinned",
             }
-        elif place is None and table_location_text != location_text:
-            table_focus = {"location_text": table_location_text}
+            or (
+                place is None
+                or (
+                    table_place is not None
+                    and place.get("object_id") != table_place.get("object_id")
+                )
+            )
+        )
+        if away_from_table and scene_mode != GM_CONTROL_SCENE_TABLE:
+            if table_place is not None:
+                table_focus = {
+                    "object_id": table_place["object_id"],
+                    "name": table_place["name"],
+                    "object_type": table_place["object_type"],
+                    "geography_kind": table_place["geography_kind"],
+                    "description": (table_place["description"] or "")[:1200],
+                    "location_text": table_location_text,
+                }
+            elif table_location_text != location_text:
+                table_focus = {"location_text": table_location_text}
 
     routes = []
     if place is not None:
@@ -388,6 +452,7 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
             _short_character_payload(db, acting, action) if acting else None
         ),
         "focus_companions": focus_companions,
+        "scene_mode": scene_mode,
         "location_text": location_text,
         "place": (
             {
