@@ -7,6 +7,7 @@ from sakaki_gm.party_db import (
     list_parties,
     list_party_proposals,
     merge_parties,
+    party_member_ids,
     reject_party_proposal,
     request_party_merge,
     request_party_split,
@@ -16,6 +17,7 @@ from sakaki_gm.seat_db import (
     ensure_default_session,
     get_knowledge,
     get_seat_by_role,
+    set_gm_control_character,
     sync_seat_knowledge_from_world,
 )
 
@@ -111,4 +113,25 @@ def test_party_membership_feeds_seat_knowledge(tmp_path):
     split_party(db, ensure_default_party(db)["id"], [elara], new_party_name="Away")
     # Knowledge upgrades only; split does not strip prior awareness.
     assert get_knowledge(db, player["id"], "character", elara) == "present"
+    db.close()
+
+
+def test_gm_temporary_party_splits_and_restores(tmp_path):
+    """GM control is a one-character temporary party, not a separate lease ontology."""
+    db = get_db(tmp_path / "campaign.db")
+    serina = _pc(db, "Serina")
+    elara = _pc(db, "Elara")
+    party = ensure_default_party(db)
+    ensure_default_session(db)
+
+    set_gm_control_character(db, elara)
+    ctrl = active_party_for_character(db, elara)
+    assert ctrl is not None
+    assert ctrl["notes"].startswith("gm_control_party")
+    assert elara not in party_member_ids(db, party["id"])
+    assert serina in party_member_ids(db, party["id"])
+
+    set_gm_control_character(db, None)
+    assert active_party_for_character(db, elara)["id"] == party["id"]
+    assert elara in party_member_ids(db, party["id"])
     db.close()
