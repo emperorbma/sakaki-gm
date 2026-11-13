@@ -220,6 +220,41 @@ def test_gm_temporary_party_scene_choice_recorded_vs_table(tmp_path):
     db.close()
 
 
+def test_gm_focus_character_unrecorded_place_is_not_nowhere(tmp_path):
+    """Define-from-character with no located_at must not push limbo narration."""
+    from sakaki_gm.gm import build_messages, build_scene_pack
+    from sakaki_gm.seat_db import GM_CONTROL_SCENE_CHARACTER, set_gm_control_character
+
+    db = get_db(tmp_path / "unrecorded.db")
+    migrate(db)
+    ensure_default_session(db)
+    okina = create_character(
+        db, "Okina Matara", {"name": "Okina Matara"}, campaign_role="NPC"
+    )
+    db.execute(
+        "UPDATE world SET value=? WHERE key='location'",
+        ("Ritual Hall, Academy of Starlight",),
+    )
+    db.commit()
+    gm = set_gm_control_character(db, okina, scene=GM_CONTROL_SCENE_CHARACTER)
+    scene = build_scene_pack(db, "Describe where I am.", seat_id=gm["id"])
+    assert scene["place_unresolved"] is True
+    assert scene["place"] is None
+    assert scene["location_text"] == "Unrecorded"
+    _system, user = build_messages(
+        db,
+        "Describe where I am.",
+        include_reference_material=False,
+        seat_id=gm["id"],
+    )
+    assert "Play them at" not in user
+    assert "Unknown (from character)" not in user
+    assert "place is not recorded yet" in user
+    assert "Never narrate them as nowhere" in user
+    assert "do not ask the controller to name a door" in user
+    db.close()
+
+
 def test_gm_focus_scene_indeterminate_and_character_follows_move(tmp_path):
     """Indeterminate for faction spread; character mode re-resolves located_at."""
     from sakaki_gm.gm import build_messages, build_scene_pack

@@ -247,9 +247,9 @@ def _scene_user_message(
     if gm_lease:
         acting_name = scene["acting_character"].get("name") or "the acting character"
         scene_mode = scene.get("scene_mode") or ""
-        scene_place = (scene.get("place") or {}).get("name") or scene.get(
-            "location_text"
-        )
+        place_unresolved = bool(scene.get("place_unresolved"))
+        place_name = (scene.get("place") or {}).get("name")
+        location_text = (scene.get("location_text") or "").strip()
         viewpoint = (
             f"Viewpoint: you are {acting_name} for this turn. "
             "Second-person \"you\", worn gear, and body refer ONLY to that "
@@ -263,18 +263,40 @@ def _scene_user_message(
                 "faction or group exists. Do not force a single place unless "
                 "the action names one."
             )
-        elif scene_place and scene_place.casefold() not in {
+        elif place_unresolved:
+            viewpoint += (
+                " Their place is not recorded yet. If the action asks where "
+                f"they are, answer from {acting_name}'s identity and known "
+                "lore with a concrete place when one fits — or say plainly "
+                "that whereabouts are not established. Never narrate them as "
+                "nowhere, outside the world, unplaced, or waiting on a "
+                "threshold, and do not ask the controller to name a door or "
+                "ground."
+            )
+        elif place_name:
+            viewpoint += f" Play them at {place_name}."
+        elif location_text and location_text.casefold() not in {
             "indeterminate",
             "unknown",
+            "unrecorded",
         }:
-            viewpoint += f" Play them at {scene_place}."
+            viewpoint += f" Play them at {location_text}."
         table_focus = scene.get("table_focus")
         if (
             isinstance(table_focus, dict)
             and table_focus.get("name")
-            and scene_mode != "indeterminate"
-            and scene_place
-            and str(table_focus["name"]).casefold() != str(scene_place).casefold()
+            and scene_mode == "indeterminate"
+        ):
+            viewpoint += (
+                f" The main table is at {table_focus['name']}; do not collapse "
+                "this focus onto that place unless the action says so."
+            )
+        elif (
+            isinstance(table_focus, dict)
+            and table_focus.get("name")
+            and not place_unresolved
+            and place_name
+            and str(table_focus["name"]).casefold() != str(place_name).casefold()
         ):
             viewpoint += (
                 f" Another party is focused on {table_focus['name']}; "
@@ -284,11 +306,11 @@ def _scene_user_message(
         elif (
             isinstance(table_focus, dict)
             and table_focus.get("name")
-            and scene_mode == "indeterminate"
+            and place_unresolved
         ):
             viewpoint += (
-                f" The main table is at {table_focus['name']}; do not collapse "
-                "this focus onto that place unless the action says so."
+                f" The main table is at {table_focus['name']}; do not teleport "
+                "them there unless the action says so."
             )
         parts.append(viewpoint)
     parts.extend([
@@ -356,6 +378,7 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
     place = table_place
     table_focus = None
     scene_mode = GM_CONTROL_SCENE_TABLE
+    place_unresolved = False
     gm_lease = (
         seat is not None
         and seat.get("role") == "gm"
@@ -383,8 +406,10 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
                     or "Unknown"
                 )
             else:
+                # No located_at yet — not the same as indeterminate/nowhere.
                 place = None
-                location_text = "Unknown (from character)"
+                location_text = "Unrecorded"
+                place_unresolved = True
             scene_mode = GM_CONTROL_SCENE_CHARACTER
         else:
             # Pinned geography object_id.
@@ -453,6 +478,7 @@ def build_scene_pack(db, action: str, *, seat_id: int | None = None) -> dict:
         ),
         "focus_companions": focus_companions,
         "scene_mode": scene_mode,
+        "place_unresolved": place_unresolved,
         "location_text": location_text,
         "place": (
             {
