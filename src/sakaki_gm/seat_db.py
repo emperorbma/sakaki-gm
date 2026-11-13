@@ -5,13 +5,14 @@ Entity shape with parties (see ``party_db``)::
     Party → Members (characters, seated or not)
           ↘ Seats (optional controllers; ``seats.party_id`` + ``character_id``)
 
+Control is consistent for seated and unseated members: a seat binding; a
+party **committee** for unseated NPCs in their midst (agree at the table, or
+one member steers); or GM override (GM seat attaches to an implicit party
+while the character stays in the player party — dual membership).
+
 Solo play is implicitly two seats (GM + one player) on one machine, both
 attached to the default party. Seat login chooses the active seat; knowledge
 edges gate what a player seat may see; the GM seat sees the full playbook.
-
-``character_id`` is the member this seat controls (if any). Non-seated party
-members are normal. The GM seat may attach to a temporary one-member party to
-run an NPC/absentee PC for Ask, then return to the main party.
 
 Per-seat ``password_hash``: blank string = open seat (no password). Passwords
 are seat-scoped; the controlled PC is a separate binding. Password recovery is
@@ -426,16 +427,16 @@ def set_gm_control_character(
     scene: str | None = None,
     commit: bool = True,
 ) -> dict[str, Any]:
-    """Attach the GM seat to a temporary party focused on one character.
+    """GM override: attach the GM seat to an implicit party for one character.
 
     Clears with ``character_id=None``. When the player seat later claims the
     same PC, ``claim_player_character`` drops this binding.
 
-    Party → Members; Seat attaches to a Party and may bind one Member.
-    Non-seated members remain valid. Temporary control creates/uses a
-    one-member party and moves the GM seat onto it. ``scene`` chooses Ask
-    framing: ``table`` (main world.location) or a geography ``object_id``.
-    Default prefers the first recorded place when present.
+    The character keeps home-party membership (dual membership). Unseated NPC
+    members otherwise fall under party committee control; this is the GM
+    override path so control stays consistent with seated PCs. ``scene``
+    chooses Ask framing: ``table`` (main world.location) or a geography
+    ``object_id``. Default prefers the first recorded place when present.
 
     Each change writes a System log marker so Ask scene packs can drop prior
     possession narration from the model context.

@@ -342,9 +342,10 @@ def run_gm_control_character(parent, db) -> Optional[str]:
     ttk.Label(
         body,
         text=(
-            "Run a temporary party of one: any character not held by a present "
-            "player (includes absentee PCs). Pick where that party is for Ask "
-            "when places differ — their recorded place, or the main table focus."
+            "GM override for a party member (or absentee PC) not held by a "
+            "present player. They stay in the player party; Ask runs through "
+            "the GM seat's temporary party. Pick where that focus is — their "
+            "recorded place, or the main table focus."
         ),
         wraplength=440,
     ).pack(anchor="w")
