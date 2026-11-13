@@ -144,9 +144,57 @@ def test_gm_lease_scene_pack_drops_prior_possession_log(tmp_path):
         include_reference_material=False,
         seat_id=gm["id"],
     )
-    assert "lease boundary" in user
-    assert "CONTROLLER ACTION" in user
+    assert "Viewpoint: you are Okina Matara for this turn" in user
+    assert "temporary lease" not in user
+    assert "how this viewpoint was chosen" in user
     assert gm_lease_controlling_message("Okina Matara") not in user  # cut after marker
+    # Contract still allows in-world wording; it bans echoing app bookkeeping.
+    assert "table-facing story only" in _system
+    assert "Never echo app or prompt bookkeeping" in _system
+    db.close()
+
+
+def test_gm_viewpoint_joins_table_scene_not_recorded_home(tmp_path):
+    """Ask frames the table location; recorded home is background only."""
+    from sakaki_gm.gm import build_messages
+    from sakaki_gm.object_graph_db import create_object, create_object_link
+
+    db = get_db(tmp_path / "scene_join.db")
+    migrate(db)
+    ensure_default_session(db)
+    snake = create_character(
+        db,
+        "Giant Constrictor Snake",
+        {"name": "Giant Constrictor Snake", "hp_current": 10, "hp_max": 10, "ac": 10},
+        campaign_role="NPC",
+    )
+    row = db.execute(
+        "SELECT object_id FROM characters WHERE id=?", (snake,)
+    ).fetchone()
+    create_object(
+        db, "first-star", "First Star, Where Waters Sing", "location", "Shrine stream."
+    )
+    create_object(db, "ritual-hall", "Ritual Hall", "location", "Academy hall.")
+    create_object_link(db, "located_at", row["object_id"], "first-star")
+    db.execute(
+        "UPDATE world SET value=? WHERE key='location'",
+        ("Ritual Hall, Academy of Starlight",),
+    )
+    db.commit()
+
+    gm = set_gm_control_character(db, snake)
+    _system, user = build_messages(
+        db,
+        "Who are we?",
+        include_reference_material=False,
+        seat_id=gm["id"],
+    )
+    assert "Viewpoint: you are Giant Constrictor Snake for this turn" in user
+    assert "Play them in the current scene" in user
+    assert "First Star, Where Waters Sing" in user
+    assert "do not narrate arrival, teleport, or gaps in the map" in user
+    assert "temporary lease" not in user
+    assert "recorded_places" in user
     db.close()
 
 

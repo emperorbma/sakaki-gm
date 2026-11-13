@@ -76,6 +76,9 @@ bottle stats and item property sets (no LLM math). check is skill, ability, or
 attack. skill needs skill+dc; ability needs ability+dc; attack needs
 item_object_id (owned weapon copy or archetype) and ac (or dc), optional
 proficient/advantage/disadvantage.
+narration is table-facing story only. Never echo app or prompt bookkeeping
+(seat, desk, controller, operator, muse, model, scene pack, payload, bottle,
+or similar). In-world wording is fine when the fiction itself uses it.
 """
 
 
@@ -239,15 +242,47 @@ def _scene_user_message(
         and scene.get("acting_character")
     )
     parts = ["CURRENT SCENE"]
-    # GM temporary lease: cut prior possession narration; "you" is this body only.
+    # GM temporary control: cut prior possession narration; "you" is this body only.
+    # Keep bookkeeping out of table-facing words the model might echo.
     if gm_lease:
         acting_name = scene["acting_character"].get("name") or "the acting character"
-        parts.append(
-            f"Acting lens: GM desk temporary lease on {acting_name}. "
-            "Second-person \"you\", worn gear, and body refer ONLY to that "
-            "character's payload below. Recent log starts at this lease "
-            "boundary — earlier possession/control narration is omitted."
+        recorded = scene["acting_character"].get("recorded_places") or []
+        recorded_names = [
+            place.get("name")
+            for place in recorded
+            if isinstance(place, dict) and place.get("name")
+        ]
+        scene_place = (scene.get("place") or {}).get("name") or scene.get(
+            "location_text"
         )
+        viewpoint = (
+            f"Viewpoint: you are {acting_name} for this turn. "
+            "Second-person \"you\", worn gear, and body refer ONLY to that "
+            "character's state below. Earlier turns about other characters are "
+            "omitted on purpose — do not carry them over, and do not explain "
+            "how this viewpoint was chosen."
+        )
+        # Ask always frames the table's current scene; a recorded home elsewhere
+        # is background, not a reason to narrate teleport or missing map links.
+        if scene_place and recorded_names:
+            scene_cf = str(scene_place).casefold()
+            elsewhere = [
+                name
+                for name in recorded_names
+                if name.casefold() not in scene_cf and scene_cf not in name.casefold()
+            ]
+            if elsewhere:
+                viewpoint += (
+                    f" Play them in the current scene ({scene_place}). "
+                    f"They are also recorded at {', '.join(elsewhere)} — "
+                    "use that as background if useful, but do not narrate "
+                    "arrival, teleport, or gaps in the map."
+                )
+        else:
+            viewpoint += (
+                " Play them in the current scene location below."
+            )
+        parts.append(viewpoint)
     parts.extend([
         "Acting character:",
         json.dumps(scene["acting_character"], ensure_ascii=False),
@@ -264,7 +299,7 @@ def _scene_user_message(
         "",
     ])
     if seat is not None and seat.get("role") == "gm":
-        parts.append("CONTROLLER ACTION (GM desk — human operator, not the model)")
+        parts.append("ACTION")
     else:
         parts.append("PLAYER ACTION")
     parts.append(played)
@@ -501,7 +536,8 @@ def _short_character_payload(db, row, action: str) -> dict:
         }
         for item in assignments[:8]
     ]
-    return {
+    recorded_places = _character_recorded_places(db, row["object_id"])
+    payload = {
         "name": row["name"],
         "campaign_role": row["campaign_role"],
         "object_id": row["object_id"],
@@ -510,6 +546,38 @@ def _short_character_payload(db, row, action: str) -> dict:
         "ac": data.get("ac"),
         "gear": gear,
     }
+    if recorded_places:
+        payload["recorded_places"] = recorded_places
+    return payload
+
+
+def _character_recorded_places(db, character_object_id) -> list[dict]:
+    """Compact located_at targets for scene packs (name + object_id)."""
+    object_id = (character_object_id or "").strip()
+    if not object_id:
+        return []
+    try:
+        rows = db.execute(
+            """
+            SELECT target.object_id, target.name, target.geography_kind
+            FROM object_links AS link
+            JOIN objects AS target ON target.object_id = link.to_object_id
+            WHERE link.relation = 'located_at'
+              AND link.from_object_id = ?
+            ORDER BY target.name COLLATE NOCASE, target.object_id
+            """,
+            (object_id,),
+        ).fetchall()
+    except Exception:
+        return []
+    return [
+        {
+            "object_id": row["object_id"],
+            "name": row["name"],
+            "geography_kind": row["geography_kind"],
+        }
+        for row in rows
+    ]
 
 
 def _full_character_payload(db, row) -> dict:
