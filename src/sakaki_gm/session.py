@@ -25,6 +25,9 @@ from sakaki_gm.net.service import (
     terminate_service,
 )
 
+# Client poll: consecutive campaign/chat failures before disconnect event.
+DISCONNECT_AFTER_FAILURES = 3
+
 
 class TableSession:
     def __init__(
@@ -69,6 +72,8 @@ class TableSession:
         self._last_chat_id = 0
         self._poll_stop = threading.Event()
         self._poll_thread: threading.Thread | None = None
+        self._disconnected = False
+        self._poll_failures = 0
 
     @classmethod
     def solo(
@@ -381,13 +386,31 @@ class TableSession:
             return occupied
         return set()
 
+    def _emit_disconnect(self, *, reason: str, detail: str = "") -> None:
+        if self._disconnected:
+            return
+        self._disconnected = True
+        self._poll_stop.set()
+        event: dict[str, Any] = {"type": "disconnect", "reason": reason}
+        if detail:
+            event["detail"] = detail
+        self._dispatch(event)
+
     def _start_poll(self) -> None:
         self._poll_stop.clear()
+        self._disconnected = False
+        self._poll_failures = 0
 
         def loop():
             while not self._poll_stop.wait(1.5):
                 if self._client is None:
                     continue
+                if (
+                    self._service_process is not None
+                    and self._service_process.poll() is not None
+                ):
+                    self._emit_disconnect(reason="host_exited")
+                    return
                 try:
                     messages = self._client.chat_since(self._last_chat_id)
                     for message in messages:
@@ -405,8 +428,15 @@ class TableSession:
                             "revision": campaign.get("revision"),
                         }
                     )
-                except TableClientError:
-                    continue
+                    self._poll_failures = 0
+                except TableClientError as exc:
+                    self._poll_failures += 1
+                    if self._poll_failures >= DISCONNECT_AFTER_FAILURES:
+                        self._emit_disconnect(
+                            reason="unreachable",
+                            detail=str(exc),
+                        )
+                        return
 
         self._poll_thread = threading.Thread(target=loop, daemon=True)
         self._poll_thread.start()

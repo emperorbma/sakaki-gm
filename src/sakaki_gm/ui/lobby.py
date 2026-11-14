@@ -41,6 +41,10 @@ class LobbyDialog(tk.Toplevel):
         config_path=None,
         campaigns_dir=None,
         default_mode: str = LAUNCH_SERVER,
+        join_host: str | None = None,
+        join_port: int | str | None = None,
+        join_secret: str | None = None,
+        join_name: str | None = None,
     ):
         super().__init__(parent)
         self.config_path = config_path or CONFIG_PATH
@@ -155,28 +159,37 @@ class LobbyDialog(tk.Toplevel):
         ttk.Label(self.join_frame, text="Host URL or IP").grid(
             row=0, column=0, sticky="w", padx=8, pady=6
         )
-        self.join_host = tk.StringVar(value="127.0.0.1")
+        self.join_host = tk.StringVar(
+            value=(join_host or "").strip() or "127.0.0.1"
+        )
         ttk.Entry(self.join_frame, textvariable=self.join_host, width=28).grid(
             row=0, column=1, sticky="w", padx=8, pady=6
         )
         ttk.Label(self.join_frame, text="Port").grid(
             row=1, column=0, sticky="w", padx=8, pady=6
         )
-        self.join_port = tk.StringVar(value=str(DEFAULT_PORT))
+        port_default = (
+            str(join_port).strip()
+            if join_port is not None and str(join_port).strip()
+            else str(DEFAULT_PORT)
+        )
+        self.join_port = tk.StringVar(value=port_default)
         ttk.Entry(self.join_frame, textvariable=self.join_port, width=10).grid(
             row=1, column=1, sticky="w", padx=8, pady=6
         )
         ttk.Label(self.join_frame, text="Table secret (optional)").grid(
             row=2, column=0, sticky="w", padx=8, pady=6
         )
-        self.join_secret = tk.StringVar()
+        self.join_secret = tk.StringVar(value=str(join_secret or ""))
         ttk.Entry(
             self.join_frame, textvariable=self.join_secret, show="*", width=28
         ).grid(row=2, column=1, sticky="w", padx=8, pady=6)
         ttk.Label(self.join_frame, text="Display name").grid(
             row=3, column=0, sticky="w", padx=8, pady=6
         )
-        self.join_name = tk.StringVar(value="Player")
+        self.join_name = tk.StringVar(
+            value=(join_name or "").strip() or "Player"
+        )
         ttk.Entry(self.join_frame, textvariable=self.join_name, width=28).grid(
             row=3, column=1, sticky="w", padx=8, pady=6
         )
@@ -297,12 +310,20 @@ def run_lobby(
     config_path=None,
     campaigns_dir=None,
     default_mode: str = LAUNCH_SERVER,
+    join_host: str | None = None,
+    join_port: int | str | None = None,
+    join_secret: str | None = None,
+    join_name: str | None = None,
 ) -> Optional[LobbyResult]:
     dialog = LobbyDialog(
         parent,
         config_path=config_path,
         campaigns_dir=campaigns_dir,
         default_mode=default_mode,
+        join_host=join_host,
+        join_port=join_port,
+        join_secret=join_secret,
+        join_name=join_name,
     )
     parent.wait_window(dialog)
     return dialog.result

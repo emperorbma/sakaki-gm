@@ -90,11 +90,14 @@ class MainWindow:
         campaigns_dir=None,
         legacy_db=None,
         session=None,
+        on_return_to_lobby=None,
     ):
         self.root = root
         self.config_path = config_path or CONFIG_PATH
         self.campaigns_dir = campaigns_dir or CAMPAIGNS_DIR
         self.session = session
+        self.on_return_to_lobby = on_return_to_lobby
+        self._disconnect_prompted = False
         self._loading_campaigns = False
         self._ask_busy = False
         legacy = legacy_db if legacy_db is not None else None
@@ -490,6 +493,9 @@ class MainWindow:
 
     def _handle_session_event(self, event: dict):
         kind = event.get("type")
+        if kind == "disconnect":
+            self._on_table_disconnected(event)
+            return
         if kind == "chat":
             message = event.get("message") or {}
             chat_id = int(message.get("id") or 0)
@@ -517,6 +523,37 @@ class MainWindow:
                 self.world_module.reload()
                 self.log_panel.reload()
                 self._refresh_turn_status()
+
+    def _on_table_disconnected(self, event: dict | None = None):
+        """Client desk lost the table server — offer return to lobby."""
+        if self._disconnect_prompted:
+            return
+        if self.session is None or self.session.mode != "client":
+            return
+        self._disconnect_prompted = True
+        reason = (event or {}).get("reason") or "unreachable"
+        if hasattr(self, "session_status_var"):
+            self.session_status_var.set("disconnected from table")
+        detail = (event or {}).get("detail") or ""
+        if reason == "host_exited":
+            body = (
+                "The table server process exited.\n\n"
+                "Return to the lobby to start or join a server?"
+            )
+        else:
+            body = (
+                "The table server is unreachable"
+                + (f" ({detail})" if detail else "")
+                + ".\n\nReturn to the lobby to reconnect?"
+            )
+        self.log_panel.add_entry("System", f"Table disconnected: {reason}")
+        go_lobby = messagebox.askyesno(
+            "Server disconnected",
+            body,
+            parent=self.root,
+        )
+        if go_lobby and callable(self.on_return_to_lobby):
+            self.on_return_to_lobby()
 
     def on_campaign_selected(self, _event=None):
         if self._loading_campaigns:
