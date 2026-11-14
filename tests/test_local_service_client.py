@@ -54,6 +54,13 @@ def test_spawn_unbound_then_gm_client_binds(tmp_path):
         # After GM login the table should be bound.
         assert info.get("bound") is True
         assert info.get("name") == "Spawned"
+        # Headless host process is not a desk; GM join alone → desks=1.
+        assert info.get("peer_count") == 1
+        assert session.peer_count() == 1
+        player = TableClient(session.remote_url)
+        player.join("Serina", role="player")
+        assert session.peer_count() == 2
+        assert TableClient(session.remote_url).campaign()["peer_count"] == 2
     finally:
         session.stop()
         assert (

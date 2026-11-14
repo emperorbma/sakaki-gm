@@ -59,13 +59,25 @@ class TableServerState:
         return bool(str(self.campaign_path or "").strip())
 
     def peer_count(self) -> int:
+        """All sessions including the synthetic table-host process entry."""
         with self.lock:
             return len(self.sessions)
 
-    def other_peer_count(self) -> int:
-        """Peers besides the host session."""
+    def desk_peer_count(self) -> int:
+        """Joined desks only — excludes the synthetic host process session.
+
+        The headless ``--server`` process always holds a non-seat ``host``
+        session so campaign-lock math can ignore it. GM and Player joins are
+        the desks humans sit at; those are what the UI should count.
+        """
         with self.lock:
-            return max(0, len(self.sessions) - 1)
+            return sum(
+                1 for sid in self.sessions if sid != self.host_session_id
+            )
+
+    def other_peer_count(self) -> int:
+        """Peers besides the host session (same as desk_peer_count)."""
+        return self.desk_peer_count()
 
     def can_change_campaign(self, session_id: str | None = None) -> bool:
         """Whether ``session_id`` (or the process host) may set the campaign.
@@ -261,12 +273,15 @@ class TableServerState:
 
     def campaign_info(self) -> dict[str, Any]:
         with self.lock:
+            desks = sum(
+                1 for sid in self.sessions if sid != self.host_session_id
+            )
             return {
                 "id": self.campaign_id,
                 "name": self.campaign_name or ("(unbound)" if not self.is_bound() else ""),
                 "path": self.campaign_path,
                 "bound": self.is_bound(),
-                "peer_count": len(self.sessions),
+                "peer_count": desks,
                 "can_change_campaign": self.can_change_campaign(),
                 "revision": self.revision,
                 "occupancy": self._occupancy_info_locked(),
@@ -304,12 +319,15 @@ class TableServerState:
             )
             self.campaign_path = str(campaign_path or "")
             self.revision += 1
+            desks = sum(
+                1 for sid in self.sessions if sid != self.host_session_id
+            )
             info = {
                 "id": self.campaign_id,
                 "name": self.campaign_name or ("(unbound)" if not self.is_bound() else ""),
                 "path": self.campaign_path,
                 "bound": self.is_bound(),
-                "peer_count": len(self.sessions),
+                "peer_count": desks,
                 "can_change_campaign": self.can_change_campaign(session_id),
                 "revision": self.revision,
                 "occupancy": self._occupancy_info_locked(),

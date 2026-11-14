@@ -497,8 +497,9 @@ class MainWindow:
             if self.session is not None:
                 peers = self.session.peer_count()
                 alone = self.session.can_change_campaign()
+                # Desk joins only — the headless host process is not a seat.
                 self.session_status_var.set(
-                    f"table peers={peers}"
+                    f"table desks={peers}"
                     + ("; campaign switch ok" if alone else "; campaign locked")
                 )
             if reason in {"campaign_changed", "peer_joined", "peer_left", "state_changed"}:

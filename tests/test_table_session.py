@@ -25,8 +25,12 @@ def test_host_blocks_campaign_change_while_client_connected(tmp_path):
     client = TableClient(f"http://127.0.0.1:{port}", secret="table-key")
     joined = client.join("Scout")
     assert joined["session_id"]
+    # Host process session is not a desk; one client join → one desk.
+    assert state.peer_count() == 2
+    assert state.desk_peer_count() == 1
     assert state.other_peer_count() == 1
     assert state.can_change_campaign() is False
+    assert client.campaign()["peer_count"] == 1
 
     try:
         state.set_campaign(
