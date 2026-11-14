@@ -2,16 +2,28 @@
 from __future__ import annotations
 
 import sys
-import tkinter as tk
 from typing import Sequence
 
-from sakaki_gm.launch import lobby_default_mode, parse_launch_args
-from sakaki_gm.ui.lobby import run_lobby
-from sakaki_gm.ui.main_window import MainWindow
+from sakaki_gm.launch import (
+    is_headless_server,
+    lobby_default_mode,
+    parse_launch_args,
+)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_launch_args(argv if argv is not None else sys.argv[1:])
+    if is_headless_server(args):
+        # No Tk — dedicated server wrappers / --server stay headless.
+        from sakaki_gm.headless_server import run_headless_server
+
+        raise SystemExit(run_headless_server(args))
+
+    import tkinter as tk
+
+    from sakaki_gm.ui.lobby import run_lobby
+    from sakaki_gm.ui.main_window import MainWindow
+
     default_mode = lobby_default_mode(args)
 
     root = tk.Tk()

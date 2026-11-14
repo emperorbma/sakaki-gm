@@ -1,9 +1,11 @@
-"""Startup lobby: single-table play, host a server, or join one.
+"""Startup lobby: single-table play, visual host, or join one.
 
 Default launch is single-table (local bottle, multiuser seats, no network).
-``python -m sakaki_gm --server`` (or the start-*-server wrappers) opens the
-visual host path. Joiners take whatever campaign the host selected. Campaign
-switches stay a host-GM privilege only when no other peer still has a session.
+Headless hosting is ``python -m sakaki_gm --server`` (or the start-*-server
+wrappers) — not this dialog. The lobby's "Start campaign as server" option is
+the visual host path (desk + table HTTP). Joiners take whatever campaign the
+host selected. Campaign switches stay a host-GM privilege only when no other
+peer still has a session.
 """
 
 from __future__ import annotations
@@ -82,9 +84,9 @@ class LobbyDialog(tk.Toplevel):
             body,
             text=(
                 "Default is a single table on this machine (multiuser seats, "
-                "no network). Host only when you want others to join; use the "
-                "server start scripts or --server for that path. Joiners follow "
-                "the host's campaign."
+                "no network). Visual host keeps this desk open while serving. "
+                "For a headless table server use start-sakaki-gm-server or "
+                "--server. Joiners follow the host's campaign."
             ),
             wraplength=470,
         ).pack(anchor="w", pady=(6, 12))
