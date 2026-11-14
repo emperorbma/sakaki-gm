@@ -73,6 +73,75 @@ def test_peer_chat_round_trip(tmp_path):
     server.stop()
 
 
+def test_client_emits_disconnect_when_server_stops(tmp_path):
+    import threading
+    import time
+
+    from sakaki_gm.session import DISCONNECT_AFTER_FAILURES
+
+    config = tmp_path / "config.json"
+    campaigns = tmp_path / "campaigns"
+    cid = create_campaign(config, "Drop", campaigns)
+    path = campaigns / f"{cid}.db"
+    host = TableSession(
+        mode="host",
+        campaign_id=cid,
+        campaign_name="Drop",
+        campaign_path=path,
+        bind_host="127.0.0.1",
+        port=0,
+        secret="",
+    )
+    host.start()
+    remote = host.endpoint()
+    desk = TableSession(
+        mode="client",
+        campaign_id=cid,
+        campaign_name="Drop",
+        campaign_path=path,
+        remote_url=remote,
+        display_name="Scout",
+        join_role="player",
+    )
+    events = []
+    seen = threading.Event()
+
+    def on_event(event):
+        events.append(event)
+        if event.get("type") == "disconnect":
+            seen.set()
+
+    desk.subscribe(on_event)
+    desk.start()
+    try:
+        host.stop()
+        # Poll interval 1.5s × DISCONNECT_AFTER_FAILURES, plus slack.
+        assert seen.wait(timeout=1.5 * DISCONNECT_AFTER_FAILURES + 4)
+        assert any(item.get("type") == "disconnect" for item in events)
+        assert desk._disconnected is True
+    finally:
+        desk.stop()
+        # host already stopped
+
+
+def test_join_prefills_from_session_endpoint():
+    from sakaki_gm.__main__ import _join_prefills_from_session
+
+    class _Fake:
+        secret = "s"
+        display_name = "Scout"
+
+        def endpoint(self):
+            return "http://192.168.1.9:9001"
+
+    prefs = _join_prefills_from_session(_Fake())
+    assert prefs["default_mode"] == "client"
+    assert prefs["join_host"] == "192.168.1.9"
+    assert prefs["join_port"] == 9001
+    assert prefs["join_secret"] == "s"
+    assert prefs["join_name"] == "Scout"
+
+
 def test_solo_matches_start_as_server_spawn_join(tmp_path):
     config = tmp_path / "config.json"
     campaigns = tmp_path / "campaigns"
