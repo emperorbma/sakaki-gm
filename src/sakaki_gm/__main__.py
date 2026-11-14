@@ -1,17 +1,25 @@
 """python -m sakaki_gm"""
-import tkinter as tk
+from __future__ import annotations
 
+import sys
+import tkinter as tk
+from typing import Sequence
+
+from sakaki_gm.launch import lobby_default_mode, parse_launch_args
 from sakaki_gm.ui.lobby import run_lobby
 from sakaki_gm.ui.main_window import MainWindow
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_launch_args(argv if argv is not None else sys.argv[1:])
+    default_mode = lobby_default_mode(args)
+
     root = tk.Tk()
     root.title("Sakaki GM")
     root.withdraw()
     # Lobby is a free Toplevel (not transient on a withdrawn parent) so it
     # actually maps; wait_window then blocks until Continue / Quit.
-    lobby = run_lobby(root)
+    lobby = run_lobby(root, default_mode=default_mode)
     if lobby is None:
         root.destroy()
         return

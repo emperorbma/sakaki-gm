@@ -1,8 +1,9 @@
-"""Startup lobby: host a campaign server or join one.
+"""Startup lobby: single-table play, host a server, or join one.
 
-Host picks / creates a campaign, then serves it. Joiners take whatever
-campaign the host selected. Changing campaigns later is a host-GM privilege
-only when no other peer still has a session.
+Default launch is single-table (local bottle, multiuser seats, no network).
+``python -m sakaki_gm --server`` (or the start-*-server wrappers) opens the
+visual host path. Joiners take whatever campaign the host selected. Campaign
+switches stay a host-GM privilege only when no other peer still has a session.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from sakaki_gm.campaigns import (
     create_campaign,
     set_active,
 )
+from sakaki_gm.launch import LAUNCH_JOIN, LAUNCH_SERVER, LAUNCH_SOLO
 from sakaki_gm.llm_config import CONFIG_PATH, load_config
 from sakaki_gm.net.protocol import DEFAULT_PORT
 from sakaki_gm.session import TableSession
@@ -38,11 +40,15 @@ class LobbyDialog(tk.Toplevel):
         *,
         config_path=None,
         campaigns_dir=None,
+        default_mode: str = LAUNCH_SOLO,
     ):
         super().__init__(parent)
         self.config_path = config_path or CONFIG_PATH
         self.campaigns_dir = campaigns_dir or CAMPAIGNS_DIR
         self.result: Optional[LobbyResult] = None
+        mode = str(default_mode or LAUNCH_SOLO).strip().lower()
+        if mode not in {LAUNCH_SOLO, LAUNCH_SERVER, LAUNCH_JOIN}:
+            mode = LAUNCH_SOLO
         self.title("Sakaki GM — Lobby")
         self.geometry("560x580")
         self.minsize(560, 580)
@@ -75,33 +81,34 @@ class LobbyDialog(tk.Toplevel):
         ttk.Label(
             body,
             text=(
-                "Host a table, join by IP, or play solo. The host picks the "
-                "campaign; joiners follow. Campaign switches stay host-only "
-                "while nobody else is connected."
+                "Default is a single table on this machine (multiuser seats, "
+                "no network). Host only when you want others to join; use the "
+                "server start scripts or --server for that path. Joiners follow "
+                "the host's campaign."
             ),
             wraplength=470,
         ).pack(anchor="w", pady=(6, 12))
 
-        self.mode = tk.StringVar(value="host")
+        self.mode = tk.StringVar(value=mode)
+        ttk.Radiobutton(
+            body,
+            text="Single table (this machine)",
+            variable=self.mode,
+            value=LAUNCH_SOLO,
+            command=self._refresh_mode,
+        ).pack(anchor="w")
         ttk.Radiobutton(
             body,
             text="Start campaign as server",
             variable=self.mode,
-            value="host",
+            value=LAUNCH_SERVER,
             command=self._refresh_mode,
         ).pack(anchor="w")
         ttk.Radiobutton(
             body,
             text="Login to campaign server",
             variable=self.mode,
-            value="client",
-            command=self._refresh_mode,
-        ).pack(anchor="w")
-        ttk.Radiobutton(
-            body,
-            text="Solo (no network)",
-            variable=self.mode,
-            value="solo",
+            value=LAUNCH_JOIN,
             command=self._refresh_mode,
         ).pack(anchor="w", pady=(0, 8))
 
@@ -200,12 +207,12 @@ class LobbyDialog(tk.Toplevel):
         mode = self.mode.get()
         self.host_frame.pack_forget()
         self.join_frame.pack_forget()
-        if mode == "client":
+        if mode == LAUNCH_JOIN:
             self.join_frame.pack(fill=tk.X, pady=4)
             return
         self.host_frame.pack(fill=tk.X, pady=4)
         self.campaign_combo.configure(state="readonly")
-        network = mode == "host"
+        network = mode == LAUNCH_SERVER
         net_state = "normal" if network else "disabled"
         for widget in (
             self.host_port_label,
@@ -253,11 +260,11 @@ class LobbyDialog(tk.Toplevel):
     def _continue(self):
         mode = self.mode.get()
         try:
-            if mode == "host":
+            if mode == LAUNCH_SERVER:
                 cid, name, path = self._selected_campaign()
                 port = int(self.port_var.get().strip() or DEFAULT_PORT)
                 session = TableSession(
-                    mode="host",
+                    mode=LAUNCH_SERVER,
                     campaign_id=cid,
                     campaign_name=name,
                     campaign_path=path,
@@ -265,7 +272,7 @@ class LobbyDialog(tk.Toplevel):
                     port=port,
                 )
                 session.start()
-            elif mode == "client":
+            elif mode == LAUNCH_JOIN:
                 host = self.join_host.get().strip() or "127.0.0.1"
                 port = int(self.join_port.get().strip() or DEFAULT_PORT)
                 if "://" in host:
@@ -280,7 +287,7 @@ class LobbyDialog(tk.Toplevel):
                 cfg = load_config(self.config_path)
                 path = active_path(cfg)
                 session = TableSession(
-                    mode="client",
+                    mode=LAUNCH_JOIN,
                     campaign_id=str(cfg.get("active_campaign") or ""),
                     campaign_name=campaign_name(path) if path else "Joined table",
                     campaign_path=path or Path("."),
@@ -309,9 +316,18 @@ class LobbyDialog(tk.Toplevel):
         self.destroy()
 
 
-def run_lobby(parent, *, config_path=None, campaigns_dir=None) -> Optional[LobbyResult]:
+def run_lobby(
+    parent,
+    *,
+    config_path=None,
+    campaigns_dir=None,
+    default_mode: str = LAUNCH_SOLO,
+) -> Optional[LobbyResult]:
     dialog = LobbyDialog(
-        parent, config_path=config_path, campaigns_dir=campaigns_dir
+        parent,
+        config_path=config_path,
+        campaigns_dir=campaigns_dir,
+        default_mode=default_mode,
     )
     parent.wait_window(dialog)
     return dialog.result
