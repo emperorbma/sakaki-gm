@@ -31,10 +31,14 @@ if "%DOINSTALL%"=="1" (
   .venv\Scripts\python.exe -c "import pathlib; pathlib.Path('.venv/requirements.stamp').touch()"
 )
 
-.venv\Scripts\python.exe -c "import tkinter" >nul 2>&1
-if errorlevel 1 (
-  echo Tkinter is missing from this Python. Reinstall Python and include Tcl/Tk.
-  exit /b 1
+set "NEED_TK=1"
+echo %* | findstr /C:"--server" >nul && set "NEED_TK=0"
+if "%NEED_TK%"=="1" (
+  .venv\Scripts\python.exe -c "import tkinter" >nul 2>&1
+  if errorlevel 1 (
+    echo Tkinter is missing from this Python. Reinstall Python and include Tcl/Tk.
+    exit /b 1
+  )
 )
 
 .venv\Scripts\python.exe -m sakaki_gm %*

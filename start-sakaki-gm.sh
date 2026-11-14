@@ -17,9 +17,18 @@ if [[ ! -f .venv/requirements.stamp || requirements.txt -nt .venv/requirements.s
   touch .venv/requirements.stamp
 fi
 
-if ! .venv/bin/python -c "import tkinter" >/dev/null 2>&1; then
-  echo "Tkinter is missing. On Debian install python3-tk and run this again." >&2
-  exit 1
+NEED_TK=1
+for arg in "$@"; do
+  if [[ "$arg" == "--server" ]]; then
+    NEED_TK=0
+    break
+  fi
+done
+if [[ "$NEED_TK" -eq 1 ]]; then
+  if ! .venv/bin/python -c "import tkinter" >/dev/null 2>&1; then
+    echo "Tkinter is missing. On Debian install python3-tk and run this again." >&2
+    exit 1
+  fi
 fi
 
 DESKTOP="$ROOT/sakaki-gm.desktop"
