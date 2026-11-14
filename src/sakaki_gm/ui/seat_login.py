@@ -6,6 +6,10 @@ a GM-seat concern after login.
 
 Password is seat-scoped (blank = open). Playerish PCs bind a controller seat at
 creation; the GM may reassign ownership. Login picks that controller seat's PC.
+
+On first sit the desk root stays withdrawn (no board spoilers). The dialog is
+then a free Toplevel — same mapping rule as the lobby — not ``transient`` on a
+hidden parent.
 """
 
 from __future__ import annotations
@@ -55,6 +59,14 @@ def seat_login_label(role: str | None) -> str:
     return SEAT_LOGIN_LABELS.get(role, SEAT_LOGIN_LABELS["gm"])
 
 
+def parent_is_withdrawn(parent) -> bool:
+    """True when the desk root is hidden (first sit / spoiler shield)."""
+    try:
+        return str(parent.state()) == "withdrawn"
+    except tk.TclError:
+        return True
+
+
 def apply_seat_choice(cfg: dict, role: str) -> dict:
     """Persist the chosen seat role into config (``ui.desk_mode``)."""
     if not isinstance(cfg.get("ui"), dict):
@@ -85,7 +97,11 @@ class SeatLoginDialog(tk.Toplevel):
         self.allow_cancel = allow_cancel
         self._pc_ids: list[int] = []
         self.title(title)
-        self.transient(parent)
+        # Do not transient() onto a withdrawn desk — on X11 the dialog never
+        # maps and wait_window looks like a freeze (same as lobby).
+        self._standalone = parent_is_withdrawn(parent)
+        if not self._standalone:
+            self.transient(parent)
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
 
@@ -177,8 +193,22 @@ class SeatLoginDialog(tk.Toplevel):
         self.bind("<Return>", lambda _event: self._ok())
         self.bind("<Escape>", lambda _event: self._cancel())
         self._refresh_mode()
-        self.grab_set()
-        self.focus_set()
+        self.update_idletasks()
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            # Some WMs refuse grab until the window is fully mapped.
+            self.after(50, self._try_grab)
+
+    def _try_grab(self):
+        try:
+            if self.winfo_exists():
+                self.grab_set()
+        except tk.TclError:
+            pass
 
     def _refresh_mode(self):
         role = normalize_desk_mode(self.choice.get())

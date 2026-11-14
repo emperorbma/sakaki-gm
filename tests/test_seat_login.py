@@ -10,6 +10,7 @@ from sakaki_gm.seat_db import (
 )
 from sakaki_gm.ui.seat_login import (
     apply_seat_choice,
+    parent_is_withdrawn,
     seat_login_label,
 )
 
@@ -18,6 +19,20 @@ def test_seat_login_labels():
     assert seat_login_label("gm") == "Game Master"
     assert seat_login_label("PLAYER") == "Player"
     assert seat_login_label("nope") == "Game Master"
+
+
+def test_parent_is_withdrawn_for_first_sit_spoiler_shield():
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        assert parent_is_withdrawn(root) is True
+        root.deiconify()
+        root.update_idletasks()
+        assert parent_is_withdrawn(root) is False
+    finally:
+        root.destroy()
 
 
 def test_apply_seat_choice_persists_desk_mode(tmp_path):
