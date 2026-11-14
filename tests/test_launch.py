@@ -1,19 +1,23 @@
 from sakaki_gm.launch import (
     LAUNCH_JOIN,
     LAUNCH_SERVER,
-    LAUNCH_SOLO,
     is_headless_server,
     lobby_default_mode,
     parse_launch_args,
 )
 
 
-def test_default_launch_is_single_table_solo():
+def test_default_launch_opens_start_server_lobby():
     args = parse_launch_args([])
     assert args.server is False
     assert args.join is False
     assert is_headless_server(args) is False
-    assert lobby_default_mode(args) == LAUNCH_SOLO
+    assert lobby_default_mode(args) == LAUNCH_SERVER
+
+
+def test_legacy_solo_flag_maps_to_start_server_lobby():
+    args = parse_launch_args(["--solo"])
+    assert lobby_default_mode(args) == LAUNCH_SERVER
 
 
 def test_server_flag_is_headless_not_lobby_default():

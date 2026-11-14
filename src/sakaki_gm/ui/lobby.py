@@ -1,9 +1,9 @@
-"""Startup lobby: single-table host, join a service, or start a named service.
+"""Startup lobby: login to an existing table, or start a server.
 
-**Single table** and **Start campaign as server** share the same structure:
-spawn headless ``sakaki-gm --server``, pipe its output to the host log tab,
-join as a client desk. Host = who runs that server process — not the GM seat.
-**Login** joins an already-running service (no local server child).
+Two desk paths only:
+- **Login** — join an already-running table service as a client.
+- **Start server** — spawn headless ``sakaki-gm --server``, pipe output to the
+  Server log tab, join as a client. Host = who runs that process (≠ GM seat).
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from sakaki_gm.campaigns import (
     create_campaign,
     set_active,
 )
-from sakaki_gm.launch import LAUNCH_JOIN, LAUNCH_SERVER, LAUNCH_SOLO
+from sakaki_gm.launch import LAUNCH_JOIN, LAUNCH_SERVER
 from sakaki_gm.llm_config import CONFIG_PATH, load_config
 from sakaki_gm.net.protocol import DEFAULT_PORT
 from sakaki_gm.session import TableSession
@@ -40,15 +40,18 @@ class LobbyDialog(tk.Toplevel):
         *,
         config_path=None,
         campaigns_dir=None,
-        default_mode: str = LAUNCH_SOLO,
+        default_mode: str = LAUNCH_SERVER,
     ):
         super().__init__(parent)
         self.config_path = config_path or CONFIG_PATH
         self.campaigns_dir = campaigns_dir or CAMPAIGNS_DIR
         self.result: Optional[LobbyResult] = None
-        mode = str(default_mode or LAUNCH_SOLO).strip().lower()
-        if mode not in {LAUNCH_SOLO, LAUNCH_SERVER, LAUNCH_JOIN}:
-            mode = LAUNCH_SOLO
+        mode = str(default_mode or LAUNCH_SERVER).strip().lower()
+        # Legacy "solo" was the same as start-server; fold it in.
+        if mode == "solo":
+            mode = LAUNCH_SERVER
+        if mode not in {LAUNCH_SERVER, LAUNCH_JOIN}:
+            mode = LAUNCH_SERVER
         self.title("Sakaki GM — Lobby")
         self.geometry("560x580")
         self.minsize(560, 580)
@@ -81,9 +84,9 @@ class LobbyDialog(tk.Toplevel):
         ttk.Label(
             body,
             text=(
-                "Single table and Start as server both spawn a table host and "
-                "join as a client (server output goes to the Server log tab). "
-                "Login joins an already-running service. "
+                "Login joins an already-running table. "
+                "Start server spawns the table host and opens this desk as a "
+                "client (server output on the Server log tab). "
                 "Host = who runs the server — not the GM seat."
             ),
             wraplength=470,
@@ -92,22 +95,14 @@ class LobbyDialog(tk.Toplevel):
         self.mode = tk.StringVar(value=mode)
         ttk.Radiobutton(
             body,
-            text="Single table (spawn host + join)",
-            variable=self.mode,
-            value=LAUNCH_SOLO,
-            command=self._refresh_mode,
-        ).pack(anchor="w")
-        ttk.Radiobutton(
-            body,
-            text="Login to campaign server",
+            text="Login to existing server",
             variable=self.mode,
             value=LAUNCH_JOIN,
             command=self._refresh_mode,
         ).pack(anchor="w")
-        # Least-likely path: spawn service + join as client.
         ttk.Radiobutton(
             body,
-            text="Start campaign as server",
+            text="Start server",
             variable=self.mode,
             value=LAUNCH_SERVER,
             command=self._refresh_mode,
@@ -116,7 +111,7 @@ class LobbyDialog(tk.Toplevel):
         self.panels = ttk.Frame(body)
         self.panels.pack(fill=tk.BOTH, expand=True)
 
-        self.host_frame = ttk.LabelFrame(self.panels, text="Campaign")
+        self.host_frame = ttk.LabelFrame(self.panels, text="Campaign + service")
         ttk.Label(self.host_frame, text="Campaign").grid(
             row=0, column=0, sticky="w", padx=8, pady=6
         )
@@ -213,21 +208,6 @@ class LobbyDialog(tk.Toplevel):
             return
         self.host_frame.pack(fill=tk.X, pady=4)
         self.campaign_combo.configure(state="readonly")
-        network = mode == LAUNCH_SERVER
-        net_state = "normal" if network else "disabled"
-        for widget in (
-            self.host_port_label,
-            self.host_port_entry,
-            self.host_secret_label,
-            self.host_secret_entry,
-        ):
-            try:
-                widget.configure(state=net_state)
-            except tk.TclError:
-                pass
-        self.host_frame.configure(
-            text="Campaign + service" if network else "Campaign"
-        )
 
     def _new_campaign(self):
         name = simpledialog.askstring(
@@ -263,18 +243,7 @@ class LobbyDialog(tk.Toplevel):
     def _continue(self):
         mode = self.mode.get()
         try:
-            if mode == LAUNCH_SERVER:
-                cid, name, path = self._selected_campaign()
-                port = int(self.port_var.get().strip() or DEFAULT_PORT)
-                session = TableSession.start_local_service_client(
-                    campaign_id=cid,
-                    campaign_name=name,
-                    campaign_path=path,
-                    secret=self.host_secret.get(),
-                    port=port,
-                    display_name="GM",
-                )
-            elif mode == LAUNCH_JOIN:
+            if mode == LAUNCH_JOIN:
                 host = self.join_host.get().strip() or "127.0.0.1"
                 port = int(self.join_port.get().strip() or DEFAULT_PORT)
                 if "://" in host:
@@ -302,11 +271,14 @@ class LobbyDialog(tk.Toplevel):
                 session.start()
             else:
                 cid, name, path = self._selected_campaign()
-                # Same structure as Start-as-server: spawn host + join (already started).
-                session = TableSession.solo(
+                port = int(self.port_var.get().strip() or DEFAULT_PORT)
+                session = TableSession.start_local_service_client(
                     campaign_id=cid,
                     campaign_name=name,
                     campaign_path=path,
+                    secret=self.host_secret.get(),
+                    port=port,
+                    display_name="GM",
                 )
         except Exception as exc:
             messagebox.showerror("Lobby", str(exc), parent=self)
@@ -324,7 +296,7 @@ def run_lobby(
     *,
     config_path=None,
     campaigns_dir=None,
-    default_mode: str = LAUNCH_SOLO,
+    default_mode: str = LAUNCH_SERVER,
 ) -> Optional[LobbyResult]:
     dialog = LobbyDialog(
         parent,

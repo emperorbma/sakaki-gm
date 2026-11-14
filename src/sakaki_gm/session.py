@@ -1,10 +1,9 @@
 """Table session façade: host/join role, chat, refresh subscriptions.
 
 - **host** — headless ``--server`` process (no desk UI).
-- **client** — desk joined to a table service.
-- **solo / Start-as-server (lobby)** — same structure: spawn headless server,
-  pipe its output to the host log tab, join as a client desk. Host = who runs
-  the server process (owns ``service_process``), not the GM seat.
+- **client** — desk joined to a table service. Lobby “Start server” spawns a
+  headless host, pipes its output to the Server log tab, and joins as client.
+  Host = who owns that server process — not the GM seat.
 
 Campaign changes follow server policy (unbound until a GM login binds one).
 """
@@ -45,7 +44,7 @@ class TableSession:
         service_process: subprocess.Popen | None = None,
         server_log: ServerLogBridge | None = None,
     ):
-        self.mode = mode  # "host" | "client" | "solo"
+        self.mode = mode  # "host" | "client"
         self.campaign_id = campaign_id
         self.campaign_name = campaign_name
         raw_path = str(campaign_path or "").strip()
@@ -79,7 +78,7 @@ class TableSession:
         campaign_name: str,
         campaign_path: str | Path,
     ) -> "TableSession":
-        """Single-table: same as Start-as-server — spawn host, join as client."""
+        """Deprecated alias for ``start_local_service_client`` (ephemeral port)."""
         return cls.start_local_service_client(
             campaign_id=campaign_id,
             campaign_name=campaign_name,
@@ -177,7 +176,6 @@ class TableSession:
                 if campaign.get("path"):
                     self.campaign_path = str(campaign["path"])
             self._start_poll()
-        # solo: local-only authority in this process (no HTTP service)
 
     def stop(self) -> None:
         self._poll_stop.set()
@@ -242,8 +240,6 @@ class TableSession:
 
     def can_change_campaign(self) -> bool:
         """GM may set campaign when alone (or table still unbound)."""
-        if self.mode == "solo":
-            return True
         if self.mode == "host":
             if self._state is None:
                 return False
@@ -282,17 +278,6 @@ class TableSession:
     ) -> None:
         raw = str(campaign_path or "").strip()
         path = str(Path(raw).resolve()) if raw else ""
-        if self.mode == "solo":
-            self.campaign_id = campaign_id
-            self.campaign_name = campaign_name
-            self.campaign_path = path
-            self._dispatch(
-                {
-                    "type": "refresh",
-                    "reason": "campaign_changed",
-                }
-            )
-            return
         if self.mode == "client" and self._client is not None:
             info = self._client.set_campaign(
                 campaign_id=campaign_id,
@@ -346,9 +331,7 @@ class TableSession:
         seat_id: int | None = None,
         display_name: str = "",
     ) -> None:
-        """Claim exclusive live presence for a PC on the table (no-op when solo)."""
-        if self.mode == "solo":
-            return
+        """Claim exclusive live presence for a PC on the table."""
         if self._state is not None and self.session_id:
             self._state.claim_occupancy(
                 session_id=self.session_id,
@@ -367,8 +350,6 @@ class TableSession:
             )
 
     def release_presence(self) -> None:
-        if self.mode == "solo":
-            return
         if self._state is not None and self.session_id:
             self._state.release_occupancy(self.session_id)
             return
