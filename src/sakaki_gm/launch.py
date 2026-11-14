@@ -1,8 +1,7 @@
 """Process launch modes for Sakaki GM.
 
-Default desk launch is a single-table session (local bottle, multiuser seats,
-no network). ``--server`` runs a headless campaign table host (no Tk UI);
-dedicated start-*-server wrappers pass that flag.
+Desk lobby offers two paths: login to an existing table, or start a server
+(spawn headless host + join as client). ``--server`` runs headless with no Tk.
 """
 
 from __future__ import annotations
@@ -13,20 +12,22 @@ from typing import Sequence
 from sakaki_gm.net.protocol import DEFAULT_PORT
 
 
-LAUNCH_SOLO = "solo"
+# Lobby / session wire modes (desk UI).
 LAUNCH_SERVER = "host"
 LAUNCH_JOIN = "client"
+# Deprecated alias — same as start-server in the lobby.
+LAUNCH_SOLO = "solo"
 
-LAUNCH_MODES = (LAUNCH_SOLO, LAUNCH_SERVER, LAUNCH_JOIN)
+LAUNCH_MODES = (LAUNCH_SERVER, LAUNCH_JOIN)
 
 
 def parse_launch_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="sakaki-gm",
         description=(
-            "Sakaki GM — local Game Master desk. Default is single-table play "
-            "(multiuser seats, no network). Pass --server for a headless "
-            "campaign table host."
+            "Sakaki GM — local Game Master desk. Default opens the lobby to "
+            "start a table server or login to one. Pass --server for a "
+            "headless campaign table host."
         ),
     )
     mode = parser.add_mutually_exclusive_group()
@@ -38,12 +39,12 @@ def parse_launch_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     mode.add_argument(
         "--join",
         action="store_true",
-        help="Open the join-table lobby (login to a remote host).",
+        help="Open the lobby on Login to existing server.",
     )
     mode.add_argument(
         "--solo",
         action="store_true",
-        help="Single-table play with no network (default).",
+        help=argparse.SUPPRESS,  # legacy; same as default start-server lobby
     )
     parser.add_argument(
         "--campaign",
@@ -81,13 +82,14 @@ def parse_launch_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def lobby_default_mode(args: argparse.Namespace | None = None) -> str:
     """Lobby radio mode for the visual desk path (not used by --server)."""
     if args is None:
-        return LAUNCH_SOLO
+        return LAUNCH_SERVER
     if getattr(args, "server", False):
         # Headless path; callers should not open the lobby.
         return LAUNCH_SERVER
     if getattr(args, "join", False):
         return LAUNCH_JOIN
-    return LAUNCH_SOLO
+    # --solo and bare launch both open Start server.
+    return LAUNCH_SERVER
 
 
 def is_headless_server(args: argparse.Namespace | None) -> bool:
