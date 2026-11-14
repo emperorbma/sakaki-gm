@@ -1,11 +1,9 @@
-"""Startup lobby: single-table play, visual host, or join one.
+"""Startup lobby: single-table, join a service, or start a local service.
 
-Default launch is single-table (local bottle, multiuser seats, no network).
-Headless hosting is ``python -m sakaki_gm --server`` (or the start-*-server
-wrappers) — not this dialog. The lobby's "Start campaign as server" option is
-the visual host path (desk + table HTTP). Joiners take whatever campaign the
-host selected. Campaign switches stay a host-GM privilege only when no other
-peer still has a session.
+Default launch is **single table** — campaign authority stays in this process
+(no separate service). **Start campaign as server** spawns headless
+``sakaki-gm --server`` (unbound until GM login) and this desk joins it as a
+normal client. **Login** joins an existing table service.
 """
 
 from __future__ import annotations
@@ -83,10 +81,10 @@ class LobbyDialog(tk.Toplevel):
         ttk.Label(
             body,
             text=(
-                "Default is a single table on this machine (multiuser seats, "
-                "no network). Visual host keeps this desk open while serving. "
-                "For a headless table server use start-sakaki-gm-server or "
-                "--server. Joiners follow the host's campaign."
+                "Single table keeps the campaign in this process. "
+                "Start as server launches the headless table service, then "
+                "this desk logs in as a normal client (GM binds the campaign). "
+                "Login joins an already-running service."
             ),
             wraplength=470,
         ).pack(anchor="w", pady=(6, 12))
@@ -94,7 +92,7 @@ class LobbyDialog(tk.Toplevel):
         self.mode = tk.StringVar(value=mode)
         ttk.Radiobutton(
             body,
-            text="Single table (this machine)",
+            text="Single table (this process)",
             variable=self.mode,
             value=LAUNCH_SOLO,
             command=self._refresh_mode,
@@ -106,7 +104,7 @@ class LobbyDialog(tk.Toplevel):
             value=LAUNCH_JOIN,
             command=self._refresh_mode,
         ).pack(anchor="w")
-        # Least-likely path: visual desk + table HTTP (prefer headless --server).
+        # Least-likely path: spawn service + join as client.
         ttk.Radiobutton(
             body,
             text="Start campaign as server",
@@ -118,7 +116,7 @@ class LobbyDialog(tk.Toplevel):
         self.panels = ttk.Frame(body)
         self.panels.pack(fill=tk.BOTH, expand=True)
 
-        self.host_frame = ttk.LabelFrame(self.panels, text="Host")
+        self.host_frame = ttk.LabelFrame(self.panels, text="Campaign")
         ttk.Label(self.host_frame, text="Campaign").grid(
             row=0, column=0, sticky="w", padx=8, pady=6
         )
@@ -227,7 +225,9 @@ class LobbyDialog(tk.Toplevel):
                 widget.configure(state=net_state)
             except tk.TclError:
                 pass
-        self.host_frame.configure(text="Host" if network else "Campaign")
+        self.host_frame.configure(
+            text="Service + GM login" if network else "Campaign"
+        )
 
     def _new_campaign(self):
         name = simpledialog.askstring(
@@ -266,15 +266,14 @@ class LobbyDialog(tk.Toplevel):
             if mode == LAUNCH_SERVER:
                 cid, name, path = self._selected_campaign()
                 port = int(self.port_var.get().strip() or DEFAULT_PORT)
-                session = TableSession(
-                    mode=LAUNCH_SERVER,
+                session = TableSession.start_local_service_client(
                     campaign_id=cid,
                     campaign_name=name,
                     campaign_path=path,
                     secret=self.host_secret.get(),
                     port=port,
+                    display_name="GM",
                 )
-                session.start()
             elif mode == LAUNCH_JOIN:
                 host = self.join_host.get().strip() or "127.0.0.1"
                 port = int(self.join_port.get().strip() or DEFAULT_PORT)
@@ -298,6 +297,7 @@ class LobbyDialog(tk.Toplevel):
                     remote_url=remote,
                     display_name=self.join_name.get().strip() or "Player",
                     port=port,
+                    join_role="player",
                 )
                 session.start()
             else:

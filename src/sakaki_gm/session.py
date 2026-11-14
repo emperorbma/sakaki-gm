@@ -1,11 +1,16 @@
 """Table session façade: host/join role, chat, refresh subscriptions.
 
-Campaign changes are allowed for the host GM only when no other peer still
-holds a session at the table.
+- **solo** — single-table desk; table authority stays in this process (no
+  separate service).
+- **host** — in-process HTTP table (legacy / embedded).
+- **client** — desk joined to a table service (spawned locally or remote).
+
+Campaign changes follow server policy (unbound until a GM login binds one).
 """
 
 from __future__ import annotations
 
+import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -13,6 +18,7 @@ from typing import Any, Callable, Optional
 from sakaki_gm.net.client import TableClient, TableClientError
 from sakaki_gm.net.protocol import DEFAULT_PORT
 from sakaki_gm.net.server import TableServer, TableServerState
+from sakaki_gm.net.service import spawn_headless_server, terminate_service
 
 
 class TableSession:
@@ -28,6 +34,9 @@ class TableSession:
         port: int = DEFAULT_PORT,
         remote_url: str | None = None,
         display_name: str = "Player",
+        join_role: str = "player",
+        join_campaign: dict[str, Any] | None = None,
+        service_process: subprocess.Popen | None = None,
     ):
         self.mode = mode  # "host" | "client" | "solo"
         self.campaign_id = campaign_id
@@ -41,12 +50,15 @@ class TableSession:
         self.bind_host = bind_host
         self.port = int(port)
         self.remote_url = remote_url
+        self.join_role = str(join_role or "player").strip().lower() or "player"
+        self.join_campaign = join_campaign
         self.session_id: str | None = None
         self._subscribers: list[Callable[[dict[str, Any]], None]] = []
         self._lock = threading.RLock()
         self._server: TableServer | None = None
         self._state: TableServerState | None = None
         self._client: TableClient | None = None
+        self._service_process = service_process
         self._last_chat_id = 0
         self._poll_stop = threading.Event()
         self._poll_thread: threading.Thread | None = None
@@ -59,12 +71,60 @@ class TableSession:
         campaign_name: str,
         campaign_path: str | Path,
     ) -> "TableSession":
+        """Single-table play: authority stays in this process (no service)."""
         return cls(
             mode="solo",
             campaign_id=campaign_id,
             campaign_name=campaign_name,
             campaign_path=campaign_path,
         )
+
+    @classmethod
+    def start_local_service_client(
+        cls,
+        *,
+        campaign_id: str,
+        campaign_name: str,
+        campaign_path: str | Path,
+        secret: str = "",
+        port: int = DEFAULT_PORT,
+        display_name: str = "GM",
+    ) -> "TableSession":
+        """Spawn headless ``--server`` (unbound) and join it as a GM client.
+
+        The desk becomes a normal client; the campaign is supplied on GM login.
+        """
+        path = Path(campaign_path)
+        proc = spawn_headless_server(
+            port=port,
+            bind="127.0.0.1",
+            secret=secret,
+            campaign="",  # unbound until this GM login
+        )
+        remote = f"http://127.0.0.1:{int(port)}"
+        session = cls(
+            mode="client",
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            campaign_path=path,
+            secret=secret,
+            port=port,
+            remote_url=remote,
+            display_name=display_name,
+            join_role="gm",
+            join_campaign={
+                "id": campaign_id,
+                "name": campaign_name,
+                "path": str(path.resolve()),
+            },
+            service_process=proc,
+        )
+        try:
+            session.start()
+        except Exception:
+            terminate_service(proc)
+            raise
+        return session
 
     def start(self) -> None:
         if self.mode == "host":
@@ -84,13 +144,22 @@ class TableSession:
             if not self.remote_url:
                 raise ValueError("Client session needs remote_url.")
             self._client = TableClient(self.remote_url, secret=self.secret)
-            joined = self._client.join(self.display_name)
+            joined = self._client.join(
+                self.display_name,
+                role=self.join_role,
+                campaign=self.join_campaign,
+            )
             self.session_id = str(joined.get("session_id") or "")
             campaign = joined.get("campaign") or {}
-            self.campaign_id = str(campaign.get("id") or self.campaign_id)
-            self.campaign_name = str(campaign.get("name") or self.campaign_name)
+            if campaign.get("bound"):
+                self.campaign_id = str(campaign.get("id") or self.campaign_id)
+                self.campaign_name = str(
+                    campaign.get("name") or self.campaign_name
+                )
+                if campaign.get("path"):
+                    self.campaign_path = str(campaign["path"])
             self._start_poll()
-        # solo: local-only, no network
+        # solo: local-only authority in this process (no HTTP service)
 
     def stop(self) -> None:
         self._poll_stop.set()
@@ -116,6 +185,9 @@ class TableSession:
             self._server.stop()
             self._server = None
         self._state = None
+        if self._service_process is not None:
+            terminate_service(self._service_process)
+            self._service_process = None
 
     def subscribe(self, callback: Callable[[dict[str, Any]], None]) -> None:
         with self._lock:
