@@ -213,14 +213,15 @@ class TableSession:
         return ""
 
     def peer_count(self) -> int:
+        """Desk peers at the table (excludes the synthetic headless host)."""
         if self._state is not None:
-            return self._state.peer_count()
+            return self._state.desk_peer_count()
         if self._client is not None:
             try:
-                return int(self._client.campaign().get("peer_count") or 1)
+                return int(self._client.campaign().get("peer_count") or 0)
             except TableClientError:
-                return 1
-        return 1
+                return 0
+        return 0
 
     def can_change_campaign(self) -> bool:
         """GM may set campaign when alone (or table still unbound)."""
