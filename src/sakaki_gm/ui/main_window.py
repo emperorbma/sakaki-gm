@@ -144,8 +144,18 @@ class MainWindow:
                     ),
                 )
         # Seat login gates the desk: GM vs player is a login, not a mid-flow toggle.
+        # Keep the board hidden on first sit so campaign chrome cannot spoil.
+        try:
+            self.root.withdraw()
+        except tk.TclError:
+            pass
         self.root.update_idletasks()
         self.prompt_seat_login()
+        try:
+            self.root.deiconify()
+            self.root.lift()
+        except tk.TclError:
+            pass
 
     def setup_ui(self):
         style = ttk.Style()

@@ -35,8 +35,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     if lobby is None:
         root.destroy()
         return
-    root.deiconify()
-    root.lift()
+    # Stay withdrawn through first seat login so the desk cannot spoil the
+    # table before a seat is chosen. MainWindow reveals the root after sit.
     window = MainWindow(root, session=lobby.session)
 
     def on_close():
