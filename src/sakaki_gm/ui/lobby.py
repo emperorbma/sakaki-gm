@@ -2,8 +2,9 @@
 
 Default launch is **single table** — campaign authority stays in this process
 (no separate service). **Start campaign as server** spawns headless
-``sakaki-gm --server`` (unbound until GM login) and this desk joins it as a
-normal client. **Login** joins an existing table service.
+``sakaki-gm --server`` (unbound) and this desk joins as a client, binding the
+chosen campaign (that bind step uses a GM join). **Login** joins an already
+running service as a normal client — not GM-only.
 """
 
 from __future__ import annotations
@@ -82,9 +83,9 @@ class LobbyDialog(tk.Toplevel):
             body,
             text=(
                 "Single table keeps the campaign in this process. "
-                "Start as server launches the headless table service, then "
-                "this desk logs in as a normal client (GM binds the campaign). "
-                "Login joins an already-running service."
+                "Start as server launches the headless table service; this "
+                "desk joins as a client and binds the campaign you pick. "
+                "Login joins an already-running service as a client."
             ),
             wraplength=470,
         ).pack(anchor="w", pady=(6, 12))
@@ -226,7 +227,7 @@ class LobbyDialog(tk.Toplevel):
             except tk.TclError:
                 pass
         self.host_frame.configure(
-            text="Service + GM login" if network else "Campaign"
+            text="Campaign + service" if network else "Campaign"
         )
 
     def _new_campaign(self):
