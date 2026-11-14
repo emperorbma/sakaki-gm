@@ -44,7 +44,7 @@ sudo apt install python3-venv python3-tk
 
 ## Windows
 
-Double-click `start-sakaki-gm.bat` for single-table play. Python 3 must be on `PATH` as `py` or `python`. The batch file creates `.venv` next to itself and installs the package.
+Double-click `start-sakaki-gm.bat` for the desk lobby. Python 3 must be on `PATH` as `py` or `python`. The batch file creates `.venv` next to itself, installs the package, then starts Python in its own console (same idea as `exec` on Unix) so Ctrl+C does not ask to terminate a batch job.
 
 Headless table server:
 

@@ -41,5 +41,10 @@ if "%NEED_TK%"=="1" (
   )
 )
 
-.venv\Scripts\python.exe -m sakaki_gm %*
-exit /b %errorlevel%
+rem Unix start scripts use exec so Ctrl+C hits Python only. CMD has no exec:
+rem if we keep waiting on python inside this .bat, Ctrl+C asks
+rem "Terminate batch job (Y/N)?". Hand off to a dedicated console, then exit.
+set "TITLE=Sakaki GM"
+echo %* | findstr /C:"--server" >nul && set "TITLE=Sakaki GM server"
+start "%TITLE%" /D "%~dp0" "%~dp0.venv\Scripts\python.exe" -m sakaki_gm %*
+exit /b 0
