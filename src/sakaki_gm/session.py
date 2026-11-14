@@ -90,9 +90,11 @@ class TableSession:
         port: int = DEFAULT_PORT,
         display_name: str = "GM",
     ) -> "TableSession":
-        """Spawn headless ``--server`` (unbound) and join it as a GM client.
+        """Spawn headless ``--server`` (unbound) and join as a client.
 
-        The desk becomes a normal client; the campaign is supplied on GM login.
+        The desk is a normal network client. Binding the campaign selected in
+        the lobby uses a GM join for that bind step only — Login is a separate
+        client path and is not GM-only.
         """
         path = Path(campaign_path)
         proc = spawn_headless_server(
