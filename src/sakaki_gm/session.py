@@ -32,7 +32,10 @@ class TableSession:
         self.mode = mode  # "host" | "client" | "solo"
         self.campaign_id = campaign_id
         self.campaign_name = campaign_name
-        self.campaign_path = str(Path(campaign_path).resolve())
+        raw_path = str(campaign_path or "").strip()
+        self.campaign_path = (
+            str(Path(raw_path).resolve()) if raw_path else ""
+        )
         self.secret = str(secret or "")
         self.display_name = display_name
         self.bind_host = bind_host
@@ -146,20 +149,31 @@ class TableSession:
         return 1
 
     def can_change_campaign(self) -> bool:
-        """Host GM only, and only when no other sessions are connected."""
+        """GM may set campaign when alone (or table still unbound)."""
         if self.mode == "solo":
             return True
-        if self.mode != "host":
+        if self.mode == "host":
+            if self._state is None:
+                return False
+            return self._state.can_change_campaign(self.session_id)
+        if self.mode == "client":
+            # Client GM can bind/switch when the table allows this session.
+            if self._state is not None:
+                return self._state.can_change_campaign(self.session_id)
             return False
-        if self._state is None:
-            return False
-        return self._state.can_change_campaign()
+        return False
 
     def campaign_change_block_reason(self) -> str | None:
         if self.mode == "client":
+            if self._client is not None:
+                # Remote table: follow server policy; local reason is generic.
+                return (
+                    "Joined tables follow the table campaign; a GM may bind or "
+                    "switch only when the server allows it (usually when alone)."
+                )
             return "Joined tables use the host's campaign; only the host GM can switch."
         if self.mode == "host" and self._state is not None:
-            if not self._state.can_change_campaign():
+            if not self._state.can_change_campaign(self.session_id):
                 others = self._state.other_peer_count()
                 return (
                     f"Cannot change campaign while {others} other "
@@ -174,7 +188,8 @@ class TableSession:
         campaign_name: str,
         campaign_path: str | Path,
     ) -> None:
-        path = str(Path(campaign_path).resolve())
+        raw = str(campaign_path or "").strip()
+        path = str(Path(raw).resolve()) if raw else ""
         if self.mode == "solo":
             self.campaign_id = campaign_id
             self.campaign_name = campaign_name
@@ -185,6 +200,16 @@ class TableSession:
                     "reason": "campaign_changed",
                 }
             )
+            return
+        if self.mode == "client" and self._client is not None:
+            info = self._client.set_campaign(
+                campaign_id=campaign_id,
+                campaign_name=campaign_name,
+                campaign_path=path,
+            )
+            self.campaign_id = str(info.get("id") or campaign_id)
+            self.campaign_name = str(info.get("name") or campaign_name)
+            self.campaign_path = str(info.get("path") or path)
             return
         if self.mode != "host" or self._state is None:
             raise PermissionError(self.campaign_change_block_reason() or "Not host.")

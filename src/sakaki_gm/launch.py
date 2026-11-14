@@ -49,8 +49,8 @@ def parse_launch_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--campaign",
         default="",
         help=(
-            "With --server: bottle path, campaign id, or registered name "
-            "(default: active campaign)."
+            "With --server: optional bottle path, campaign id, or name to pin "
+            "at startup. Default is unbound — a GM login supplies the campaign."
         ),
     )
     parser.add_argument(
@@ -68,6 +68,12 @@ def parse_launch_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--secret",
         default="",
         help="With --server: optional table secret.",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="With --server: DEBUG logs (HTTP access lines).",
     )
     return parser.parse_args(list(argv) if argv is not None else None)
 
