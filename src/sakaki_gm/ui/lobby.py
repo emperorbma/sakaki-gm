@@ -101,16 +101,17 @@ class LobbyDialog(tk.Toplevel):
         ).pack(anchor="w")
         ttk.Radiobutton(
             body,
-            text="Start campaign as server",
-            variable=self.mode,
-            value=LAUNCH_SERVER,
-            command=self._refresh_mode,
-        ).pack(anchor="w")
-        ttk.Radiobutton(
-            body,
             text="Login to campaign server",
             variable=self.mode,
             value=LAUNCH_JOIN,
+            command=self._refresh_mode,
+        ).pack(anchor="w")
+        # Least-likely path: visual desk + table HTTP (prefer headless --server).
+        ttk.Radiobutton(
+            body,
+            text="Start campaign as server",
+            variable=self.mode,
+            value=LAUNCH_SERVER,
             command=self._refresh_mode,
         ).pack(anchor="w", pady=(0, 8))
 
