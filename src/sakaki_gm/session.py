@@ -1,9 +1,10 @@
 """Table session façade: host/join role, chat, refresh subscriptions.
 
-- **solo** — single-table desk; table authority stays in this process (no
-  separate service).
-- **host** — in-process HTTP table (legacy / embedded).
-- **client** — desk joined to a table service (spawned locally or remote).
+- **host** — headless ``--server`` process (no desk UI).
+- **client** — desk joined to a table service.
+- **solo / Start-as-server (lobby)** — same structure: spawn headless server,
+  pipe its output to the host log tab, join as a client desk. Host = who runs
+  the server process (owns ``service_process``), not the GM seat.
 
 Campaign changes follow server policy (unbound until a GM login binds one).
 """
@@ -18,7 +19,12 @@ from typing import Any, Callable, Optional
 from sakaki_gm.net.client import TableClient, TableClientError
 from sakaki_gm.net.protocol import DEFAULT_PORT
 from sakaki_gm.net.server import TableServer, TableServerState
-from sakaki_gm.net.service import spawn_headless_server, terminate_service
+from sakaki_gm.net.server_log import ServerLogBridge
+from sakaki_gm.net.service import (
+    free_port,
+    spawn_headless_server,
+    terminate_service,
+)
 
 
 class TableSession:
@@ -37,6 +43,7 @@ class TableSession:
         join_role: str = "player",
         join_campaign: dict[str, Any] | None = None,
         service_process: subprocess.Popen | None = None,
+        server_log: ServerLogBridge | None = None,
     ):
         self.mode = mode  # "host" | "client" | "solo"
         self.campaign_id = campaign_id
@@ -59,6 +66,7 @@ class TableSession:
         self._state: TableServerState | None = None
         self._client: TableClient | None = None
         self._service_process = service_process
+        self.server_log = server_log
         self._last_chat_id = 0
         self._poll_stop = threading.Event()
         self._poll_thread: threading.Thread | None = None
@@ -71,12 +79,13 @@ class TableSession:
         campaign_name: str,
         campaign_path: str | Path,
     ) -> "TableSession":
-        """Single-table play: authority stays in this process (no service)."""
-        return cls(
-            mode="solo",
+        """Single-table: same as Start-as-server — spawn host, join as client."""
+        return cls.start_local_service_client(
             campaign_id=campaign_id,
             campaign_name=campaign_name,
             campaign_path=campaign_path,
+            port=free_port(),
+            display_name="GM",
         )
 
     @classmethod
@@ -90,18 +99,19 @@ class TableSession:
         port: int = DEFAULT_PORT,
         display_name: str = "GM",
     ) -> "TableSession":
-        """Spawn headless ``--server`` (unbound) and join as a client.
+        """Spawn headless ``--server`` (unbound), pipe logs, join as a client.
 
-        The desk is a normal network client. Binding the campaign selected in
-        the lobby uses a GM join for that bind step only — Login is a separate
-        client path and is not GM-only.
+        This desk **hosts** by owning the server child process; the session mode
+        is still ``client`` on the wire. Seat login (GM vs player) is separate.
         """
         path = Path(campaign_path)
+        bridge = ServerLogBridge()
         proc = spawn_headless_server(
             port=port,
             bind="127.0.0.1",
             secret=secret,
             campaign="",  # unbound until this GM login
+            on_log_line=bridge.emit_line,
         )
         remote = f"http://127.0.0.1:{int(port)}"
         session = cls(
@@ -120,6 +130,7 @@ class TableSession:
                 "path": str(path.resolve()),
             },
             service_process=proc,
+            server_log=bridge,
         )
         try:
             session.start()
@@ -127,6 +138,11 @@ class TableSession:
             terminate_service(proc)
             raise
         return session
+
+    @property
+    def owns_table_server(self) -> bool:
+        """True when this desk spawned the table server (host ≠ GM seat)."""
+        return self._service_process is not None
 
     def start(self) -> None:
         if self.mode == "host":
@@ -190,6 +206,7 @@ class TableSession:
         if self._service_process is not None:
             terminate_service(self._service_process)
             self._service_process = None
+        self.server_log = None
 
     def subscribe(self, callback: Callable[[dict[str, Any]], None]) -> None:
         with self._lock:

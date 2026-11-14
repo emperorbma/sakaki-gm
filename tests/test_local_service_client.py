@@ -48,8 +48,10 @@ def test_spawn_unbound_then_gm_client_binds(tmp_path):
     )
     try:
         assert session.mode == "client"
+        assert session.owns_table_server is True
         assert session._service_process is not None
         assert session._service_process.poll() is None
+        assert session.server_log is not None
         info = TableClient(session.remote_url).campaign()
         # After GM login the table should be bound.
         assert info.get("bound") is True
@@ -61,6 +63,16 @@ def test_spawn_unbound_then_gm_client_binds(tmp_path):
         player.join("Serina", role="player")
         assert session.peer_count() == 2
         assert TableClient(session.remote_url).campaign()["peer_count"] == 2
+        # Server child output was piped into the host log bridge.
+        import time
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not session.server_log.snapshot():
+            time.sleep(0.05)
+        assert any(
+            "Sakaki GM table server" in line or "listening" in line.lower()
+            for line in session.server_log.snapshot()
+        )
     finally:
         session.stop()
         assert (

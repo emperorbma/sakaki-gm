@@ -64,20 +64,24 @@ class TableServerState:
             return len(self.sessions)
 
     def desk_peer_count(self) -> int:
-        """Joined desks only — excludes the synthetic host process session.
+        """Human desks (``gm`` / ``player``) — not the synthetic ``host`` role.
 
-        The headless ``--server`` process always holds a non-seat ``host``
-        session so campaign-lock math can ignore it. GM and Player joins are
-        the desks humans sit at; those are what the UI should count.
+        The headless ``--server`` process keeps a non-seat ``host`` session for
+        lock math. Desks are the client joins. Host (runs the server) ≠ GM seat.
         """
+        with self.lock:
+            return sum(
+                1
+                for row in self.sessions.values()
+                if str(row.get("role") or "") in SEAT_ROLES
+            )
+
+    def other_peer_count(self) -> int:
+        """Sessions besides the process host entry (remote joins)."""
         with self.lock:
             return sum(
                 1 for sid in self.sessions if sid != self.host_session_id
             )
-
-    def other_peer_count(self) -> int:
-        """Peers besides the host session (same as desk_peer_count)."""
-        return self.desk_peer_count()
 
     def can_change_campaign(self, session_id: str | None = None) -> bool:
         """Whether ``session_id`` (or the process host) may set the campaign.
@@ -274,7 +278,9 @@ class TableServerState:
     def campaign_info(self) -> dict[str, Any]:
         with self.lock:
             desks = sum(
-                1 for sid in self.sessions if sid != self.host_session_id
+                1
+                for row in self.sessions.values()
+                if str(row.get("role") or "") in SEAT_ROLES
             )
             return {
                 "id": self.campaign_id,
@@ -320,7 +326,9 @@ class TableServerState:
             self.campaign_path = str(campaign_path or "")
             self.revision += 1
             desks = sum(
-                1 for sid in self.sessions if sid != self.host_session_id
+                1
+                for row in self.sessions.values()
+                if str(row.get("role") or "") in SEAT_ROLES
             )
             info = {
                 "id": self.campaign_id,

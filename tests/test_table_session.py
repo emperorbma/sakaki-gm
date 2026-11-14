@@ -73,7 +73,7 @@ def test_peer_chat_round_trip(tmp_path):
     server.stop()
 
 
-def test_table_session_host_endpoint_and_solo_allows_switch(tmp_path):
+def test_solo_matches_start_as_server_spawn_join(tmp_path):
     config = tmp_path / "config.json"
     campaigns = tmp_path / "campaigns"
     cid = create_campaign(config, "Solo", campaigns)
@@ -81,10 +81,21 @@ def test_table_session_host_endpoint_and_solo_allows_switch(tmp_path):
     solo = TableSession.solo(
         campaign_id=cid, campaign_name="Solo", campaign_path=path
     )
-    solo.start()
-    assert solo.can_change_campaign() is True
-    solo.stop()
+    try:
+        assert solo.mode == "client"
+        assert solo.owns_table_server is True
+        assert solo.server_log is not None
+        assert solo.peer_count() == 1
+        assert solo.endpoint().startswith("http://127.0.0.1:")
+    finally:
+        solo.stop()
 
+
+def test_table_session_host_endpoint_and_campaign_lock(tmp_path):
+    config = tmp_path / "config.json"
+    campaigns = tmp_path / "campaigns"
+    cid = create_campaign(config, "Solo", campaigns)
+    path = campaigns / f"{cid}.db"
     host = TableSession(
         mode="host",
         campaign_id=cid,

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 import time
-from typing import Sequence
+from typing import Callable
 
 from sakaki_gm.net.client import TableClient, TableClientError
 from sakaki_gm.net.protocol import DEFAULT_PORT
@@ -64,6 +65,32 @@ def wait_for_table(
     )
 
 
+def _pump_process_output(
+    proc: subprocess.Popen,
+    on_line: Callable[[str], None] | None,
+) -> None:
+    """Drain merged stdout so the pipe cannot deadlock; optionally forward."""
+
+    def _run() -> None:
+        stream = proc.stdout
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                text = line.rstrip("\n")
+                if on_line is not None:
+                    try:
+                        on_line(text)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=_run, name="sakaki-server-log", daemon=True
+    ).start()
+
+
 def spawn_headless_server(
     *,
     port: int = DEFAULT_PORT,
@@ -74,8 +101,13 @@ def spawn_headless_server(
     python: str | None = None,
     wait: bool = True,
     timeout: float = 15.0,
+    on_log_line: Callable[[str], None] | None = None,
 ) -> subprocess.Popen:
-    """Start ``python -m sakaki_gm --server`` unbound (unless campaign pinned)."""
+    """Start ``python -m sakaki_gm --server`` unbound (unless campaign pinned).
+
+    When ``on_log_line`` is set, stdout/stderr are merged and piped to that
+    callback (host desk log tab). Otherwise both are discarded.
+    """
     cmd = headless_server_command(
         port=port,
         bind=bind,
@@ -84,12 +116,22 @@ def spawn_headless_server(
         verbose=verbose,
         python=python,
     )
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    if on_log_line is not None:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        _pump_process_output(proc, on_log_line)
+    else:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
     if not wait:
         return proc
     # Prefer loopback for the desk even when the service binds 0.0.0.0.
@@ -119,3 +161,13 @@ def terminate_service(
             proc.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
             pass
+
+
+def free_port() -> int:
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = int(sock.getsockname()[1])
+    sock.close()
+    return port
