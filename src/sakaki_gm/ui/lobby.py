@@ -1,10 +1,9 @@
-"""Startup lobby: single-table, join a service, or start a local service.
+"""Startup lobby: single-table host, join a service, or start a named service.
 
-Default launch is **single table** — campaign authority stays in this process
-(no separate service). **Start campaign as server** spawns headless
-``sakaki-gm --server`` (unbound) and this desk joins as a client, binding the
-chosen campaign (that bind step uses a GM join). **Login** joins an already
-running service as a normal client — not GM-only.
+**Single table** and **Start campaign as server** share the same structure:
+spawn headless ``sakaki-gm --server``, pipe its output to the host log tab,
+join as a client desk. Host = who runs that server process — not the GM seat.
+**Login** joins an already-running service (no local server child).
 """
 
 from __future__ import annotations
@@ -82,10 +81,10 @@ class LobbyDialog(tk.Toplevel):
         ttk.Label(
             body,
             text=(
-                "Single table keeps the campaign in this process. "
-                "Start as server launches the headless table service; this "
-                "desk joins as a client and binds the campaign you pick. "
-                "Login joins an already-running service as a client."
+                "Single table and Start as server both spawn a table host and "
+                "join as a client (server output goes to the Server log tab). "
+                "Login joins an already-running service. "
+                "Host = who runs the server — not the GM seat."
             ),
             wraplength=470,
         ).pack(anchor="w", pady=(6, 12))
@@ -93,7 +92,7 @@ class LobbyDialog(tk.Toplevel):
         self.mode = tk.StringVar(value=mode)
         ttk.Radiobutton(
             body,
-            text="Single table (this process)",
+            text="Single table (spawn host + join)",
             variable=self.mode,
             value=LAUNCH_SOLO,
             command=self._refresh_mode,
@@ -303,12 +302,12 @@ class LobbyDialog(tk.Toplevel):
                 session.start()
             else:
                 cid, name, path = self._selected_campaign()
+                # Same structure as Start-as-server: spawn host + join (already started).
                 session = TableSession.solo(
                     campaign_id=cid,
                     campaign_name=name,
                     campaign_path=path,
                 )
-                session.start()
         except Exception as exc:
             messagebox.showerror("Lobby", str(exc), parent=self)
             return

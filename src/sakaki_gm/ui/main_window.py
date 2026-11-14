@@ -69,6 +69,7 @@ from sakaki_gm.ui.gm_tools import (
     run_sync_awareness,
 )
 from sakaki_gm.ui.log_panel import LogPanel
+from sakaki_gm.ui.server_log_panel import ServerLogPanel
 from sakaki_gm.ui.modules.characters import CharactersModule
 from sakaki_gm.ui.modules.documents import DocumentsModule
 from sakaki_gm.ui.modules.geography import GeographyModule
@@ -229,6 +230,7 @@ class MainWindow:
         self.spells_module = SpellsModule(self.notebook, self.db)
         self.settings_module = SettingsModule(self.notebook, self.db, self)
         self.log_panel = LogPanel(self.root, self.db)
+        self.server_log_panel = None
         self._desk_tabs = [
             ("characters", self.characters_module.frame, "Characters"),
             ("world", self.world_module.frame, "World"),
@@ -242,6 +244,13 @@ class MainWindow:
             ("settings", self.settings_module.frame, "Settings"),
             ("log", self.log_panel.frame, "Log"),
         ]
+        # Host desk only (owns the server child) — not GM-seat gated.
+        if self.session is not None and self.session.owns_table_server:
+            self.server_log_panel = ServerLogPanel(self.notebook)
+            self.server_log_panel.bind_bridge(self.session.server_log)
+            self._desk_tabs.append(
+                ("server_log", self.server_log_panel.frame, "Server log")
+            )
         for _key, frame, title in self._desk_tabs:
             self.notebook.add(frame, text=title)
 
@@ -981,7 +990,13 @@ class MainWindow:
                 present = str(frame) in self.notebook.tabs()
             except tk.TclError:
                 present = False
-            visible = surface_visible(key, mode)
+            if key == "server_log":
+                # Host process tab — visible for any seat on the hosting desk.
+                visible = bool(
+                    self.session is not None and self.session.owns_table_server
+                )
+            else:
+                visible = surface_visible(key, mode)
             if visible and not present:
                 self.notebook.add(frame, text=title)
             elif not visible and present:
