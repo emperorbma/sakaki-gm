@@ -70,12 +70,40 @@ class TableClient:
     def campaign(self) -> dict[str, Any]:
         return self._request("GET", "/campaign")["campaign"]
 
-    def join(self, display_name: str = "Player") -> dict[str, Any]:
-        result = self._request(
-            "POST", "/join", payload={"display_name": display_name}
-        )
+    def join(
+        self,
+        display_name: str = "Player",
+        *,
+        role: str = "player",
+        campaign: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "display_name": display_name,
+            "role": role,
+        }
+        if campaign is not None:
+            payload["campaign"] = campaign
+        result = self._request("POST", "/join", payload=payload)
         self.session_id = str(result.get("session_id") or "")
         return result
+
+    def set_campaign(
+        self,
+        *,
+        campaign_id: str,
+        campaign_name: str,
+        campaign_path: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/campaign",
+            payload={
+                "id": campaign_id,
+                "name": campaign_name,
+                "path": campaign_path,
+                "session_id": self.session_id,
+            },
+        )["campaign"]
 
     def leave(self) -> None:
         if not self.session_id:

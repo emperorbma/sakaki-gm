@@ -23,8 +23,13 @@ For a **headless** campaign table server (no lobby or desk UI):
 ```bash
 ./start-sakaki-gm-server.sh
 # same as: ./start-sakaki-gm.sh --server
-# optional: --campaign PATH|id|name --port 8765 --bind 0.0.0.0 --secret …
+# optional: --campaign PATH|id|name --port 8765 --bind 0.0.0.0 --secret … -v
 ```
+
+By default the table starts **unbound**; a GM client login can supply the
+campaign (`join` with `role=gm` and campaign metadata, or `POST /campaign`).
+`--campaign` pins a bottle at process start when you want that. Server logs
+(peer join/leave, campaign bind, occupancy, errors) go to stderr.
 
 The scripts create `.venv` and install the package. Desk launch needs Tk; headless `--server` does not. If desk startup stops early on Debian:
 
