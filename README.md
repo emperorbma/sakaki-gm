@@ -16,17 +16,32 @@ Application code lives under `src/sakaki_gm/`. Install the package into a virtua
 ./start-sakaki-gm.sh
 ```
 
-The script creates `.venv`, installs the package in editable mode, and opens the window. If it stops early on Debian, install the missing package and run it again:
+Default launch is a **single table** on this machine (multiuser seats, no network). The lobby still lets you join a remote table or host one. To open directly on the host/server path:
+
+```bash
+./start-sakaki-gm-server.sh
+# same as: ./start-sakaki-gm.sh --server
+```
+
+The scripts create `.venv`, install the package in editable mode, and open the window. If startup stops early on Debian, install the missing package and run again:
 
 ```bash
 sudo apt install python3-venv python3-tk
 ```
 
-`sakaki-gm.desktop` starts the same script without a terminal.
+`sakaki-gm.desktop` starts the default (single-table) script without a terminal.
 
 ## Windows
 
-Double-click `start-sakaki-gm.bat`. Python 3 must be on `PATH` as `py` or `python`. The batch file creates `.venv` next to itself and installs the package.
+Double-click `start-sakaki-gm.bat` for single-table play. Python 3 must be on `PATH` as `py` or `python`. The batch file creates `.venv` next to itself and installs the package.
+
+To host a campaign table server:
+
+```bat
+start-sakaki-gm-server.bat
+```
+
+That wrapper forwards `--server` to the same launcher (`python -m sakaki_gm --server`).
 
 ## Campaigns
 

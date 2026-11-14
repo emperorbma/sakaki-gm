@@ -28,4 +28,4 @@ if [[ -f "$DESKTOP" ]]; then
   sed -i "s|^Path=.*|Path=$ROOT|" "$DESKTOP"
 fi
 
-exec .venv/bin/python -m sakaki_gm
+exec .venv/bin/python -m sakaki_gm "$@"
