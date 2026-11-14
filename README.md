@@ -16,7 +16,10 @@ Application code lives under `src/sakaki_gm/`. Install the package into a virtua
 ./start-sakaki-gm.sh
 ```
 
-Default launch is a **single table** on this machine (multiuser seats, no network). The lobby still lets you join a remote table or open a visual host (desk + table HTTP).
+Default launch is a **single table** on this machine (multiuser seats). Table
+authority stays in that process — there is no separate service. The lobby can
+also **start a local table service** (spawns headless `--server`, then this desk
+logs in as a client) or **login** to an already-running service.
 
 For a **headless** campaign table server (no lobby or desk UI):
 
