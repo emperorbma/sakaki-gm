@@ -32,6 +32,15 @@ AI_ASSIST_MODES = {
     "muse": "Muse (narration only)",
 }
 
+# Per-model extended thinking / reasoning (Qwen 3.x, etc.).
+# ``default`` omits the flag so the provider decides; ``off`` is useful for
+# small local models on simple Muse / lightweight turns.
+THINKING_MODES = {
+    "default": "Provider default",
+    "on": "On",
+    "off": "Off",
+}
+
 AI_TOOL_NAMES = (
     "search_documents",
     "search_objects",
@@ -62,6 +71,7 @@ MODEL_SETTING_KEYS = (
     "api_key",
     "rag_mode",
     "enabled_ai_tools",
+    "thinking",
 )
 
 DEFAULT_MODEL_ID = "primary"
@@ -78,6 +88,7 @@ def _default_model_entry() -> dict:
         "api_key": "",
         "rag_mode": "tools",
         "enabled_ai_tools": list(AI_TOOL_NAMES),
+        "thinking": "default",
     }
 
 
@@ -216,6 +227,7 @@ def normalize_model_entry(value, *, fallback_index: int = 0) -> dict:
     entry["enabled_ai_tools"] = normalize_enabled_ai_tools(
         raw.get("enabled_ai_tools")
     )
+    entry["thinking"] = normalize_thinking_mode(raw.get("thinking"))
     return entry
 
 
@@ -253,6 +265,18 @@ def allocate_model_id(existing_ids) -> str:
     return f"model-{index}"
 
 
+def normalize_thinking_mode(value) -> str:
+    """Normalize per-model thinking: ``default`` / ``on`` / ``off``."""
+    mode = str(value or "default").strip().casefold()
+    if mode in {"true", "yes", "1", "enable", "enabled"}:
+        return "on"
+    if mode in {"false", "no", "0", "disable", "disabled"}:
+        return "off"
+    if mode not in THINKING_MODES:
+        return "default"
+    return mode
+
+
 def model_settings_dict(entry: dict | None) -> dict:
     """Return the complete()/resolve_api_key settings shape for a model entry."""
     source = entry if isinstance(entry, dict) else _default_model_entry()
@@ -269,6 +293,25 @@ def model_settings_dict(entry: dict | None) -> dict:
         "enabled_ai_tools": normalize_enabled_ai_tools(
             source.get("enabled_ai_tools")
         ),
+        "thinking": normalize_thinking_mode(source.get("thinking")),
+    }
+
+
+def chat_extra_body(settings: dict | None) -> dict:
+    """OpenAI-compatible ``extra_body`` for thinking / reasoning flags.
+
+    Qwen 3.x and similar local stacks honor ``enable_thinking`` and/or
+    ``chat_template_kwargs.enable_thinking``. Provider default omits both.
+    """
+    mode = normalize_thinking_mode(
+        (settings or {}).get("thinking") if isinstance(settings, dict) else None
+    )
+    if mode == "default":
+        return {}
+    enabled = mode == "on"
+    return {
+        "enable_thinking": enabled,
+        "chat_template_kwargs": {"enable_thinking": enabled},
     }
 
 
