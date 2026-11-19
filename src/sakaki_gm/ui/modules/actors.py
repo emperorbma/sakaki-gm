@@ -19,6 +19,7 @@ from sakaki_gm.actor_db import (
     set_brain_goals,
     update_actor,
 )
+from sakaki_gm.dreamtime import format_dreamtime_summary, run_dreamtime_pass
 
 
 class ActorsModule:
@@ -105,6 +106,9 @@ class ActorsModule:
         )
         ttk.Button(
             buttons, text="Spawn for plot", command=self.spawn_for_plot
+        ).pack(side=tk.LEFT, padx=6)
+        ttk.Button(
+            buttons, text="Fill missing brains", command=self.fill_missing_brains
         ).pack(side=tk.LEFT, padx=6)
         ttk.Button(buttons, text="Delete", command=self.delete_current).pack(
             side=tk.LEFT
@@ -230,6 +234,34 @@ class ActorsModule:
             messagebox.showerror("Actors", str(exc), parent=self.frame)
             return
         self.reload(keep_id=actor_id)
+
+    def fill_missing_brains(self):
+        """One between-scene pass. Authored brains and scene state stay put."""
+        if not messagebox.askyesno(
+            "Dreamtime",
+            "Fill missing actor brains from the canonical notes, sheets, "
+            "quests, and log?\n\n"
+            "This adds minds that are not there yet and fills empty drive, "
+            "goals, traits, and affect. Brains you wrote stay as they are. "
+            "Hit points, inventory, location, and quest status stay as they are.",
+            parent=self.frame,
+        ):
+            return
+        try:
+            result = run_dreamtime_pass(self.db)
+        except (sqlite3.Error, ValueError) as exc:
+            try:
+                self.db.rollback()
+            except sqlite3.Error:
+                pass
+            messagebox.showerror("Dreamtime", str(exc), parent=self.frame)
+            return
+        self.reload(keep_id=self._selected_id)
+        messagebox.showinfo(
+            "Dreamtime",
+            format_dreamtime_summary(result),
+            parent=self.frame,
+        )
 
     def delete_current(self):
         if self._selected_id is None:
