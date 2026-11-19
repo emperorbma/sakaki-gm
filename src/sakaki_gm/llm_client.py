@@ -1,5 +1,6 @@
 # llm_client.py — OpenAI-compatible chat for SpaceXAI and local servers
 import json
+import re
 import sqlite3
 import urllib.error
 import urllib.request
@@ -8,6 +9,7 @@ from pathlib import Path
 from sakaki_gm.gm import out_of_scene_lore_query
 from sakaki_gm.llm_config import (
     ai_assist_mode,
+    chat_extra_body,
     enabled_ai_tools,
     load_config,
     resolve_api_key,
@@ -20,6 +22,12 @@ from sakaki_gm.rag_tools import (
     retrieve_campaign_context,
 )
 from sakaki_gm.scratch_context import ScratchBudgetExceeded, ScratchContext
+
+# Qwen-style private reasoning blocks when thinking leaks into content.
+_THINK_BLOCK_RE = re.compile(
+    r"<think>\s*.*?\s*</think>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def selected_campaign_tools(settings: dict) -> list:
@@ -56,8 +64,11 @@ def complete(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+    extra_body = chat_extra_body(settings) or None
     if tool_db_path is None:
-        return _complete_json(create, model, messages)
+        return _complete_json(
+            create, model, messages, extra_body=extra_body
+        )
 
     if model_profiles is None:
         model_profiles = load_config().get("model_profiles", {})
@@ -77,6 +88,7 @@ def complete(
             tool_db_path,
             turn_scratch,
             tools=tools,
+            extra_body=extra_body,
         )
 
     try:
@@ -109,18 +121,24 @@ def complete(
             "If the request forbids state changes, return an empty updates "
             "object and an empty proposals list."
         )
-    return _complete_json(create, model, messages)
+    return _complete_json(
+        create, model, messages, extra_body=extra_body
+    )
 
 
-def _complete_json(create, model, messages) -> str:
+def _complete_json(create, model, messages, *, extra_body: dict | None = None) -> str:
+    kwargs = {}
+    if extra_body:
+        kwargs["extra_body"] = extra_body
     try:
         response = create(
             model=model,
             messages=messages,
             response_format={"type": "json_object"},
+            **kwargs,
         )
     except Exception:
-        response = create(model=model, messages=messages)
+        response = create(model=model, messages=messages, **kwargs)
     return _message_text(response)
 
 
@@ -152,6 +170,7 @@ def _complete_with_campaign_tools(
     scratch: ScratchContext,
     *,
     tools=None,
+    extra_body: dict | None = None,
 ) -> str:
     tool_defs = tools if tools is not None else CAMPAIGN_TOOLS
     tool_system_message = {
@@ -192,10 +211,14 @@ def _complete_with_campaign_tools(
                 scratch.check_deadline()
             except ScratchBudgetExceeded as exc:
                 raise RuntimeError(str(exc)) from exc
+            create_kwargs = {}
+            if extra_body:
+                create_kwargs["extra_body"] = extra_body
             response = create(
                 model=model,
                 messages=messages,
                 tools=tool_defs,
+                **create_kwargs,
             )
             message = _response_message(response)
             tool_calls = _field(message, "tool_calls", []) or []
@@ -341,6 +364,14 @@ def _openai_create(settings: dict):
     return create
 
 
+def strip_thinking_text(text: str) -> str:
+    """Drop private ``<think>`` blocks so JSON parse sees the reply only."""
+    if not text:
+        return ""
+    cleaned = _THINK_BLOCK_RE.sub("", text).strip()
+    return cleaned if cleaned else text.strip()
+
+
 def _message_text(response) -> str:
     try:
         content = response.choices[0].message.content
@@ -349,12 +380,12 @@ def _message_text(response) -> str:
             raise RuntimeError("The model returned no message.") from exc
         content = _field(response, "content")
     if isinstance(content, str):
-        return content
+        return strip_thinking_text(content)
     if isinstance(content, list):
         parts = []
         for item in content:
             text = item.get("text") if isinstance(item, dict) else getattr(item, "text", "")
             if text:
                 parts.append(text)
-        return "\n".join(parts)
-    return "" if content is None else str(content)
+        return strip_thinking_text("\n".join(parts))
+    return "" if content is None else strip_thinking_text(str(content))

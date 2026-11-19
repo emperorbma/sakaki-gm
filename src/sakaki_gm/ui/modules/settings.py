@@ -11,6 +11,7 @@ from sakaki_gm.llm_config import (
     MODEL_CAPABILITIES,
     RAG_MODES,
     PRESETS,
+    THINKING_MODES,
     active_llm_settings,
     ai_assist_mode,
     allocate_model_id,
@@ -20,6 +21,7 @@ from sakaki_gm.llm_config import (
     load_config,
     model_display_label,
     model_profile_key,
+    normalize_thinking_mode,
     remove_model,
     resolve_api_key,
     save_config,
@@ -120,6 +122,10 @@ class SettingsModule:
         self.model_entry_var = tk.StringVar()
         self.model_label = tk.StringVar(value=current.get("label") or "")
         self.model_purpose = tk.StringVar(value=current.get("purpose") or "")
+        thinking = normalize_thinking_mode(current.get("thinking"))
+        self.thinking_mode = tk.StringVar(
+            value=THINKING_MODES.get(thinking, THINKING_MODES["default"])
+        )
         self.provider = tk.StringVar(value=current.get("provider") or "spacexai")
         self.base_url = tk.StringVar(value=current.get("base_url") or "")
         self.model = tk.StringVar(value=current.get("model") or "")
@@ -182,16 +188,35 @@ class SettingsModule:
             wraplength=560,
         ).grid(row=5, column=1, sticky="w", padx=10)
 
-        ttk.Label(llm, text="Preset").grid(row=6, column=0, sticky="w", padx=10, pady=6)
+        ttk.Label(llm, text="Thinking").grid(
+            row=6, column=0, sticky="w", padx=10, pady=6
+        )
+        ttk.Combobox(
+            llm,
+            textvariable=self.thinking_mode,
+            values=list(THINKING_MODES.values()),
+            state="readonly",
+            width=28,
+        ).grid(row=6, column=1, sticky="w", padx=10, pady=6)
+        ttk.Label(
+            llm,
+            text=(
+                "Qwen 3.x and similar: Off skips extended reasoning (faster for "
+                "simple Muse / light turns). Provider default leaves the flag unset."
+            ),
+            wraplength=560,
+        ).grid(row=7, column=1, sticky="w", padx=10)
+
+        ttk.Label(llm, text="Preset").grid(row=8, column=0, sticky="w", padx=10, pady=6)
         preset = ttk.Combobox(
             llm, textvariable=self.provider, values=list(PRESETS), state="readonly", width=28,
         )
-        preset.grid(row=6, column=1, sticky="w", padx=10, pady=6)
+        preset.grid(row=8, column=1, sticky="w", padx=10, pady=6)
         preset.bind("<<ComboboxSelected>>", self.apply_preset)
 
-        ttk.Label(llm, text="Base URL").grid(row=7, column=0, sticky="w", padx=10, pady=6)
+        ttk.Label(llm, text="Base URL").grid(row=9, column=0, sticky="w", padx=10, pady=6)
         base_url_entry = ttk.Entry(llm, textvariable=self.base_url, width=48)
-        base_url_entry.grid(row=7, column=1, sticky="w", padx=10, pady=6)
+        base_url_entry.grid(row=9, column=1, sticky="w", padx=10, pady=6)
         base_url_entry.bind(
             "<FocusOut>",
             lambda _event: self._load_model_capabilities(),
@@ -200,9 +225,9 @@ class SettingsModule:
             "<Return>",
             lambda _event: self._load_model_capabilities(),
         )
-        ttk.Label(llm, text="Model").grid(row=8, column=0, sticky="w", padx=10, pady=6)
+        ttk.Label(llm, text="Model").grid(row=10, column=0, sticky="w", padx=10, pady=6)
         model_frame = ttk.Frame(llm)
-        model_frame.grid(row=8, column=1, sticky="w", padx=10, pady=6)
+        model_frame.grid(row=10, column=1, sticky="w", padx=10, pady=6)
         self.model_combo = ttk.Combobox(
             model_frame,
             textvariable=self.model,
@@ -216,17 +241,17 @@ class SettingsModule:
             text="Refresh models",
             command=self.refresh_models,
         ).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Label(llm, text="API key").grid(row=9, column=0, sticky="w", padx=10, pady=6)
+        ttk.Label(llm, text="API key").grid(row=11, column=0, sticky="w", padx=10, pady=6)
         ttk.Entry(llm, textvariable=self.api_key, width=48, show="*").grid(
-            row=9, column=1, sticky="w", padx=10, pady=6
+            row=11, column=1, sticky="w", padx=10, pady=6
         )
         ttk.Label(
             llm,
             text="Leave the key blank to use XAI_API_KEY. A local server does not need a key.",
-        ).grid(row=10, column=1, sticky="w", padx=10)
+        ).grid(row=12, column=1, sticky="w", padx=10)
 
         ttk.Label(llm, text="Campaign RAG").grid(
-            row=11, column=0, sticky="w", padx=10, pady=6
+            row=13, column=0, sticky="w", padx=10, pady=6
         )
         ttk.Combobox(
             llm,
@@ -234,13 +259,13 @@ class SettingsModule:
             values=list(RAG_MODES.values()),
             state="readonly",
             width=28,
-        ).grid(row=11, column=1, sticky="w", padx=10, pady=6)
+        ).grid(row=13, column=1, sticky="w", padx=10, pady=6)
         ttk.Label(
             llm,
             text="Choose model-driven tool calls or app-retrieved context.",
-        ).grid(row=12, column=1, sticky="w", padx=10)
+        ).grid(row=14, column=1, sticky="w", padx=10)
         tools_frame = ttk.LabelFrame(llm, text="Enable AI tools")
-        tools_frame.grid(row=13, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        tools_frame.grid(row=15, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
         ttk.Label(
             tools_frame,
             text=(
@@ -266,7 +291,7 @@ class SettingsModule:
                 pady=2,
             )
         capabilities = ttk.LabelFrame(llm, text="Model capabilities")
-        capabilities.grid(row=14, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        capabilities.grid(row=16, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
         ttk.Label(
             capabilities,
             text="User-declared expectations; the model listing does not report these.",
@@ -289,7 +314,7 @@ class SettingsModule:
         )
 
         buttons = ttk.Frame(llm)
-        buttons.grid(row=15, column=1, sticky="w", padx=10, pady=10)
+        buttons.grid(row=17, column=1, sticky="w", padx=10, pady=10)
         ttk.Button(buttons, text="Save", command=self.save_llm).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Test", command=self.test_llm).pack(side=tk.LEFT, padx=4)
         self.capability_test_button = ttk.Button(
@@ -514,6 +539,14 @@ class SettingsModule:
 
     def _llm_dict(self) -> dict:
         """Connection settings for the form currently being edited."""
+        thinking = next(
+            (
+                mode
+                for mode, label in THINKING_MODES.items()
+                if label == self.thinking_mode.get()
+            ),
+            "default",
+        )
         return {
             "provider": self.provider.get().strip() or "spacexai",
             "base_url": self.base_url.get().strip(),
@@ -528,6 +561,7 @@ class SettingsModule:
                 for name in AI_TOOL_NAMES
                 if self.enabled_ai_tools[name].get()
             ],
+            "thinking": thinking,
         }
 
     def _model_entry_dict(self) -> dict:
@@ -570,6 +604,10 @@ class SettingsModule:
         self._selected_model_id = entry.get("id")
         self.model_label.set(entry.get("label") or "")
         self.model_purpose.set(entry.get("purpose") or "")
+        thinking = normalize_thinking_mode(entry.get("thinking"))
+        self.thinking_mode.set(
+            THINKING_MODES.get(thinking, THINKING_MODES["default"])
+        )
         self.provider.set(entry.get("provider") or "spacexai")
         self.base_url.set(entry.get("base_url") or "")
         self.model.set(entry.get("model") or "")
@@ -611,6 +649,7 @@ class SettingsModule:
             "api_key": "",
             "rag_mode": "tools",
             "enabled_ai_tools": list(AI_TOOL_NAMES),
+            "thinking": "default",
         }
         upsert_model(cfg, entry, make_default=False)
         save_config(cfg, self.main_app.config_path)
